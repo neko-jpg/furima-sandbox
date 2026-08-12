@@ -135,8 +135,9 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isPreferencesHydrated, setIsPreferencesHydrated] = useState(false);
   const [isDeviceFrame, setIsDeviceFrame] = useState(false);
   const [isLoginPromptOpen, setIsLoginPromptOpen] = useState(false);
-  const [loginPromptReason, setLoginPromptReason] = useState('この操作にはログインが必要です。');
-  const isAuthenticated = false;
+  const [loginPromptReason, setLoginPromptReason] = useState('Furima Sandboxはログイン不要のモックモードです。');
+  // This is intentionally always enabled: the site is a self-contained demo, so every mock action is available without an external account.
+  const isAuthenticated = true;
 
   const stateVersionRef = useRef(0);
   const actionTraceRef = useRef<ActionTraceEntry[]>([]);
@@ -374,7 +375,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       currentBid: newItemData.currentBid,
       bidsCount: newItemData.bidsCount,
       timeLeft: newItemData.timeLeft,
-      description: newItemData.description?.trim() || 'shopで見つけてもらえる、すてきな商品です。',
+      description: newItemData.description?.trim() || 'Furima Sandboxで見つけてもらえる、すてきな商品です。',
       category: newItemData.category?.length ? [...newItemData.category] : ['その他'],
       condition: newItemData.condition || '目立った傷や汚れなし',
       shippingFee: newItemData.shippingFee || '送料込み（出品者負担）',

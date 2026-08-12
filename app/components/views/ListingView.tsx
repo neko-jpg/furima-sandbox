@@ -104,7 +104,7 @@ export const ListingView: React.FC = () => {
 
 const FormField: React.FC<{ id: string; label: string; hint?: string; children: React.ReactNode }> = ({ id, label, hint, children }) => <div className="mb-5 space-y-1.5"><div className="flex items-center justify-between"><label htmlFor={id} className="text-sm font-bold text-white">{label}</label>{hint && <span className="text-xs text-[var(--shop-muted)]">{hint}</span>}</div>{React.isValidElement(children) ? React.cloneElement(children as React.ReactElement<{ className?: string }>, { className: 'w-full rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] px-3.5 py-3.5 text-sm text-white outline-none placeholder:text-[var(--shop-subtle)] focus:border-[var(--shop-blue)]' }) : children}</div>;
 
-const ListingGuide: React.FC = () => <div className="mb-6 overflow-hidden rounded-xl shadow-[0_10px_24px_rgba(255,205,40,.12)]"><img src="/images/marketing/shop-listing-guide.png" alt="出品はじめかたガイド" className="block h-auto w-full" /></div>;
+const ListingGuide: React.FC = () => <div className="mb-6 overflow-hidden rounded-xl shadow-[0_10px_24px_rgba(255,205,40,.12)]"><img src="/images/marketing/shop-listing-guide.png" alt="Furima Sandbox かんたん出品ガイド" className="block h-auto w-full" /></div>;
 
 const DraftSheet: React.FC<{ draft: { title: string; price: string; description: string } | null; onClose: () => void; onResume: () => void }> = ({ draft, onClose, onResume }) => (
   <div className="absolute inset-0 z-[70] flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="下書き一覧">

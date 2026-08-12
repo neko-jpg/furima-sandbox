@@ -76,7 +76,8 @@ test("domain state and agent API invariants are covered by source-level contract
   assert.match(search, /を削除/);
   assert.match(header, /検索履歴/);
   assert.match(header, /画像からさがす/);
-  assert.match(header, /検索条件を保存するにはログインが必要です/);
+  assert.match(header, /検索条件を保存/);
+  assert.match(context, /const isAuthenticated = true/);
   assert.match(category, /data-testid="category-view"/);
   assert.match(shop, /data-testid="shop-view"/);
   assert.match(shop, /openCategory\(`ショップカテゴリ:\$\{group\.name\}`\)/);

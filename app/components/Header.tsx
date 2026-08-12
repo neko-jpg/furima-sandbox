@@ -58,8 +58,9 @@ export const Header: React.FC = () => {
 };
 
 const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
-  const { searchQuery, setSearchQuery, setIsSearchOpen, searchHistory, addSearchHistory, clearSearchHistory, requestLogin, openCategory } = useMercari();
+  const { searchQuery, setSearchQuery, setIsSearchOpen, searchHistory, addSearchHistory, clearSearchHistory, openCategory } = useMercari();
   const [draftQuery, setDraftQuery] = useState('');
+  const [savedQueries, setSavedQueries] = useState<string[]>([]);
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const tokens = useMemo(() => tokenizeSearchQuery(searchQuery), [searchQuery]);
@@ -107,6 +108,10 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
     setDraftQuery('');
   };
 
+  const toggleSavedQuery = (query: string) => {
+    setSavedQueries((previous) => previous.includes(query) ? previous.filter((item) => item !== query) : [...previous, query]);
+  };
+
   if (mobileMode) {
     return <button type="button" onClick={() => setIsSearchOpen(true)} aria-label="商品を検索" className="absolute right-12 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-[var(--shop-muted)] hover:bg-[var(--shop-surface)] hover:text-white" data-testid="search-bar-trigger"><Search className="h-[19px] w-[19px]" /></button>;
   }
@@ -123,7 +128,7 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
     {isAutocompleteOpen && <div id="search-bar-autocomplete" role="combobox" aria-controls="search-bar-autocomplete-menu" aria-expanded="true" className="absolute left-0 top-full z-[70] mt-2 max-h-[min(620px,calc(100vh-120px))] w-full overflow-y-auto rounded-lg border border-[var(--shop-border)] bg-[#232325] p-4 shadow-[0_18px_44px_rgba(0,0,0,.45)]">
       <div id="search-bar-autocomplete-menu"><div className="mb-5 grid grid-cols-2 gap-3"><button type="button" onClick={() => openDirectory('category')} className="flex items-center justify-center gap-2 rounded-full bg-[#303032] py-3 text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)]"><Layers3 className="h-4 w-4" />カテゴリー</button><button type="button" onClick={() => openDirectory('brand')} className="flex items-center justify-center gap-2 rounded-full bg-[#303032] py-3 text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)]"><Tag className="h-4 w-4" />ブランド</button></div>
       <div className="mb-3 flex items-center justify-between border-b border-[var(--shop-border)] pb-3"><h2 className="text-lg font-black text-white">検索履歴</h2>{searchHistory.length > 0 && <button type="button" onClick={clearSearchHistory} className="text-sm font-bold text-[var(--shop-blue)] hover:text-white">クリア</button>}</div>
-      <div className="divide-y divide-[var(--shop-border)]">{searchHistory.slice(0, 8).map((historyQuery) => <div key={historyQuery} className="flex items-center gap-3 py-4"><button type="button" onClick={() => openSearchResults(historyQuery)} className="min-w-0 flex-1 truncate text-left text-base font-bold text-white hover:text-[var(--shop-blue)]">{historyQuery}</button><button type="button" aria-label={`${historyQuery}の検索条件を保存`} onClick={() => requestLogin('検索条件を保存するにはログインが必要です。')} className="shrink-0 text-white hover:text-[var(--shop-accent)]"><Heart className="h-5 w-5" /></button><button type="button" aria-label={`${historyQuery}を検索`} onClick={() => openSearchResults(historyQuery)} className="shrink-0 text-[var(--shop-muted)] hover:text-white"><span aria-hidden="true" className="text-2xl leading-none">›</span></button></div>)}</div>
+      <div className="divide-y divide-[var(--shop-border)]">{searchHistory.slice(0, 8).map((historyQuery) => { const saved = savedQueries.includes(historyQuery); return <div key={historyQuery} className="flex items-center gap-3 py-4"><button type="button" onClick={() => openSearchResults(historyQuery)} className="min-w-0 flex-1 truncate text-left text-base font-bold text-white hover:text-[var(--shop-blue)]">{historyQuery}</button><button type="button" aria-label={saved ? `${historyQuery}の保存を解除` : `${historyQuery}の検索条件を保存`} onClick={() => toggleSavedQuery(historyQuery)} className={`shrink-0 hover:text-[var(--shop-accent)] ${saved ? 'text-[var(--shop-accent)]' : 'text-white'}`}><Heart className={`h-5 w-5 ${saved ? 'fill-current' : ''}`} /></button><button type="button" aria-label={`${historyQuery}を検索`} onClick={() => openSearchResults(historyQuery)} className="shrink-0 text-[var(--shop-muted)] hover:text-white"><span aria-hidden="true" className="text-2xl leading-none">›</span></button></div>; })}</div>
       {searchHistory.length === 0 && <p className="py-8 text-center text-sm text-[var(--shop-muted)]">検索履歴はありません</p>}
       <button type="button" onClick={() => setIsSearchOpen(true)} className="mt-4 text-xs font-bold text-[var(--shop-blue)] hover:text-white">検索のヘルプ</button></div>
     </div>}
