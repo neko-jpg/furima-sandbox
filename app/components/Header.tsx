@@ -17,10 +17,11 @@ const desktopCategories = [
 ] as const;
 
 export const ShopMark: React.FC<{ compact?: boolean }> = ({ compact = false }) => (
-  <span className="flex select-none items-center gap-2">
-    <span className="relative flex h-8 w-8 items-center justify-center rounded-[11px] bg-[var(--shop-accent)] text-lg font-black text-white shadow-[0_4px_12px_rgba(255,59,74,.28)]">F<span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-[#71d8ff]" /></span>
-    {!compact && <span className="text-[21px] font-black tracking-[-.04em] text-white">Furima Sandbox</span>}
-  </span>
+  <span
+    className={`furima-sandbox-logo ${compact ? 'furima-sandbox-logo--compact' : ''}`}
+    role="img"
+    aria-label="Furima Sandbox"
+  />
 );
 
 export const Header: React.FC = () => {
