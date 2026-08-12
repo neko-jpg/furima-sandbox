@@ -59,7 +59,7 @@ export const BuyModal: React.FC = () => {
         {isCompleted ? (
           <div className="space-y-4 overflow-y-auto p-6 text-center animate-fade-in">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400"><CheckCircle2 className="h-10 w-10" /></div>
-            <div><h3 className="text-lg font-black text-white">{isAuction ? '入札を受け付けました' : '購入手続きが完了しました'}</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">これはハッカソン用のシミュレーション画面です。</p></div>
+            <div><h3 className="text-lg font-black text-white">{isAuction ? '入札を受け付けました' : '購入手続きが完了しました'}</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">これはMercari AI Agent Hackathon for PM用のシミュレーション画面です。</p></div>
             <div className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3 text-left"><img src={buyingItem.images[0]} alt="" className="h-14 w-14 rounded-lg object-cover" /><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold text-white">{buyingItem.title}</div><div className="mt-0.5 text-sm font-black text-white">¥{(isAuction ? (buyingItem.currentBid ?? buyingItem.price) : buyingItem.price).toLocaleString()}</div>{isAuction && <div className="text-[10px] text-[var(--shop-muted)]">入札 {buyingItem.bidsCount ?? 0}件</div>}</div></div>
             <button type="button" onClick={handleClose} className="w-full rounded-xl bg-[var(--shop-accent)] py-3 text-xs font-bold text-white transition-colors hover:bg-[var(--shop-accent-strong)]" data-testid="complete-close-btn">商品詳細に戻る</button>
           </div>

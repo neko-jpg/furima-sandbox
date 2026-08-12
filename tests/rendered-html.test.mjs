@@ -19,7 +19,7 @@ test("server-renders the Furima Sandbox app shell", async () => {
   assert.match(html, /shop-app-container/);
   assert.match(html, /Furima Sandbox - /);
   assert.match(html, /Furima Sandboxの動くフリマUIモック/);
-  assert.match(html, /本サイトは「Mercari AI Agent Hackathon」提出用に作成したデモ・モックサイトです/);
+  assert.match(html, /本サイトは「Mercari AI Agent Hackathon for PM」提出用に作成したデモ・モックサイトです/);
   assert.doesNotMatch(html, /Starter Project|Building your site|SkeletonPreview/);
 });
 

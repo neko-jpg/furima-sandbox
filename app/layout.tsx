@@ -15,7 +15,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: 'Furima Sandbox - みつかる、つながる、フリマモック',
-  description: 'Furima Sandboxの動くフリマUIモック。Mercari AI Agent Hackathon提出用デモ。',
+  description: 'Furima Sandboxの動くフリマUIモック。Mercari AI Agent Hackathon for PM提出用デモ。',
   icons: {
     icon: '/favicon.svg',
   },
