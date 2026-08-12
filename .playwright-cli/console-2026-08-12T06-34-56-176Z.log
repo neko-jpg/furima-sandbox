@@ -1,0 +1,67 @@
+[     571ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:14337
+[  259330ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:14337
+[  353548ms] [ERROR] React has detected a change in the order of Hooks called by %s. This will lead to bugs and errors if not fixed. For more information, read the Rules of Hooks: https://react.dev/link/rules-of-hooks
+
+   Previous render            Next render
+   ------------------------------------------------------
+%s   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ BuyModal 1. useContext                 useContext
+2. useState                   useState
+3. useState                   useState
+4. undefined                  useEffect
+ @ http://localhost:3000/@vite/client:509
+[  353570ms] [ERROR] Error: Rendered more hooks than during the previous render.
+    at updateWorkInProgressHook (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:4327:12)
+    at updateEffectImpl (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:4851:15)
+    at Object.useEffect (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:13253:5)
+    at exports.useEffect (http://localhost:3000/node_modules/.vite/deps/react.js?v=9a8f1073:716:31)
+    at BuyModal (http://localhost:3000/app/components/modals/BuyModal.tsx?t=1786516849653:13:2)
+    at Object.react_stack_bottom_frame (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:12868:12)
+    at renderWithHooks (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:4213:19)
+    at updateFunctionComponent (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:5569:16)
+    at beginWork (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:6140:20)
+    at runWithFiberInDEV (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:851:66) @ http://localhost:3000/@vite/client:509
+[  353572ms] [ERROR] The above error occurred in a React component:
+
+    at BuyModal (http://localhost:3000/app/components/modals/BuyModal.tsx?t=1786516849653:10:56)
+    at div (<anonymous>)
+    at div (<anonymous>)
+    at MercariApp (http://localhost:3000/app/components/MercariApp.tsx?t=1786516747191:18:84)
+    at MercariProvider (http://localhost:3000/app/context/MercariContext.tsx?t=1786516747191:36:35)
+    at Home (<anonymous>)
+    at AwaitAppRenderDependencies [Server] (<anonymous>)
+    at BfcacheSlotBoundary (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:140:32)
+    at Slot (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:190:17)
+    at LayoutSegmentProvider (http://localhost:3000/node_modules/vinext/dist/shims/layout-segment-context.js?v=59655d37:41:34)
+    at RedirectErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:63:3)
+    at RedirectBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:97:29)
+    at AppRouterScrollTargetInner (http://localhost:3000/node_modules/vinext/dist/shims/app-router-scroll.js?v=59655d37:83:34)
+    at AppRouterScrollTarget (http://localhost:3000/node_modules/vinext/dist/shims/app-router-scroll.js?v=59655d37:135:34)
+    at Children (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:221:17)
+    at body (<anonymous>)
+    at html (<anonymous>)
+    at RootLayout [Server] (<anonymous>)
+    at default (about://React/Server/C:/development/%E3%83%A1%E3%83%AB%E3%82%AB%E3%83%AAUI_kit/app/layout.tsx?1:70:26)
+    at default (about://React/Server/C:/development/%E3%83%A1%E3%83%AB%E3%82%AB%E3%83%AAUI_kit/app/layout.tsx?1:70:26)
+    at BfcacheSlotBoundary (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:140:32)
+    at Slot (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:190:17)
+    at LayoutSegmentProvider (http://localhost:3000/node_modules/vinext/dist/shims/layout-segment-context.js?v=59655d37:41:34)
+    at ErrorBoundaryInner (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:107:3)
+    at ErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:159:26)
+    at ErrorBoundaryInner (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:107:3)
+    at GlobalErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:167:32)
+    at BfcacheSlotBoundary (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:140:32)
+    at Slot (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=59655d37:190:17)
+    at NavigationCommitSignal (http://localhost:3000/node_modules/vinext/dist/server/app-browser-navigation-controller.js?v=59655d37:232:36)
+    at RedirectErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:63:3)
+    at RedirectBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:97:29)
+    at AppRouterRedirectBridge (http://localhost:3000/node_modules/vinext/dist/server/app-browser-entry.js?v=59655d37:475:36)
+    at DevRecoveryBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:313:3)
+    at AppRouterScrollCommitProvider (http://localhost:3000/node_modules/vinext/dist/shims/app-router-scroll.js?v=59655d37:129:42)
+    at ErrorBoundaryInner (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:107:3)
+    at GlobalErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=59655d37:167:32)
+    at BrowserRoot (http://localhost:3000/node_modules/vinext/dist/server/app-browser-entry.js?v=59655d37:501:24) @ http://localhost:3000/@vite/client:509
+[  414939ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:14337
+[  691865ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=9a8f1073:14337
+[  964287ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3000/@vite/client:968
+[  978731ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=248e11fc:14337

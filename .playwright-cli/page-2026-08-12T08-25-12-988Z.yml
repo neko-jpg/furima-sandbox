@@ -1,0 +1,54 @@
+- generic [ref=f17e3]:
+  - banner [ref=f17e4]:
+    - generic [ref=f17e5]:
+      - generic:
+        - button "shopホームへ戻る" [ref=f17e7]:
+          - generic [ref=f17e8]:
+            - generic [ref=f17e9]: s
+            - generic [ref=f17e11]: shop
+        - button "商品を検索" [ref=f17e12]
+        - button "やることリスト" [ref=f17e17]:
+          - generic [ref=f17e21]: "2"
+  - main [ref=f17e22]:
+    - generic [ref=f17e1436]:
+      - generic [ref=f17e1437]:
+        - heading "出品" [level=1] [ref=f17e1439]
+        - generic [ref=f17e1440]:
+          - generic [ref=f17e1441]:
+            - img "出品はじめかたガイド" [ref=f17e1443]
+            - generic [ref=f17e1445]:
+              - paragraph [ref=f17e1446]: かんたん出品
+              - heading "写真からAIで入力" [level=2] [ref=f17e1447]
+              - paragraph [ref=f17e1448]: 商品画像を追加すると、商品名や説明の候補を自動で作成します。
+            - button "出品をはじめる" [ref=f17e1452]
+            - button "下書き一覧" [ref=f17e1456]
+          - complementary [ref=f17e1460]:
+            - heading "出品のヒント" [level=2] [ref=f17e1461]
+            - button "明るい場所で撮影 商品の全体がわかる写真を追加" [ref=f17e1462]:
+              - generic [ref=f17e1467]:
+                - generic [ref=f17e1468]: 明るい場所で撮影
+                - generic [ref=f17e1469]: 商品の全体がわかる写真を追加
+            - button "状態を正しく選択 傷や汚れは説明に書くと安心" [ref=f17e1472]:
+              - generic [ref=f17e1476]:
+                - generic [ref=f17e1477]: 状態を正しく選択
+                - generic [ref=f17e1478]: 傷や汚れは説明に書くと安心
+            - button "発送方法を確認 購入者にわかりやすく表示" [ref=f17e1481]:
+              - generic [ref=f17e1488]:
+                - generic [ref=f17e1489]: 発送方法を確認
+                - generic [ref=f17e1490]: 購入者にわかりやすく表示
+      - generic [ref=f17e1493]:
+        - generic [ref=f17e1494]:
+          - button "shopについて" [ref=f17e1496]
+          - button "ヘルプ" [ref=f17e1500]
+          - button "プライバシーと利用規約" [ref=f17e1504]
+        - generic [ref=f17e1507]:
+          - generic [ref=f17e1508]:
+            - generic [ref=f17e1509]: 𝕏
+            - generic [ref=f17e1510]: f
+            - generic [ref=f17e1511]: © shop, Inc.
+          - button "日本語" [ref=f17e1512]
+  - navigation "モバイルナビゲーション" [ref=f17e507]:
+    - button "ホーム" [ref=f17e508]
+    - button "お知らせ" [ref=f17e606]
+    - button "出品" [active] [ref=f17e519]
+    - button "マイページ" [ref=f17e524]
