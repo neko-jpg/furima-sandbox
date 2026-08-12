@@ -1,22 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Bookmark, CheckCircle2, ChevronLeft, Flag, Heart, MessageCircle, Send, Share2, ShieldCheck, Star, Truck, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
-import {
-  ChevronLeft,
-  Share2,
-  Heart,
-  MessageCircle,
-  Copy,
-  Bookmark,
-  Flag,
-  ShieldCheck,
-  ChevronRight,
-  Star,
-  CheckCircle2,
-  Send,
-} from 'lucide-react';
 import { Footer } from '../Footer';
 
 interface ItemDetailViewProps {
@@ -24,391 +11,96 @@ interface ItemDetailViewProps {
   onClose: () => void;
 }
 
-export const ItemDetailView: React.FC<ItemDetailViewProps> = ({
-  item,
-  onClose,
-}) => {
-  const { toggleLikeItem, addComment, setBuyingItem, items, setSelectedItem } =
-    useMercari();
+export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose }) => {
+  const { isAuthenticated, requestLogin, setLiked, setSaved, savedItemIds, addComment, startPurchase, items, openItem, isDeviceFrame } = useMercari();
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const [commentInput, setCommentInput] = useState('');
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<'profile' | 'shipping' | 'report' | null>(null);
+  const liked = Boolean(item.isLiked);
+  const saved = savedItemIds.includes(item.id);
+  const isUnavailable = Boolean(item.isSold);
+  const relatedItems = items.filter((candidate) => candidate.id !== item.id && !candidate.isAuction).slice(0, 6);
 
-  const handleCommentSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (commentInput.trim()) {
-      addComment(item.id, commentInput);
-      setCommentInput('');
-    }
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const showFeedback = (message: string) => {
+    setFeedback(message);
+    window.setTimeout(() => setFeedback(null), 2200);
+  };
+  const handleLike = () => {
+    const result = setLiked(item.id, !liked);
+    if (result.ok) showFeedback(liked ? 'いいねを解除しました' : 'いいねしました');
+  };
+  const handleSave = () => {
+    const result = setSaved(item.id, !saved);
+    if (result.ok) showFeedback(saved ? '保存を解除しました' : '商品を保存しました');
+  };
+  const handlePurchase = () => { if (!isUnavailable) startPurchase(item.id); };
+  const handleCommentSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const result = addComment(item.id, commentInput);
+    if (!result.ok) { setCommentError(result.message || 'コメントを送信できませんでした。'); return; }
+    setCommentInput('');
+    setCommentError(null);
   };
 
-  const isLiked = item.isLiked;
-
   return (
-    <div
-      className="fixed inset-0 z-50 bg-[#121212] flex flex-col overflow-y-auto no-scrollbar animate-fade-in"
-      data-testid="item-detail-view"
-    >
-      {/* Top Fixed Navigation Bar */}
-      <div className="sticky top-0 z-20 bg-[#1e1e1e]/90 backdrop-blur-md border-b border-[#2c2c2e] px-3 py-2.5 flex items-center justify-between">
-        <button
-          onClick={onClose}
-          className="p-1.5 hover:bg-[#2c2c2e] rounded-full transition-colors text-white"
-          data-testid="back-button"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
+    <div className="absolute inset-0 z-50 flex flex-col overflow-y-auto bg-[var(--shop-bg)] animate-fade-in" role="dialog" aria-modal="true" aria-labelledby="item-detail-title" data-testid="item-detail-view">
+      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--shop-border)] bg-[rgba(31,31,33,.94)] px-3 py-2.5 backdrop-blur-xl">
+        <button type="button" onClick={onClose} className="rounded-full p-1.5 text-white hover:bg-[var(--shop-surface-raised)]" aria-label="商品詳細を閉じる" data-testid="back-button"><ChevronLeft className="h-6 w-6" /></button>
+        <div className="flex items-center gap-1 text-white"><button type="button" onClick={() => showFeedback('商品ページのリンクをコピーしました')} aria-label="商品をシェア" className="rounded-full p-1.5 hover:bg-[var(--shop-surface-raised)]"><Share2 className="h-5 w-5" /></button><button type="button" onClick={handleLike} aria-label={liked ? 'いいねを外す' : 'いいねする'} className={`rounded-full p-1.5 hover:bg-[var(--shop-surface-raised)] ${liked ? 'text-[var(--shop-accent)]' : 'text-white'}`} data-testid="detail-like-btn"><Heart className={`h-5 w-5 ${liked ? 'fill-current' : ''}`} /></button></div>
+      </header>
 
-        <div className="flex items-center gap-3 text-white">
-          <button className="p-1.5 hover:bg-[#2c2c2e] rounded-full transition-colors">
-            <Share2 className="w-5 h-5" />
-          </button>
-          <button
-            onClick={() => toggleLikeItem(item.id)}
-            className={`p-1.5 hover:bg-[#2c2c2e] rounded-full transition-colors ${
-              isLiked ? 'text-[#ff0211]' : 'text-white'
-            }`}
-            data-testid="detail-like-btn"
-          >
-            <Heart className={`w-5 h-5 ${isLiked ? 'fill-[#ff0211]' : ''}`} />
-          </button>
-        </div>
-      </div>
+      <main className="mx-auto w-full max-w-[1120px] flex-1 px-4 pb-32 md:px-7">
+        <div className="flex items-center gap-1 overflow-x-auto py-4 text-xs text-[var(--shop-muted)] no-scrollbar"><button type="button" onClick={onClose} className="shrink-0 hover:text-white">ホーム</button><span>/</span><span className="shrink-0">{item.category.join(' / ')}</span></div>
+        <div className={`grid gap-6 pb-8 md:grid-cols-[minmax(0,1.08fr)_minmax(340px,.92fr)] md:gap-8 ${isDeviceFrame ? 'grid-cols-1' : ''}`}>
+          <section className={`min-w-0 ${isDeviceFrame ? '' : 'md:sticky md:top-20 md:self-start'}`}>
+            <div className="relative aspect-square overflow-hidden rounded-xl border border-[var(--shop-border)] bg-[#37373a] md:rounded-2xl"><img src={item.images[activeImageIdx] || item.images[0]} alt={item.title} className="h-full w-full object-cover" decoding="async" />{isUnavailable && <span className="absolute -left-9 top-7 z-10 w-32 -rotate-45 bg-[var(--shop-accent)] py-1.5 text-center text-xs font-black tracking-widest text-white shadow-lg">SOLD</span>}{item.isAuction && <span className="absolute left-3 top-3 rounded-full bg-[#00c853] px-3 py-1 text-xs font-black text-white">オークション</span>}<span className="absolute bottom-3 right-3 rounded-full bg-black/65 px-2.5 py-1 text-[11px] text-white">{activeImageIdx + 1} / {item.images.length}</span></div>
+            {item.images.length > 1 && <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">{item.images.map((image, index) => <button type="button" key={image} onClick={() => setActiveImageIdx(index)} className={`h-16 w-16 shrink-0 overflow-hidden rounded-lg border-2 ${activeImageIdx === index ? 'border-[var(--shop-accent)]' : 'border-transparent'}`} aria-label={`商品画像${index + 1}`}><img src={image} alt="" className="h-full w-full object-cover" /></button>)}</div>}
+          </section>
 
-      {/* Main Content Scroll Body */}
-      <div className="flex-1 space-y-4 pb-24">
-        {/* Product Photo Gallery */}
-        <div className="relative aspect-square bg-black w-full max-w-md mx-auto">
-          <img
-            src={item.images[activeImageIdx] || item.images[0]}
-            alt={item.title}
-            className="w-full h-full object-contain"
-          />
-
-          {item.isSold && (
-            <div className="absolute top-4 left-4 bg-[#ff0211] text-white text-sm font-black px-3 py-1 tracking-wider shadow-lg transform -rotate-12">
-              SOLD
-            </div>
-          )}
-
-          {item.images.length > 1 && (
-            <div className="absolute bottom-3 right-3 bg-black/70 backdrop-blur-xs text-white text-xs px-2.5 py-1 rounded-full font-medium">
-              {activeImageIdx + 1} / {item.images.length}
-            </div>
-          )}
+          <section className="min-w-0">
+            <div className="flex items-start justify-between gap-4"><h1 id="item-detail-title" className="text-lg font-bold leading-7 text-white md:text-2xl md:leading-9">{item.title}</h1><button type="button" onClick={handleSave} aria-label={saved ? '保存を解除' : '商品を保存'} className={`shrink-0 rounded-full p-2 hover:bg-[var(--shop-surface-raised)] ${saved ? 'text-[var(--shop-blue)]' : 'text-[var(--shop-muted)]'}`}><Bookmark className={`h-5 w-5 ${saved ? 'fill-current' : ''}`} /></button></div>
+            <div className="mt-4 flex items-end justify-between gap-3"><div><div className="text-3xl font-black tracking-tight text-white md:text-4xl">¥{(item.currentBid ?? item.price).toLocaleString()}</div>{item.isAuction && <p className="mt-1 text-xs text-[var(--shop-muted)]">現在の最高入札 {item.bidsCount ?? 0}件 ・ {item.timeLeft || '残り1日'}</p>}<p className="mt-1 text-xs text-[var(--shop-muted)]">税込・送料込み</p></div><div className="text-right text-xs text-[var(--shop-muted)]"><Heart className="mr-1 inline h-4 w-4" />{item.likesCount}<span className="ml-3"><MessageCircle className="mr-1 inline h-4 w-4" />{item.comments.length}</span></div></div>
+            <div className="my-5 grid grid-cols-2 divide-x divide-[var(--shop-border)] rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] py-3 text-center text-xs"><div><div className="text-[var(--shop-muted)]">配送料の負担</div><div className="mt-1 font-bold text-white">{item.shippingFee}</div></div><div><div className="text-[var(--shop-muted)]">発送まで</div><div className="mt-1 font-bold text-white">{item.shippingDays}</div></div></div>
+            <div className="space-y-2.5"><button type="button" onClick={handlePurchase} disabled={isUnavailable} className="w-full rounded-xl bg-[var(--shop-accent)] py-3.5 text-sm font-black text-white shadow-[0_8px_18px_rgba(255,59,74,.18)] transition-colors hover:bg-[var(--shop-accent-strong)] disabled:cursor-not-allowed disabled:bg-[#55555a]" data-testid="detail-purchase-btn">{isUnavailable ? 'SOLD' : item.isAuction ? '入札する' : '購入手続きへ'}</button><button type="button" onClick={handleLike} className={`w-full rounded-xl border py-3 text-sm font-bold transition-colors ${liked ? 'border-[var(--shop-accent)] text-[var(--shop-accent)]' : 'border-[var(--shop-border)] text-white hover:bg-[var(--shop-surface)]'}`}><Heart className={`mr-2 inline h-4 w-4 ${liked ? 'fill-current' : ''}`} />{liked ? 'いいね済み' : 'いいねする'}</button></div>
+            <div className="mt-6 border-t border-[var(--shop-border)] pt-5"><h2 className="mb-3 text-sm font-bold text-white">出品者</h2><div className="flex items-center gap-3"><img src={item.seller.avatar} alt="" className="h-12 w-12 rounded-full object-cover" /><div className="min-w-0 flex-1"><div className="flex items-center gap-1 text-sm font-bold text-white">{item.seller.name}{item.seller.isVerified && <CheckCircle2 className="h-4 w-4 text-[var(--shop-blue)]" />}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-muted)]"><RatingStars rating={item.seller.rating} /><span className="ml-1">{item.seller.rating.toFixed(1)}（{item.seller.ratingsCount}件）</span></div></div><button type="button" onClick={() => setSheet('profile')} className="rounded-lg border border-[var(--shop-border)] px-3 py-2 text-xs font-bold text-white hover:bg-[var(--shop-surface)]">プロフィール</button></div></div>
+          </section>
         </div>
 
-        {/* Image Thumbnails */}
-        {item.images.length > 1 && (
-          <div className="flex items-center gap-2 px-4 overflow-x-auto no-scrollbar">
-            {item.images.map((img, idx) => (
-              <button
-                key={idx}
-                onClick={() => setActiveImageIdx(idx)}
-                className={`relative w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${
-                  activeImageIdx === idx ? 'border-[#ff0211]' : 'border-transparent opacity-60'
-                }`}
-              >
-                <img src={img} alt="" className="w-full h-full object-cover" />
-              </button>
-            ))}
+        <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="min-w-0 space-y-6">
+            <section className="border-t border-[var(--shop-border)] pt-5"><h2 className="mb-3 text-base font-bold text-white">商品説明</h2><p className="whitespace-pre-wrap text-sm leading-7 text-[var(--shop-text)]">{item.description}</p></section>
+            <section className="border-t border-[var(--shop-border)] pt-5"><h2 className="mb-3 text-base font-bold text-white">商品情報</h2><dl className="divide-y divide-[var(--shop-border)] rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] text-sm"><InfoRow label="カテゴリー" value={item.category.join(' / ')} /><InfoRow label="商品の状態" value={item.condition} /><InfoRow label="配送料の負担" value={item.shippingFee} /><InfoRow label="配送の方法" value={item.shippingMethod} /><InfoRow label="発送元の地域" value={item.origin} /></dl></section>
+            <section className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4"><div className="flex items-start gap-3"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[var(--shop-blue)]" /><div><h2 className="text-sm font-bold text-white">shopの安心サポート</h2><p className="mt-1 text-xs leading-5 text-[var(--shop-muted)]">支払いと発送をサポート。困ったときはいつでも問い合わせできます。</p></div></div></section>
+            <section className="border-t border-[var(--shop-border)] pt-5"><div className="mb-3 flex items-center justify-between"><h2 className="text-base font-bold text-white">コメント（{item.comments.length}）</h2><button type="button" onClick={() => setSheet('report')} className="text-[var(--shop-muted)]" aria-label="コメントを報告"><Flag className="h-4 w-4" /></button></div>{isAuthenticated ? <form onSubmit={handleCommentSubmit} className="mb-4 flex gap-2"><label htmlFor="comment-input" className="sr-only">コメント</label><input id="comment-input" value={commentInput} onChange={(event) => setCommentInput(event.target.value)} placeholder="コメントを入力" className="min-w-0 flex-1 rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] px-3 py-2.5 text-sm text-white outline-none placeholder:text-[var(--shop-subtle)] focus:border-[var(--shop-blue)]" data-testid="comment-input" /><button type="submit" className="rounded-lg bg-[var(--shop-blue)] px-3 text-white" aria-label="コメントを送信"><Send className="h-4 w-4" /></button></form> : <div className="mb-4 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4 text-center"><p className="text-sm text-[var(--shop-muted)]">コメントするにはログインが必要です。</p><button type="button" onClick={() => requestLogin('コメントするにはログインが必要です。')} className="mt-3 rounded-lg border border-[var(--shop-blue)] px-5 py-2 text-sm font-bold text-[var(--shop-blue)]">ログインしてコメント</button></div>}{commentError && <p className="mb-3 text-xs text-red-300" role="alert">{commentError}</p>}<div className="space-y-4">{item.comments.length === 0 ? <p className="py-5 text-center text-xs text-[var(--shop-muted)]">まだコメントはありません。</p> : item.comments.map((comment) => <div key={comment.id} className="flex gap-3"><img src={comment.userAvatar} alt="" className="h-8 w-8 rounded-full object-cover" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><span className="text-xs font-bold text-white">{comment.userName}</span><span className="text-[10px] text-[var(--shop-subtle)]">{comment.date}</span></div><p className="mt-1 text-sm leading-6 text-[var(--shop-text)]">{comment.text}</p></div></div>)}</div></section>
           </div>
-        )}
-
-        {/* Title & Price */}
-        <div className="px-4 space-y-2">
-          <h1 className="text-base sm:text-lg font-bold text-white leading-snug">{item.title}</h1>
-
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-black text-white">
-              ¥{item.price.toLocaleString()}
-            </span>
-            <span className="text-xs text-gray-400 font-medium">(税込) 送料込み</span>
-          </div>
+          <aside className="space-y-4"><section><h2 className="mb-3 text-sm font-bold text-white">おすすめの商品</h2><div className="grid grid-cols-2 gap-2">{relatedItems.map((related) => <button type="button" key={related.id} onClick={() => openItem(related.id)} className="overflow-hidden rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] text-left hover:border-[var(--shop-blue)]"><img src={related.images[0]} alt={related.title} className="aspect-square w-full object-cover" loading="lazy" /><div className="p-2"><p className="line-clamp-2 text-[11px] leading-4 text-white">{related.title}</p><p className="mt-1 text-xs font-bold text-white">¥{related.price.toLocaleString()}</p></div></button>)}</div></section><button type="button" onClick={() => setSheet('shipping')} className="flex w-full items-center justify-between rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4 text-left text-sm font-bold text-white"><span className="flex items-center gap-2"><Truck className="h-4 w-4 text-[var(--shop-blue)]" />配送について</span><X className="h-4 w-4 rotate-45 text-[var(--shop-muted)]" /></button></aside>
         </div>
+      </main>
 
-        {/* Shipping Method Information Box */}
-        <div className="mx-4 p-3 bg-[#1e1e1e] rounded-xl border border-[#2c2c2e] flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 bg-emerald-500/20 text-emerald-400 rounded-md flex items-center justify-center font-bold">
-              📦
-            </div>
-            <div>
-              <span className="bg-emerald-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5">
-                {item.shippingMethod.split(' ')[0]}
-              </span>
-              <span className="text-gray-300">
-                この商品はネコポス(送料 ¥210)で配送されました
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Interaction Action Buttons */}
-        <div className="px-4 grid grid-cols-5 gap-2 text-center text-[11px] text-gray-300 py-2 border-y border-[#2c2c2e]">
-          <button
-            onClick={() => toggleLikeItem(item.id)}
-            className={`flex flex-col items-center justify-center p-1.5 rounded-lg hover:bg-[#1e1e1e] transition-colors ${
-              isLiked ? 'text-[#ff0211]' : ''
-            }`}
-          >
-            <Heart className={`w-5 h-5 mb-0.5 ${isLiked ? 'fill-[#ff0211]' : ''}`} />
-            <span>{item.likesCount}</span>
-          </button>
-
-          <button className="flex flex-col items-center justify-center p-1.5 rounded-lg hover:bg-[#1e1e1e] transition-colors">
-            <MessageCircle className="w-5 h-5 mb-0.5 text-gray-300" />
-            <span>{item.comments.length}</span>
-          </button>
-
-          <button className="flex flex-col items-center justify-center p-1.5 rounded-lg hover:bg-[#1e1e1e] transition-colors">
-            <Copy className="w-5 h-5 mb-0.5 text-gray-300" />
-            <span>コピー出品</span>
-          </button>
-
-          <button className="flex flex-col items-center justify-center p-1.5 rounded-lg hover:bg-[#1e1e1e] transition-colors">
-            <Bookmark className="w-5 h-5 mb-0.5 text-gray-300" />
-            <span>保存</span>
-          </button>
-
-          <button className="flex flex-col items-center justify-center p-1.5 rounded-lg hover:bg-[#1e1e1e] transition-colors">
-            <Flag className="w-5 h-5 mb-0.5 text-gray-300" />
-            <span>通報</span>
-          </button>
-        </div>
-
-        {/* Inline Buy/Transaction Button */}
-        <div className="px-4 py-2">
-          {item.isSold ? (
-            <button
-              disabled
-              className="w-full bg-[#1e1e1e] border border-[#ff0211]/50 text-[#ff0211] font-bold py-3.5 rounded-xl text-center text-sm"
-              data-testid="sold-out-button"
-            >
-              取引画面を表示する
-            </button>
-          ) : (
-            <button
-              onClick={() => setBuyingItem(item)}
-              className="w-full bg-[#ff0211] hover:bg-[#e5020f] active:scale-[0.99] text-white font-black text-base py-3.5 rounded-xl shadow-lg transition-all text-center"
-              data-testid="buy-button"
-            >
-              購入手続きへ
-            </button>
-          )}
-        </div>
-
-        {/* Description Section */}
-        <div className="px-4 pt-4 border-t border-[#2c2c2e] space-y-2">
-          <h2 className="font-bold text-sm text-gray-200">商品の説明</h2>
-          <p className="text-xs sm:text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">
-            {item.description}
-          </p>
-          <div className="text-xs text-gray-500 pt-1">🕒 半年以上前</div>
-        </div>
-
-        {/* Item Info Table */}
-        <div className="px-4 pt-4 border-t border-[#2c2c2e] space-y-3">
-          <h2 className="font-bold text-sm text-gray-200">商品の情報</h2>
-          <div className="bg-[#1e1e1e] rounded-xl overflow-hidden border border-[#2c2c2e] text-xs">
-            <div className="flex border-b border-[#2c2c2e] p-3">
-              <span className="w-28 text-gray-400">カテゴリー</span>
-              <div className="flex-1 text-blue-400 space-y-0.5">
-                {item.category.map((cat, i) => (
-                  <div key={i} className="flex items-center gap-1">
-                    <span>{cat}</span>
-                    {i < item.category.length - 1 && <ChevronRight className="w-3 h-3 text-gray-600" />}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex border-b border-[#2c2c2e] p-3">
-              <span className="w-28 text-gray-400">商品の状態</span>
-              <span className="flex-1 text-gray-200">{item.condition}</span>
-            </div>
-
-            <div className="flex border-b border-[#2c2c2e] p-3">
-              <span className="w-28 text-gray-400">配送料の負担</span>
-              <span className="flex-1 text-gray-200">{item.shippingFee}</span>
-            </div>
-
-            <div className="flex border-b border-[#2c2c2e] p-3">
-              <span className="w-28 text-gray-400">配送の方法</span>
-              <span className="flex-1 text-gray-200 flex items-center gap-1.5">
-                {item.shippingMethod}
-                <span className="bg-[#2c2c2e] text-[10px] text-gray-300 px-1.5 py-0.5 rounded">
-                  匿名配送
-                </span>
-              </span>
-            </div>
-
-            <div className="flex border-b border-[#2c2c2e] p-3">
-              <span className="w-28 text-gray-400">発送元の地域</span>
-              <span className="flex-1 text-gray-200">{item.origin}</span>
-            </div>
-
-            <div className="flex p-3">
-              <span className="w-28 text-gray-400">発送までの日数</span>
-              <span className="flex-1 text-gray-200">{item.shippingDays}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Safety Notice Cards (1-to-1 matching) */}
-        <div className="px-4 space-y-2">
-          <div className="p-3 bg-blue-950/30 border border-blue-800/40 rounded-xl flex items-center justify-between text-xs text-blue-300">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-blue-400" />
-              <span>商品の状態を確認してください</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-blue-400" />
-          </div>
-
-          <div className="p-3 bg-blue-950/30 border border-blue-800/40 rounded-xl flex items-center justify-between text-xs text-blue-300">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-blue-400" />
-              <span>メルカリ安心への取り組み</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-blue-400" />
-          </div>
-        </div>
-
-        {/* Seller Profile */}
-        <div className="px-4 pt-4 border-t border-[#2c2c2e] space-y-3">
-          <h2 className="font-bold text-sm text-gray-200">出品者</h2>
-          <div className="bg-[#1e1e1e] p-3.5 rounded-xl border border-[#2c2c2e] flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <img
-                src={item.seller.avatar}
-                alt={item.seller.name}
-                className="w-12 h-12 rounded-full object-cover border border-[#2c2c2e]"
-              />
-              <div>
-                <div className="font-bold text-sm text-white">{item.seller.name}</div>
-                <div className="flex items-center gap-1.5 text-xs text-yellow-400 mt-0.5">
-                  <div className="flex">
-                    {[...Array(5)].map((_, i) => (
-                      <Star key={i} className="w-3.5 h-3.5 fill-yellow-400 text-yellow-400" />
-                    ))}
-                  </div>
-                  <span className="text-white font-bold">{item.seller.ratingsCount}</span>
-                </div>
-                {item.seller.isVerified && (
-                  <div className="flex items-center gap-1 text-[11px] text-emerald-400 mt-0.5">
-                    <CheckCircle2 className="w-3 h-3" /> 本人確認済
-                  </div>
-                )}
-                {item.seller.level && (
-                  <div className="text-[10px] text-blue-400 mt-0.5 font-bold">
-                    出品者レベル {item.seller.level}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <ChevronRight className="w-5 h-5 text-gray-500" />
-          </div>
-        </div>
-
-        {/* Comments */}
-        <div className="px-4 pt-4 border-t border-[#2c2c2e] space-y-3">
-          <h2 className="font-bold text-sm text-gray-200">
-            コメント ({item.comments.length})
-          </h2>
-
-          <div className="space-y-3">
-            {item.comments.map((c) => (
-              <div key={c.id} className="bg-[#1e1e1e] p-3 rounded-xl border border-[#2c2c2e] space-y-1.5">
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
-                    <img
-                      src={c.userAvatar}
-                      alt=""
-                      className="w-6 h-6 rounded-full object-cover"
-                    />
-                    <span className="font-bold text-gray-200">{c.userName}</span>
-                  </div>
-                  <span className="text-gray-500 text-[10px]">{c.date}</span>
-                </div>
-                <p className="text-xs text-gray-300 pl-8 leading-relaxed">{c.text}</p>
-              </div>
-            ))}
-          </div>
-
-          <div className="text-xs text-gray-500 italic text-center py-1">
-            ※売り切れのためコメントできません
-          </div>
-
-          {/* Comment Form */}
-          {!item.isSold && (
-            <form onSubmit={handleCommentSubmit} className="flex gap-2 pt-2">
-              <input
-                type="text"
-                value={commentInput}
-                onChange={(e) => setCommentInput(e.target.value)}
-                placeholder="質問やコメントを入力..."
-                className="flex-1 bg-[#2a2a2d] border border-[#3a3a3c] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
-                data-testid="comment-input"
-              />
-              <button
-                type="submit"
-                className="bg-[#ff0211] hover:bg-[#e5020f] text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
-                data-testid="comment-submit-btn"
-              >
-                <Send className="w-3.5 h-3.5" /> 送信
-              </button>
-            </form>
-          )}
-        </div>
-
-        {/* Similar / Recommended Items Grid */}
-        <div className="px-4 pt-4 border-t border-[#2c2c2e] space-y-3">
-          <h2 className="font-bold text-sm text-gray-200">この商品に近い商品</h2>
-          <div className="grid grid-cols-3 gap-2">
-            {items
-              .filter((i) => i.id !== item.id)
-              .slice(0, 6)
-              .map((rec) => (
-                <div
-                  key={rec.id}
-                  onClick={() => setSelectedItem(rec)}
-                  className="bg-[#1e1e1e] rounded-lg overflow-hidden border border-[#2c2c2e] cursor-pointer"
-                >
-                  <img
-                    src={rec.images[0]}
-                    alt=""
-                    className="aspect-square w-full object-cover"
-                  />
-                  <div className="p-1.5">
-                    <div className="text-xs font-bold text-white">
-                      ¥{rec.price.toLocaleString()}
-                    </div>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </div>
-
-        <Footer />
-      </div>
-
-      {/* Bottom Sticky Action Bar (Matching images.png) */}
-      <div className="fixed bottom-0 left-0 right-0 z-30 bg-[#1e1e1e]/95 backdrop-blur-md border-t border-[#2c2c2e] p-3 flex items-center gap-3">
-        <button
-          onClick={() => setBuyingItem(item)}
-          className="flex-1 bg-white hover:bg-gray-100 text-slate-900 font-bold py-3 rounded-xl text-xs text-center transition-colors"
-        >
-          あと払いする
-        </button>
-
-        <button
-          onClick={() => setBuyingItem(item)}
-          className="flex-1 bg-[#ff0211] hover:bg-[#e5020f] active:scale-[0.99] text-white font-black py-3 rounded-xl text-xs text-center shadow-md transition-all"
-          data-testid="bottom-buy-btn"
-        >
-          購入手続きへ
-        </button>
-      </div>
+      {feedback && <div className="sticky bottom-[74px] z-30 mx-auto w-fit max-w-[calc(100%-32px)] rounded-full border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] px-4 py-2 text-xs font-bold text-white shadow-xl" role="status">{feedback}</div>}
+      {sheet && <DetailSheet type={sheet} seller={item.seller.name} onClose={() => setSheet(null)} />}
+      <div className="sticky bottom-0 z-20 border-t border-[var(--shop-border)] bg-[rgba(31,31,33,.96)] px-4 py-3 backdrop-blur-xl"><div className="mx-auto flex max-w-[1120px] items-center gap-2"><button type="button" onClick={handleLike} className="hidden w-16 rounded-lg border border-[var(--shop-border)] py-2.5 text-[var(--shop-muted)] sm:block" aria-label="いいね"><Heart className={`mx-auto h-5 w-5 ${liked ? 'fill-current text-[var(--shop-accent)]' : ''}`} /></button><button type="button" disabled={isUnavailable} onClick={handlePurchase} className="flex-1 rounded-lg bg-[var(--shop-accent)] py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#55555a]" data-testid="fixed-purchase-btn">{isUnavailable ? 'SOLD' : item.isAuction ? '入札する' : '購入手続きへ'}</button></div></div>
+      <Footer />
     </div>
   );
+};
+
+const InfoRow: React.FC<{ label: string; value: string }> = ({ label, value }) => <div className="grid grid-cols-[110px_1fr] gap-3 px-4 py-3"><dt className="text-[var(--shop-muted)]">{label}</dt><dd className="text-right text-white">{value}</dd></div>;
+const RatingStars: React.FC<{ rating: number }> = ({ rating }) => <span className="inline-flex text-[#ffc107]">{[0, 1, 2, 3, 4].map((index) => <Star key={index} className={`h-3.5 w-3.5 ${index + 0.5 <= rating ? 'fill-current' : ''}`} />)}</span>;
+
+const DetailSheet: React.FC<{ type: 'profile' | 'shipping' | 'report'; seller: string; onClose: () => void }> = ({ type, seller, onClose }) => {
+  const content = type === 'profile'
+    ? { title: `${seller}のプロフィール`, body: '評価・出品履歴・本人確認状況を確認できます。' }
+    : type === 'shipping'
+      ? { title: '配送について', body: '商品ページに表示されている配送方法と発送までの日数をご確認ください。' }
+      : { title: '商品を報告', body: '不適切な商品や説明を見つけた場合の報告フォームです。' };
+  return <div className="absolute inset-0 z-[80] flex items-end justify-center bg-black/70 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={content.title}><div className="w-full max-w-lg rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl animate-slide-up"><div className="flex items-center justify-between"><h2 className="text-base font-black text-white">{content.title}</h2><button type="button" onClick={onClose} aria-label="詳細を閉じる" className="rounded-full p-1 text-[var(--shop-muted)]"><X className="h-5 w-5" /></button></div><p className="mt-5 rounded-xl bg-[var(--shop-surface-raised)] p-4 text-sm leading-6 text-[var(--shop-muted)]">{content.body}</p><button type="button" onClick={onClose} className="mt-5 w-full rounded-xl bg-[var(--shop-accent)] py-3 text-sm font-black text-white">閉じる</button></div></div>;
 };

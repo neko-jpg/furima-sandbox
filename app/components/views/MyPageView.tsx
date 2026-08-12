@@ -1,198 +1,36 @@
 'use client';
 
 import React from 'react';
+import { ChevronRight, CreditCard, FileText, HelpCircle, Heart, History, PackageCheck, Settings, ShieldCheck, ShoppingBag, Users, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
-import {
-  ChevronRight,
-  ShieldCheck,
-  Heart,
-  History,
-  Users,
-  PackageCheck,
-  ShoppingBag,
-  FileText,
-  CreditCard,
-  Settings,
-  HelpCircle,
-} from 'lucide-react';
 import { Footer } from '../Footer';
 
 export const MyPageView: React.FC = () => {
-  const { user, items, setMainTab, setHomeTab } = useMercari();
-
-  const likedCount = items.filter((i) => i.isLiked).length;
+  const { user, items, navigateToTab, setHomeTab, isDeviceFrame } = useMercari();
+  const likedCount = items.filter((item) => item.isLiked).length;
+  const [activeMenu, setActiveMenu] = React.useState<string | null>(null);
+  const goToMyList = () => { navigateToTab('home'); setHomeTab('mylist'); };
 
   return (
-    <div className="flex-1 overflow-y-auto no-scrollbar bg-[#121212] flex flex-col justify-between" data-testid="mypage-view">
-      <div>
-        {/* Title Bar */}
-        <div className="bg-[#1e1e1e] border-b border-[#2c2c2e] px-4 py-3 text-center">
-          <h1 className="font-extrabold text-base text-white">マイページ</h1>
-        </div>
-
-        {/* User Header Profile */}
-        <div className="p-4 space-y-4 pb-6">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <img
-                src={user.avatar}
-                alt={user.name}
-                className="w-14 h-14 rounded-full object-cover border-2 border-[#2c2c2e]"
-              />
-            </div>
-
-            <div className="flex-1">
-              <div className="flex items-center gap-1 font-bold text-base text-white">
-                <span>{user.name}</span>
-                <ChevronRight className="w-4 h-4 text-gray-400" />
-              </div>
-
-              <div className="flex items-center gap-2 mt-1 text-xs">
-                <span className="text-yellow-400 font-bold flex items-center gap-0.5">
-                  ★ {user.rating} ({user.ratingsCount})
-                </span>
-
-                <button className="flex items-center gap-1 text-blue-400 bg-blue-950/40 border border-blue-800/40 px-2 py-0.5 rounded-full text-[11px] font-bold">
-                  <ShieldCheck className="w-3 h-3" />
-                  本人確認する
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Balance Card */}
-          <div className="bg-[#1e1e1e] p-4 rounded-xl border border-[#2c2c2e] space-y-3">
-            <div className="flex items-center justify-between border-b border-[#2c2c2e] pb-3">
-              <div>
-                <span className="text-xs text-gray-400 font-medium">売上金</span>
-                <div className="text-lg font-black text-white">
-                  ¥{user.salesBalance.toLocaleString()}
-                </div>
-              </div>
-              <button className="text-xs text-blue-400 font-bold hover:underline">振込申請</button>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-xs text-gray-400 font-medium">ポイント</span>
-                <div className="text-sm font-bold text-white flex items-center gap-1">
-                  <span className="w-4 h-4 bg-[#ff0211] text-white rounded-full flex items-center justify-center text-[9px] font-black">
-                    P
-                  </span>
-                  <span>P {user.points}</span>
-                </div>
-              </div>
-
-              <button className="text-xs text-red-400 bg-red-950/30 border border-red-800/40 px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
-                dポイント連携
-              </button>
-            </div>
-          </div>
-
-          {/* Product Management Section */}
-          <div className="space-y-2 pt-2">
-            <h2 className="font-bold text-sm text-gray-300">商品管理</h2>
-
-            <div className="bg-[#1e1e1e] rounded-xl border border-[#2c2c2e] divide-y divide-[#2c2c2e] text-xs font-medium">
-              <div
-                onClick={() => {
-                  setMainTab('home');
-                  setHomeTab('mylist');
-                }}
-                className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <Heart className="w-4 h-4 text-[#ff0211]" />
-                  <span className="text-gray-200">いいね！一覧</span>
-                </div>
-                <div className="flex items-center gap-1 text-gray-400">
-                  <span>{likedCount}</span>
-                  <ChevronRight className="w-4 h-4 text-gray-500" />
-                </div>
-              </div>
-
-              <div
-                onClick={() => {
-                  setMainTab('home');
-                  setHomeTab('mylist');
-                }}
-                className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <History className="w-4 h-4 text-blue-400" />
-                  <span className="text-gray-200">閲覧履歴</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <Users className="w-4 h-4 text-emerald-400" />
-                  <span className="text-gray-200">フォローリスト</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <PackageCheck className="w-4 h-4 text-amber-400" />
-                  <span className="text-gray-200">出品した商品</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <ShoppingBag className="w-4 h-4 text-purple-400" />
-                  <span className="text-gray-200">購入した商品</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <FileText className="w-4 h-4 text-gray-400" />
-                  <span className="text-gray-200">下書き一覧</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-            </div>
-          </div>
-
-          {/* Settings & Help */}
-          <div className="space-y-2 pt-2">
-            <h2 className="font-bold text-sm text-gray-300">設定・ヘルプ</h2>
-
-            <div className="bg-[#1e1e1e] rounded-xl border border-[#2c2c2e] divide-y divide-[#2c2c2e] text-xs font-medium">
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <CreditCard className="w-4 h-4 text-gray-400" />
-                  <span className="text-gray-200">支払い方法</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <Settings className="w-4 h-4 text-gray-400" />
-                  <span className="text-gray-200">個人情報設定</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-
-              <div className="p-3.5 flex items-center justify-between hover:bg-[#252528] cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <HelpCircle className="w-4 h-4 text-gray-400" />
-                  <span className="text-gray-200">ヘルプ・ガイド</span>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              </div>
-            </div>
-          </div>
-        </div>
+    <div className="shop-scrollbar flex-1 overflow-y-auto bg-[var(--shop-bg)]" data-testid="mypage-view">
+      <div className="mx-auto max-w-[1080px] px-4 pb-10 md:px-7">
+        <div className="border-b border-[var(--shop-border)] py-5"><h1 className="text-lg font-black text-white">マイページ</h1></div>
+        <div className={`grid gap-5 py-5 ${isDeviceFrame ? '' : 'lg:grid-cols-[300px_1fr]'}`}>
+          <aside className="space-y-4">
+            <div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5"><div className="flex items-center gap-3"><img src={user.avatar} alt={user.name} className="h-14 w-14 rounded-full object-cover" /><div><p className="font-bold text-white">{user.name}<ChevronRight className="ml-1 inline h-4 w-4 text-[var(--shop-muted)]" /></p><p className="mt-1 text-xs text-[var(--shop-warning)]">★ {user.rating.toFixed(1)}（{user.ratingsCount}）</p></div></div><div className="mt-4 flex items-center gap-2 text-xs font-bold text-[var(--shop-success)]"><ShieldCheck className="h-4 w-4" />本人確認済み</div></div>
+            <div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5"><p className="text-xs text-[var(--shop-muted)]">売上金</p><p className="mt-1 text-2xl font-black text-white">¥{user.salesBalance.toLocaleString()}</p><div className="mt-4 border-t border-[var(--shop-border)] pt-4"><p className="text-xs text-[var(--shop-muted)]">ポイント</p><p className="mt-1 font-bold text-white">P {user.points}</p><p className="mt-2 text-xs font-bold text-[var(--shop-success)]">{user.hasDPointLinked ? 'ポイント連携済み' : 'ポイントを連携する'}</p></div></div>
+          </aside>
+          <div className="space-y-5">
+            <ManagementGroup title="商品管理"><ManagementButton icon={<Heart className="text-[var(--shop-accent)]" />} label="いいねした商品" value={String(likedCount)} onClick={goToMyList} /><ManagementButton icon={<History className="text-[var(--shop-blue)]" />} label="閲覧履歴" onClick={goToMyList} /><ManagementButton icon={<Users className="text-[var(--shop-success)]" />} label="フォローリスト" onClick={() => setActiveMenu('フォローリスト')} /><ManagementButton icon={<PackageCheck className="text-[var(--shop-warning)]" />} label="出品した商品" onClick={() => setActiveMenu('出品した商品')} /><ManagementButton icon={<ShoppingBag className="text-purple-400" />} label="購入した商品" onClick={() => setActiveMenu('購入した商品')} /><ManagementButton icon={<FileText className="text-[var(--shop-muted)]" />} label="下書き一覧" onClick={() => setActiveMenu('下書き一覧')} /></ManagementGroup>
+            <ManagementGroup title="設定・ヘルプ"><ManagementButton icon={<CreditCard className="text-[var(--shop-muted)]" />} label="支払い方法" onClick={() => setActiveMenu('支払い方法')} /><ManagementButton icon={<Settings className="text-[var(--shop-muted)]" />} label="アカウント設定" onClick={() => setActiveMenu('アカウント設定')} /><ManagementButton icon={<HelpCircle className="text-[var(--shop-muted)]" />} label="ヘルプ・ガイド" onClick={() => setActiveMenu('ヘルプ・ガイド')} /></ManagementGroup>
       </div>
-
+      {activeMenu && <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`${activeMenu}の詳細`}><div className="w-full max-w-md rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="font-black text-white">{activeMenu}</h2><button type="button" onClick={() => setActiveMenu(null)} aria-label="詳細を閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div><p className="mt-5 rounded-lg bg-[var(--shop-surface-raised)] p-4 text-sm leading-6 text-[var(--shop-muted)]">この画面はshopのハッカソン用モックです。実際のアカウントや決済情報は変更せず、画面遷移と操作感だけを体験できます。</p><button type="button" onClick={() => setActiveMenu(null)} className="mt-5 w-full rounded-lg bg-[var(--shop-accent)] py-3 text-sm font-black text-white">閉じる</button></div></div>}
+    </div>
+      </div>
       <Footer />
     </div>
   );
 };
+
+const ManagementGroup: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => <section><h2 className="mb-2 text-sm font-bold text-white">{title}</h2><div className="divide-y divide-[var(--shop-border)] overflow-hidden rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)]">{children}</div></section>;
+const ManagementButton: React.FC<{ icon: React.ReactNode; label: string; value?: string; onClick?: () => void }> = ({ icon, label, value, onClick }) => <button type="button" onClick={onClick} className="flex w-full items-center justify-between px-4 py-4 text-left text-sm text-white transition-colors hover:bg-[var(--shop-surface-raised)]"><span className="flex items-center gap-3">{icon}{label}</span><span className="flex items-center gap-2 text-xs text-[var(--shop-muted)]">{value}<ChevronRight className="h-4 w-4" /></span></button>;

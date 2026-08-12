@@ -14,8 +14,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'メルカリ - 日本最大のフリマサービス (UI Mock)',
-  description: 'メルカリの動くUIモックアプリ。ハッカソンAIエージェント連携対応。',
+  title: 'Furima Sandbox - みつかる、つながる、フリマモック',
+  description: 'Furima Sandboxの動くフリマUIモック。Mercari AI Agent Hackathon提出用デモ。',
   icons: {
     icon: '/favicon.svg',
   },

@@ -10,21 +10,34 @@ import { ListingView } from './views/ListingView';
 import { MyPageView } from './views/MyPageView';
 import { ItemDetailView } from './views/ItemDetailView';
 import { SearchView } from './views/SearchView';
+import { CategoryView } from './views/CategoryView';
+import { ShopView } from './views/ShopView';
+import { ShopCategoryView, isShopCategoryRoute } from './views/ShopCategoryView';
+import { BrowseDirectoryView, isBrowseDirectoryRoute } from './views/BrowseDirectoryView';
 import { BuyModal } from './modals/BuyModal';
+import { LoginPromptModal } from './modals/LoginPromptModal';
+import { DemoNoticeBar } from './DemoNotice';
 
 export const MercariApp: React.FC = () => {
   const {
     mainTab,
     selectedItem,
-    setSelectedItem,
+    setSelectedItemId,
+    categoryName,
     isSearchOpen,
+    searchQuery,
     isDeviceFrame,
   } = useMercari();
 
   const renderCurrentView = () => {
+    if (isSearchOpen && searchQuery.trim()) return <SearchView />;
     switch (mainTab) {
       case 'home':
         return <HomeView />;
+      case 'category':
+        if (isBrowseDirectoryRoute(categoryName)) return <BrowseDirectoryView mode={categoryName === 'ブランド一覧' ? 'brand' : 'category'} />;
+        if (isShopCategoryRoute(categoryName) || categoryName === 'ショップカテゴリ一覧') return <ShopCategoryView key={categoryName ?? 'ショップカテゴリ一覧'} />;
+        return categoryName === 'ショップ' ? <ShopView /> : <CategoryView />;
       case 'notifications':
         return <NotificationView />;
       case 'sell':
@@ -37,21 +50,22 @@ export const MercariApp: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-0 sm:p-4 font-sans select-none overflow-x-hidden">
-      {/* Responsive App Frame Container */}
+    <div className="min-h-screen bg-[var(--shop-bg)] font-sans text-white">
       <div
-        className={`w-full bg-[#121212] flex flex-col relative overflow-hidden transition-all duration-300 ${
+        className={`mx-auto flex w-full flex-col bg-[var(--shop-bg)] transition-all duration-300 ${
           isDeviceFrame
-            ? 'max-w-[430px] h-[100dvh] sm:h-[880px] sm:rounded-[40px] sm:border-[10px] border-[#222225] shadow-2xl'
-            : 'max-w-4xl h-[100dvh] sm:h-[90vh] sm:rounded-2xl sm:border border-[#2c2c2e] shadow-xl'
+            ? 'relative max-w-[430px] h-[100dvh] overflow-hidden sm:my-4 sm:h-[900px] sm:rounded-[34px] sm:border-[8px] sm:border-[#343438] sm:shadow-2xl'
+            : 'min-h-screen max-w-none'
         }`}
-        data-testid="mercari-app-container"
+        data-testid="shop-app-container"
       >
+        <DemoNoticeBar />
+
         {/* Header */}
         <Header />
 
         {/* Main Content Area */}
-        <main className="flex-1 flex flex-col overflow-hidden relative">
+        <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden md:pt-10">
           {renderCurrentView()}
         </main>
 
@@ -61,14 +75,16 @@ export const MercariApp: React.FC = () => {
         {/* Overlays & Modals */}
         {selectedItem && (
           <ItemDetailView
+            key={selectedItem.id}
             item={selectedItem}
-            onClose={() => setSelectedItem(null)}
+            onClose={() => setSelectedItemId(null)}
           />
         )}
 
-        {isSearchOpen && <SearchView />}
+        {isSearchOpen && !searchQuery.trim() && <SearchView />}
 
         <BuyModal />
+        <LoginPromptModal />
       </div>
     </div>
   );

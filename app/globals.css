@@ -1,55 +1,95 @@
 @import "tailwindcss";
 
 :root {
-  --background: #121212;
-  --foreground: #ffffff;
-  --card-bg: #1e1e1e;
-  --card-hover: #2a2a2d;
-  --mercari-red: #ff0211;
-  --mercari-red-hover: #e5020f;
-  --subtext: #8e8e93;
-  --border-dark: #2c2c2e;
+  --shop-bg: #1f1f21;
+  --shop-surface: #29292b;
+  --shop-surface-raised: #333336;
+  --shop-border: #414145;
+  --shop-text: #f7f7f8;
+  --shop-muted: #a6a6ac;
+  --shop-subtle: #74747b;
+  --shop-accent: #ff3b4a;
+  --shop-accent-strong: #ff3345;
+  --shop-blue: #4cb9ff;
+  --shop-success: #54d98d;
+  --shop-warning: #ffcf4a;
+  --shop-ui-font: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Kaku Gothic Pro", "Hiragino Sans", Meiryo, sans-serif;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-mercari-red: var(--mercari-red);
+  --color-background: var(--shop-bg);
+  --color-foreground: var(--shop-text);
+  --color-shop-accent: var(--shop-accent);
 }
 
+* { box-sizing: border-box; }
+html { background: var(--shop-bg); }
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: 'Noto Sans JP', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  user-select: none;
+  min-height: 100vh;
+  margin: 0;
+  background: var(--shop-bg);
+  color: var(--shop-text);
+  font-family: var(--shop-ui-font), var(--font-noto-sans-jp), var(--font-inter), sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Hide scrollbar for Chrome, Safari and Opera */
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
+.shop-category-font {
+  font-family: var(--shop-ui-font);
 }
 
-/* Hide scrollbar for IE, Edge and Firefox */
-.no-scrollbar {
-  -ms-overflow-style: none;  /* IE and Edge */
-  scrollbar-width: none;  /* Firefox */
+button, input, select, textarea { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--shop-blue);
+  outline-offset: 2px;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.shop-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+.shop-scrollbar::-webkit-scrollbar-thumb { background: #55555b; border-radius: 999px; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.animate-fade-in { animation: fadeIn .22s ease-out both; }
+.animate-slide-up { animation: slideUp .28s cubic-bezier(.16,1,.3,1) both; }
+.shop-skeleton { background: linear-gradient(90deg, #2c2c2f 25%, #3a3a3d 37%, #2c2c2f 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+
+.demo-notice-bar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(90deg, #ff303b, #ff424d 50%, #ff303b);
+  color: #fff;
+  padding: 8px 20px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
+  letter-spacing: .01em;
 }
 
-@keyframes slideUp {
-  from { transform: translateY(100%); }
-  to { transform: translateY(0); }
+.demo-notice-card {
+  overflow: hidden;
+  border: 1px solid #f1caca;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .2);
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+@media (max-width: 767px) {
+  .demo-notice-bar {
+    min-height: 48px;
+    padding: 8px 12px;
+    font-size: 11px;
+  }
 }
 
-.animate-slide-up {
-  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
