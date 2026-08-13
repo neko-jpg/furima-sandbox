@@ -30,6 +30,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,20 @@ yarn-error.log*
 /outputs/
 /work/
 *.tsbuildinfo
+
+# local browser / QA artifacts
+/.playwright-cli/
+/output/playwright/
+
+# local Python environments and caches
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+*.pyc
+
+# Pexels review candidates are source material, not runtime assets.
+# Keep only the curated set under pexels-selected in version control.
+/public/images/products/pexels-candidates/
+/public/images/products/pexels-candidates-1000/

@@ -6,7 +6,7 @@ import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
 import { createFilterState, FilterSidebar, FilterState } from '../ui/FilterSidebar';
 import { ProductCard } from '../ui/ShopPrimitives';
-import { joinSearchTokens, tokenizeSearchQuery } from '../searchUtils';
+import { joinSearchTokens, searchCatalogItems, tokenizeSearchQuery } from '../searchUtils';
 
 const categorySearchAliases: Record<string, string[]> = {
   ファッション: ['ファッション', 'レディース', 'メンズ'],
@@ -35,15 +35,9 @@ export const SearchView: React.FC = () => {
   const updateFilter = <K extends keyof FilterState>(key: K, value: FilterState[K]) => setFilters((current) => ({ ...current, [key]: value }));
   const clearFilters = () => setFilters(createFilterState());
   const queryText = joinSearchTokens(tokens);
-  const queryTokens = tokens.map((token) => token.toLowerCase());
   const query = queryText.trim().toLowerCase();
   const isResultPage = Boolean(query);
-  const rawResults = useMemo(() => queryTokens.length
-    ? items.filter((item) => {
-      const searchable = `${item.title} ${item.description} ${item.category.join(' ')}`.toLowerCase();
-      return queryTokens.every((token) => searchable.includes(token));
-    })
-    : [], [items, queryTokens]);
+  const rawResults = useMemo(() => query ? searchCatalogItems(items, searchQuery) : [], [items, query, searchQuery]);
 
   const results = useMemo(() => {
     const categoryAliases = categorySearchAliases[filters.category] ?? [filters.category];
@@ -62,11 +56,34 @@ export const SearchView: React.FC = () => {
       .filter((item) => !normalizedSize || `${item.title} ${item.description} ${item.category.join(' ')}`.toLowerCase().includes(normalizedSize))
       .filter((item) => !normalizedColor || `${item.title} ${item.description}`.toLowerCase().includes(normalizedColor))
       .filter((item) => !filters.shippingFee || item.shippingFee === filters.shippingFee)
-      .filter((item) => !filters.shippingOption || item.shippingMethod.includes(filters.shippingOption.replace('メルカリ便', '配送')))
+      .filter((item) => !filters.shippingOption || (filters.shippingOption === '匿名配送' ? item.isAnonymousShipping !== false : item.shippingMethod.includes(filters.shippingOption.replace('メルカリ便', '配送'))))
       .filter((item) => !filters.listingType || (filters.listingType === 'オークション' ? item.isAuction : !item.isAuction))
+      .filter((item) => !filters.sellerType || (item.sellerType ?? 'individual') === (filters.sellerType === 'ショップ' ? 'shop' : 'individual'))
       .filter((item) => !normalizedExclude || !`${item.title} ${item.description}`.toLowerCase().includes(normalizedExclude))
       .sort((a, b) => sortOrder === 'priceAsc' ? a.price - b.price : sortOrder === 'priceDesc' ? b.price - a.price : sortOrder === 'likes' ? b.likesCount - a.likesCount : b.id.localeCompare(a.id));
   }, [filters, rawResults, sortOrder]);
+
+  const activeFilterLabels = useMemo(() => {
+    const labels: string[] = [];
+    if (filters.category !== 'すべて') labels.push(filters.category);
+    if (filters.subcategory !== 'すべて') labels.push(filters.subcategory);
+    if (filters.brand) labels.push(`ブランド: ${filters.brand}`);
+    if (filters.size) labels.push(`サイズ: ${filters.size}`);
+    if (filters.salesStatus !== 'all') labels.push(filters.salesStatus === 'available' ? '販売中のみ' : '売り切れのみ');
+    if (filters.sellerType) labels.push(`出品者: ${filters.sellerType}`);
+    if (filters.condition) labels.push(filters.condition);
+    if (filters.minPrice || filters.maxPrice) labels.push(`価格: ${filters.minPrice || '0'}〜${filters.maxPrice || '上限なし'}円`);
+    if (filters.discountOption) labels.push(filters.discountOption);
+    if (filters.appraisal) labels.push('あんしん鑑定対象');
+    if (filters.listingType) labels.push(filters.listingType);
+    if (filters.guarantee) labels.push('保証付き整備品');
+    if (filters.color) labels.push(`色: ${filters.color}`);
+    if (filters.shippingOption) labels.push(filters.shippingOption);
+    if (filters.shippingFee) labels.push(filters.shippingFee);
+    if (filters.timeSale) labels.push(`タイムセール ${filters.timeSale}`);
+    if (filters.excludeKeyword) labels.push(`除外: ${filters.excludeKeyword}`);
+    return labels;
+  }, [filters]);
 
   const commitTokens = (nextTokens: string[], shouldAddHistory = false) => {
     const normalizedTokens = tokenizeSearchQuery(nextTokens.join(' '));
@@ -125,7 +142,7 @@ export const SearchView: React.FC = () => {
         {query ? (
           <div className="grid gap-10 lg:grid-cols-[268px_minmax(0,1fr)]">
             <aside className="hidden lg:block" aria-label="検索結果を絞り込む"><FilterSidebar idPrefix="search-desktop" {...filterProps} /></aside>
-            <SearchResults results={results} openItem={openItem} setLiked={setLiked} query={queryText} compact={isDeviceFrame} sortOrder={sortOrder} onCycleSort={() => setSortOrder((current) => current === 'new' ? 'priceAsc' : current === 'priceAsc' ? 'priceDesc' : current === 'priceDesc' ? 'likes' : 'new')} onOpenFilters={() => setIsFilterOpen(true)} />
+            <SearchResults results={results} rawCount={rawResults.length} openItem={openItem} setLiked={setLiked} query={queryText} compact={isDeviceFrame} sortOrder={sortOrder} activeFilterLabels={activeFilterLabels} onClearFilters={clearFilters} onCycleSort={() => setSortOrder((current) => current === 'new' ? 'priceAsc' : current === 'priceAsc' ? 'priceDesc' : current === 'priceDesc' ? 'likes' : 'new')} onOpenFilters={() => setIsFilterOpen(true)} />
           </div>
         ) : <SearchHistory history={searchHistory} setQuery={(value) => commitTokens(tokenizeSearchQuery(value))} addHistory={addSearchHistory} clearHistory={clearSearchHistory} />}
       </div>
@@ -144,9 +161,12 @@ const SearchHistory: React.FC<{ history: string[]; setQuery: (query: string) => 
   </section>
 );
 
-const SearchResults: React.FC<{ results: MercariItem[]; openItem: (id: string) => void; setLiked: (id: string, liked: boolean) => unknown; query: string; compact?: boolean; sortOrder: string; onCycleSort: () => void; onOpenFilters: () => void }> = ({ results, openItem, setLiked, query, compact = false, sortOrder, onCycleSort, onOpenFilters }) => (
+const SearchResults: React.FC<{ results: MercariItem[]; rawCount: number; openItem: (id: string) => void; setLiked: (id: string, liked: boolean) => unknown; query: string; compact?: boolean; sortOrder: string; activeFilterLabels: string[]; onClearFilters: () => void; onCycleSort: () => void; onOpenFilters: () => void }> = ({ results, rawCount, openItem, setLiked, query, compact = false, sortOrder, activeFilterLabels, onClearFilters, onCycleSort, onOpenFilters }) => (
   <section aria-labelledby="search-results-title">
-    <div className="mb-8 flex items-center justify-between gap-3"><div><h2 id="search-results-title" className="text-base font-bold text-white">「{query}」の検索結果</h2><p className="mt-1 text-xs text-[var(--shop-muted)]">{results.length}件の商品</p></div><div className="flex shrink-0 gap-2"><button type="button" onClick={onCycleSort} className="flex items-center gap-1 rounded-full border border-[var(--shop-border)] px-2.5 py-1.5 text-[10px] text-[var(--shop-muted)] hover:text-white"><SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />{sortOrder === 'new' ? '新しい順' : sortOrder === 'priceAsc' ? '価格の安い順' : sortOrder === 'priceDesc' ? '価格の高い順' : 'いいね順'}</button><button type="button" onClick={onOpenFilters} className="rounded-full border border-[var(--shop-border)] px-2.5 py-1.5 text-[10px] text-[var(--shop-muted)] hover:text-white lg:hidden">絞り込み</button></div></div>
+    <div className="mb-4 flex items-center justify-between gap-3"><div><h2 id="search-results-title" className="text-base font-bold text-white">「{query}」の検索結果</h2><p className="mt-1 text-xs text-[var(--shop-muted)]" aria-live="polite">{results.length}件の商品{activeFilterLabels.length > 0 && <span>（全{rawCount}件から絞り込み中）</span>}</p></div><div className="flex shrink-0 gap-2"><button type="button" onClick={onCycleSort} className="flex items-center gap-1 rounded-full border border-[var(--shop-border)] px-2.5 py-1.5 text-[10px] text-[var(--shop-muted)] hover:text-white"><SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />{sortOrder === 'new' ? '新しい順' : sortOrder === 'priceAsc' ? '価格の安い順' : sortOrder === 'priceDesc' ? '価格の高い順' : 'いいね順'}</button><button type="button" onClick={onOpenFilters} className="rounded-full border border-[var(--shop-border)] px-2.5 py-1.5 text-[10px] text-[var(--shop-muted)] hover:text-white lg:hidden">絞り込み{activeFilterLabels.length > 0 && ` ${activeFilterLabels.length}`}</button></div></div>
+    <div className="mb-6 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-3" aria-label="適用中の絞り込み">
+      <div className="flex flex-wrap items-center gap-2"><span className="text-xs font-black text-white">適用中の条件</span>{activeFilterLabels.length === 0 ? <span className="text-xs text-[var(--shop-muted)]">なし</span> : activeFilterLabels.map((label) => <span key={label} className="rounded-full border border-[var(--shop-blue)]/40 bg-[#16394d] px-2.5 py-1 text-[10px] font-bold text-[var(--shop-blue)]">{label}</span>)}{activeFilterLabels.length > 0 && <button type="button" onClick={onClearFilters} className="ml-auto text-[10px] font-bold text-[var(--shop-blue)] hover:text-white">すべて解除</button>}</div>
+    </div>
     {results.length === 0 ? <div className="rounded-lg border border-dashed border-[var(--shop-border)] py-16 text-center text-sm text-[var(--shop-muted)]">一致する商品が見つかりませんでした</div> : <div className={`grid grid-cols-3 gap-1.5 ${compact ? '' : 'sm:gap-2.5 md:grid-cols-4 md:gap-4 lg:grid-cols-5'}`}>{results.map((item) => <ProductCard key={item.id} item={item} compact={compact} onOpen={() => openItem(item.id)} onLike={(liked) => setLiked(item.id, liked)} />)}</div>}
   </section>
 );

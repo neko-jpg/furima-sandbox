@@ -1,13 +1,12 @@
 'use client';
 
 import React from 'react';
-import { ArrowRight, Clock3, Flame, Heart } from 'lucide-react';
+import { ArrowRight, Camera, Clock3, Flame, Heart, Search, ShoppingBag } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
 import { Footer } from '../Footer';
 import { ProductCard, SectionHeader } from '../ui/ShopPrimitives';
 import { MyListView } from './MyListView';
-import { DemoNoticeCard } from '../DemoNotice';
 
 export const HomeView: React.FC = () => {
   const { homeTab, setHomeTab, items, openItem, setLiked, setIsSearchOpen, setSearchQuery, openCategory, isDeviceFrame } = useMercari();
@@ -16,7 +15,7 @@ export const HomeView: React.FC = () => {
   const normalItems = allNormalItems;
   const auctionItems = items.filter((item) => item.isAuction);
   const likedItems = normalItems.filter((item) => item.isLiked);
-  const pcItems = normalItems.filter((item) => item.id.startsWith('pc-'));
+  const pcItems = normalItems.filter((item) => item.category.some((category) => category.includes('PC') || category.includes('パソコン') || category.includes('タブレット'))).slice(0, 10);
   const fashionItems = normalItems.filter((item) => item.category.some((category) => category.includes('レディース') || category.includes('メンズ') || category.includes('ファッション'))).slice(0, 10);
   const bookItems = normalItems.filter((item) => item.category.some((category) => category.includes('本'))).slice(0, 10);
   const rankingItems = [...normalItems].sort((a, b) => b.likesCount - a.likesCount).slice(0, 10);
@@ -52,7 +51,7 @@ export const HomeView: React.FC = () => {
           </div>
         </div>
 
-        {homeTab !== 'auction' && <ShopPromo />}
+        {homeTab === 'recommend' && <ShopPromo />}
 
         {homeTab === 'recommend' && (isAuthenticated ? (
           <div className="space-y-10">
@@ -104,7 +103,41 @@ const GuestHome: React.FC<{ items: MercariItem[]; onOpen: (id: string) => void; 
 };
 
 const ShopPromo: React.FC = () => {
-  return <DemoNoticeCard className="my-5 md:mb-8 md:mt-0" />;
+  const { setSearchQuery, setIsSearchOpen, openItem, navigateToTab, items } = useMercari();
+  const demoItems = items.filter((item) => item.isDemo);
+  const availableDemoItems = demoItems.filter((item) => !item.isSold);
+  const familyCount = new Set(demoItems.map((item) => item.productFamilyId).filter(Boolean)).size;
+  const variantCount = new Set(demoItems.map((item) => item.variantId).filter(Boolean)).size;
+  return (
+    <section className="my-4 overflow-hidden rounded-2xl border border-[var(--shop-border)] bg-gradient-to-br from-[#303036] via-[var(--shop-surface)] to-[#25252a] p-4 shadow-[0_12px_28px_rgba(0,0,0,.18)] md:mb-7 md:mt-0 md:p-5" aria-label="Furima Sandboxのクイックスタート">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-2xl">
+          <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[var(--shop-blue)]/35 bg-[#143247] px-2.5 py-1 text-[10px] font-black tracking-[.08em] text-[var(--shop-blue)]">FURIMA SANDBOX / QUICK START</div>
+          <h1 className="text-xl font-black tracking-tight text-white md:text-2xl">検索から購入・出品まで、同じ画面で試せます</h1>
+          <p className="mt-1.5 text-xs leading-5 text-[var(--shop-muted)] md:text-sm">これはハッカソン用の操作サンドボックスです。下のショートカットなら、エージェント操作とUI操作の結果をすぐに見比べられます。</p>
+        </div>
+        <div className="hidden rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-right text-[11px] text-[var(--shop-muted)] md:block"><span className="block font-bold text-white">安全なデモ環境</span><span>決済・配送・出品は実行されません</span></div>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2 border-t border-white/10 pt-3 sm:grid-cols-5" aria-label="デモカタログの状態">
+        <div><span className="block text-[10px] text-[var(--shop-muted)]">デモ出品</span><strong className="mt-0.5 block text-sm font-black text-white">{demoItems.length.toLocaleString()}件</strong></div>
+        <div><span className="block text-[10px] text-[var(--shop-muted)]">販売中</span><strong className="mt-0.5 block text-sm font-black text-[var(--shop-blue)]">{availableDemoItems.length.toLocaleString()}件</strong></div>
+        <div><span className="block text-[10px] text-[var(--shop-muted)]">商品ファミリー</span><strong className="mt-0.5 block text-sm font-black text-white">{familyCount.toLocaleString()}種</strong></div>
+        <div><span className="block text-[10px] text-[var(--shop-muted)]">バリエーション</span><strong className="mt-0.5 block text-sm font-black text-white">{variantCount.toLocaleString()}種</strong></div>
+        <div><span className="block text-[10px] text-[var(--shop-muted)]">画像つき</span><strong className="mt-0.5 block text-sm font-black text-white">{demoItems.length.toLocaleString()}枚</strong></div>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <button type="button" onClick={() => { setSearchQuery('ノートPC'); setIsSearchOpen(true); }} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#153247] text-[var(--shop-blue)]"><Search className="h-4 w-4" /></span><span><span className="block text-xs font-black text-white">1. ノートPCを検索</span><span className="mt-0.5 block text-[10px] text-[var(--shop-muted)]">フィルタと件数の変化を見る</span></span>
+        </button>
+        <button type="button" onClick={() => openItem('pc-2')} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#153247] text-[var(--shop-blue)]"><ShoppingBag className="h-4 w-4" /></span><span><span className="block text-xs font-black text-white">2. 商品詳細を確認</span><span className="mt-0.5 block text-[10px] text-[var(--shop-muted)]">安心情報と購入内訳を見る</span></span>
+        </button>
+        <button type="button" onClick={() => navigateToTab('sell')} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#153247] text-[var(--shop-blue)]"><Camera className="h-4 w-4" /></span><span><span className="block text-xs font-black text-white">3. 出品をシミュレート</span><span className="mt-0.5 block text-[10px] text-[var(--shop-muted)]">AI候補・審査・収支を確認</span></span>
+        </button>
+      </div>
+    </section>
+  );
 };
 
 interface ProductSectionProps {

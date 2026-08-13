@@ -5,6 +5,8 @@ export interface Seller {
   ratingsCount: number;
   isVerified: boolean;
   level?: number;
+  completedSales?: number;
+  responseRate?: number;
 }
 
 export interface CommentItem {
@@ -13,6 +15,21 @@ export interface CommentItem {
   userAvatar: string;
   text: string;
   date: string;
+}
+
+export interface ProductFamily {
+  id: string;
+  name: string;
+  productType: string;
+  category: string;
+}
+
+export interface ProductVariant {
+  id: string;
+  familyId: string;
+  name: string;
+  attributes: Record<string, string>;
+  searchTags: string[];
 }
 
 export interface MercariItem {
@@ -37,6 +54,44 @@ export interface MercariItem {
   seller: Seller;
   comments: CommentItem[];
   viewsCount?: number;
+  brand?: string;
+  size?: string;
+  color?: string;
+  shippingSize?: string;
+  isAnonymousShipping?: boolean;
+  isAuthenticityEligible?: boolean;
+  sellerType?: 'individual' | 'shop';
+  sku?: string;
+  productFamilyId?: string;
+  productFamilyName?: string;
+  variantId?: string;
+  variantName?: string;
+  productType?: string;
+  searchTags?: string[];
+  attributes?: Record<string, string>;
+  inventoryPolicy?: 'SINGLE' | 'MULTI';
+  inventoryInitialQuantity?: number;
+  inventoryQuantity?: number;
+  reservedQuantity?: number;
+  listingStatus?: 'DRAFT' | 'ACTIVE' | 'RESERVED' | 'SOLD' | 'ARCHIVED';
+  isDemo?: boolean;
+  sourceUrl?: string;
+  sourcePhotographer?: string;
+  sourceAttribution?: string;
+  sourceChecksum?: string;
+}
+
+export type InventoryMovementType = 'IN' | 'OUT' | 'ADJUSTMENT' | 'RESERVE' | 'RELEASE';
+
+export interface InventoryMovement {
+  id: string;
+  itemId: string;
+  sku?: string;
+  type: InventoryMovementType;
+  quantity: number;
+  reason: string;
+  referenceId?: string;
+  at: string;
 }
 
 export interface NotificationItem {
@@ -71,7 +126,8 @@ export type AgentErrorCode =
   | 'DRAFT_NOT_FOUND'
   | 'INVALID_TAB'
   | 'CONFIRMATION_REQUIRED'
-  | 'AUTH_REQUIRED';
+  | 'AUTH_REQUIRED'
+  | 'POLICY_REVIEW_REQUIRED';
 
 export type ActionResult<T = undefined> =
   | { ok: true; data: T; stateVersion: number }
@@ -101,6 +157,7 @@ export interface MercariAgentSnapshot {
   savedItemIds: string[];
   itemsCount: number;
   items: MercariItem[];
+  inventoryMovements?: InventoryMovement[];
 }
 
 export interface ActionTraceEntry {
@@ -158,6 +215,7 @@ export interface MercariAgentAPI {
   searchItems: (query: string) => MercariItem[];
   getState: () => MercariAgentSnapshot;
   getActionTrace: () => ActionTraceEntry[];
+  getInventoryMovements: (itemId?: string, options?: AgentActionOptions) => InventoryMovement[];
   resetScenario: (options?: AgentActionOptions) => ActionResult<undefined>;
 }
 

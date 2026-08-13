@@ -17,17 +17,20 @@ import { BrowseDirectoryView, isBrowseDirectoryRoute } from './views/BrowseDirec
 import { BuyModal } from './modals/BuyModal';
 import { LoginPromptModal } from './modals/LoginPromptModal';
 import { DemoNoticeBar } from './DemoNotice';
+import { DemoGuide } from './DemoGuide';
 
 export const MercariApp: React.FC = () => {
   const {
     mainTab,
     selectedItem,
     setSelectedItemId,
+    buyingItemId,
     categoryName,
     isSearchOpen,
     searchQuery,
     isDeviceFrame,
   } = useMercari();
+  const isBlockingModalOpen = Boolean(selectedItem || buyingItemId);
 
   const renderCurrentView = () => {
     if (isSearchOpen && searchQuery.trim()) return <SearchView />;
@@ -59,18 +62,21 @@ export const MercariApp: React.FC = () => {
         }`}
         data-testid="shop-app-container"
       >
-        <DemoNoticeBar />
+        <div aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined}>
+          <DemoNoticeBar />
+          <DemoGuide />
 
-        {/* Header */}
-        <Header />
+          {/* Header */}
+          <Header />
 
-        {/* Main Content Area */}
-        <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden md:pt-10">
-          {renderCurrentView()}
-        </main>
+          {/* Main Content Area */}
+          <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden md:pt-10">
+            {renderCurrentView()}
+          </main>
 
-        {/* Bottom Navigation */}
-        <BottomNav />
+          {/* Bottom Navigation */}
+          <BottomNav />
+        </div>
 
         {/* Overlays & Modals */}
         {selectedItem && (
