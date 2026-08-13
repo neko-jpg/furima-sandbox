@@ -17,6 +17,10 @@ export interface CommentItem {
 
 export interface MercariItem {
   id: string;
+  listingId?: string;
+  sellerId?: string;
+  listingStatus?: 'DRAFT' | 'PUBLISHED' | 'PAUSED' | 'RESERVED' | 'TRANSACTION_STARTED' | 'SOLD' | 'DELETED' | 'REMOVED_BY_MODERATION';
+  listingVersion?: number;
   title: string;
   price: number;
   images: string[];
@@ -59,17 +63,55 @@ export interface UserProfile {
   hasDPointLinked: boolean;
 }
 
+export interface SandboxPersona {
+  id: string;
+  name: string;
+  avatar: string;
+  bio: string;
+  role: string;
+  accent: string;
+  rating: number;
+  ratingsCount: number;
+  isVerified: boolean;
+  salesBalance: number;
+  points: number;
+  listingsCount: number;
+  activeTransactionsCount: number;
+  pendingTasksCount: number;
+}
+
+export interface SandboxActivityEntry {
+  id: string;
+  type: string;
+  title: string;
+  description: string;
+  actorId: string;
+  actorName: string;
+  transactionId?: string;
+  at: string;
+}
+
 export type MainTab = 'home' | 'category' | 'notifications' | 'sell' | 'mypage';
 export type HomeTab = 'recommend' | 'mylist' | 'auction';
 
 export type AgentErrorCode =
   | 'ITEM_NOT_FOUND'
   | 'ALREADY_SOLD'
+  | 'LISTING_UNAVAILABLE'
+  | 'LISTING_VERSION_CONFLICT'
+  | 'CANNOT_PURCHASE_OWN_LISTING'
+  | 'USER_BLOCKED'
+  | 'PAYMENT_NOT_COMPLETED'
+  | 'CHECKOUT_NOT_FOUND'
+  | 'INVALID_TRANSITION'
+  | 'RATING_NOT_ALLOWED'
   | 'BID_TOO_LOW'
   | 'NOT_AUCTION'
   | 'INVALID_INPUT'
   | 'DRAFT_NOT_FOUND'
   | 'INVALID_TAB'
+  | 'USER_NOT_FOUND'
+  | 'PERMISSION_DENIED'
   | 'CONFIRMATION_REQUIRED'
   | 'AUTH_REQUIRED';
 
@@ -90,6 +132,10 @@ export interface AgentActionOptions {
 export interface MercariAgentSnapshot {
   version: '1';
   stateVersion: number;
+  currentUserId: string;
+  personas: SandboxPersona[];
+  activeTransactionsCount: number;
+  openTasksCount: number;
   currentMainTab: MainTab;
   currentHomeTab: HomeTab;
   currentCategory: string | null;
@@ -105,6 +151,7 @@ export interface MercariAgentSnapshot {
 
 export interface ActionTraceEntry {
   action: string;
+  actorId?: string;
   requestId?: string;
   idempotencyKey?: string;
   payload: unknown;
@@ -113,6 +160,10 @@ export interface ActionTraceEntry {
 }
 
 export interface MercariAgentAPI {
+  switchPersona: (userId: string, options?: AgentActionOptions) => ActionResult<SandboxPersona>;
+  getPersonas: () => SandboxPersona[];
+  getWorldState: () => unknown;
+  getActivity: (limit?: number) => SandboxActivityEntry[];
   navigateTab: (tab: MainTab, options?: AgentActionOptions) => ActionResult<undefined>;
   navigateHomeSubTab: (tab: HomeTab, options?: AgentActionOptions) => ActionResult<undefined>;
   navigateCategory: (category: string, options?: AgentActionOptions) => ActionResult<undefined>;
@@ -151,6 +202,10 @@ export interface MercariAgentAPI {
     amount: number,
     options?: AgentActionOptions,
   ) => ActionResult<{ currentBid: number; bidsCount: number }>;
+  completePayment: (transactionId: string, options?: AgentActionOptions) => ActionResult<undefined>;
+  markAsShipped: (transactionId: string, options?: AgentActionOptions) => ActionResult<undefined>;
+  advanceShipment: (transactionId: string, options?: AgentActionOptions) => ActionResult<undefined>;
+  rateTransaction: (transactionId: string, rating: number, comment?: string, options?: AgentActionOptions) => ActionResult<undefined>;
   buyItem: (itemId: string, options?: AgentActionOptions) => ActionResult<undefined>;
   getSnapshot: () => MercariAgentSnapshot;
   getItems: () => MercariItem[];
@@ -163,6 +218,7 @@ export interface MercariAgentAPI {
 
 declare global {
   interface Window {
+    __FURIMA_SANDBOX_API__?: MercariAgentAPI;
     __MERCARI_API__?: MercariAgentAPI;
     __SHOP_API__?: MercariAgentAPI;
   }

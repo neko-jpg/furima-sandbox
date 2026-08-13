@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type {
+  AgentErrorCode,
   ActionResult,
   ActionTraceEntry,
   AgentActionOptions,
@@ -11,9 +12,13 @@ import type {
   MercariAgentSnapshot,
   MercariItem,
   NotificationItem,
+  SandboxActivityEntry,
+  SandboxPersona,
   UserProfile,
 } from '../types/mercari';
-import { INITIAL_ITEMS, INITIAL_NOTIFICATIONS, INITIAL_USER } from '../data/initialData';
+import { INITIAL_ITEMS, INITIAL_NOTIFICATIONS, SANDBOX_PERSONAS } from '../data/initialData';
+import { createMarketplaceState, deriveTransactionPhase, MarketplaceDomain } from '../domain/marketplace';
+import type { DomainErrorCode, MarketplaceState, ShipmentStatus, Transaction } from '../domain/marketplace';
 
 const PREFERENCES_STORAGE_KEY = 'shop-ui-preferences-v1';
 
@@ -58,6 +63,70 @@ const failure = <T,>(error: Exclude<ActionResult<T>, { ok: true }>['error'], sta
   ...(message ? { message } : {}),
 });
 
+const createInitialMarketplaceState = (): MarketplaceState => {
+  const initialState = createMarketplaceState(INITIAL_ITEMS, SANDBOX_PERSONAS[0], SANDBOX_PERSONAS);
+  const domain = new MarketplaceDomain(initialState);
+  const starterListing = initialState.listings.find((listing) => listing.itemId === 'item-2');
+  if (starterListing) {
+    const checkout = domain.createCheckout({ buyerId: initialState.currentUserId, listingId: starterListing.id });
+    if (checkout.ok) domain.confirmPurchase(checkout.data.id);
+  }
+  return domain.getState();
+};
+
+const buildSandboxPersonas = (state: MarketplaceState): SandboxPersona[] => SANDBOX_PERSONAS.flatMap((seed) => {
+  const user = state.users.find((candidate) => candidate.id === seed.id);
+  if (!user) return [];
+  return [{
+    id: user.id,
+    name: user.displayName,
+    avatar: user.avatar,
+    bio: seed.bio,
+    role: seed.role,
+    accent: seed.accent,
+    rating: user.ratingSummary.average,
+    ratingsCount: user.ratingSummary.count,
+    isVerified: user.identityVerificationStatus === 'VERIFIED',
+    salesBalance: user.salesBalance,
+    points: user.points,
+    listingsCount: state.listings.filter((listing) => listing.sellerId === user.id).length,
+    activeTransactionsCount: state.transactions.filter((transaction) => transaction.transactionStatus === 'ACTIVE' && [transaction.buyerId, transaction.sellerId].includes(user.id)).length,
+    pendingTasksCount: state.tasks.filter((task) => task.userId === user.id && !task.completedAt).length,
+  }];
+});
+
+const activityCopy: Record<string, string> = {
+  PURCHASED: '商品を購入しました',
+  PAYMENT_COMPLETED: '支払いを完了しました',
+  SHIPPED: '商品を発送しました',
+  DELIVERED: '商品が配達されました',
+  ADDRESS_CHANGED: '配送先を変更しました',
+  BUYER_RATED: '受取評価をしました',
+  SELLER_RATED: '購入者を評価しました',
+  COMPLETED: '取引が完了しました',
+  CANCELED: '取引をキャンセルしました',
+};
+
+const buildSandboxActivity = (state: MarketplaceState, limit = 20): SandboxActivityEntry[] => [...state.transactionEvents]
+  .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  .slice(0, limit)
+  .map((event) => {
+    const transaction = state.transactions.find((candidate) => candidate.id === event.transactionId);
+    const listing = transaction && state.listings.find((candidate) => candidate.id === transaction.listingId);
+    const item = listing && state.items.find((candidate) => candidate.id === listing.itemId);
+    const actor = state.users.find((candidate) => candidate.id === event.actorId);
+    return {
+      id: event.id,
+      type: event.type,
+      title: activityCopy[event.type] ?? event.type,
+      description: item?.title ?? '取引商品',
+      actorId: event.actorId,
+      actorName: actor?.displayName ?? 'システム',
+      transactionId: event.transactionId,
+      at: event.createdAt,
+    };
+  });
+
 interface MercariContextType {
   isAuthenticated: boolean;
   isLoginPromptOpen: boolean;
@@ -101,6 +170,23 @@ interface MercariContextType {
   setLiked: (itemId: string, liked: boolean) => ActionResult<undefined>;
   addNewItem: (item: Partial<MercariItem>) => ActionResult<MercariItem>;
   addComment: (itemId: string, text: string) => ActionResult<undefined>;
+  marketplaceState: MarketplaceState;
+  transactions: Transaction[];
+  transactionPhase: (transactionId: string) => string | null;
+  completePayment: (transactionId: string) => ActionResult<undefined>;
+  markAsShipped: (transactionId: string) => ActionResult<undefined>;
+  updateShipmentStatus: (transactionId: string, status: ShipmentStatus) => ActionResult<undefined>;
+  rateTransaction: (transactionId: string, rating: number, comment?: string) => ActionResult<undefined>;
+  updateCheckout: (itemId: string, paymentLabel: string) => ActionResult<undefined>;
+  pauseListing: (listingId: string) => ActionResult<undefined>;
+  resumeListing: (listingId: string) => ActionResult<undefined>;
+  deleteListing: (listingId: string) => ActionResult<undefined>;
+  personas: SandboxPersona[];
+  activePersona: SandboxPersona;
+  switchPersona: (userId: string) => ActionResult<SandboxPersona>;
+  sandboxActivity: SandboxActivityEntry[];
+  isSandboxPanelOpen: boolean;
+  setIsSandboxPanelOpen: (open: boolean) => void;
   recentlyViewedIds: string[];
   savedItemIds: string[];
   setSaved: (itemId: string, saved: boolean) => ActionResult<undefined>;
@@ -127,7 +213,9 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isPurchaseCompleteOpen, setIsPurchaseCompleteOpen] = useState(false);
   const [isListingModalOpen, setIsListingModalOpenState] = useState(false);
   const [items, setItems] = useState<MercariItem[]>(() => cloneItems(INITIAL_ITEMS).map((item) => ({ ...item, isLiked: false })));
-  const [user] = useState<UserProfile>(INITIAL_USER);
+  const [domain] = useState(() => new MarketplaceDomain(createInitialMarketplaceState()));
+  const domainRef = useRef(domain);
+  const [domainRevision, setDomainRevision] = useState(0);
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => cloneNotifications(INITIAL_NOTIFICATIONS));
   const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null);
   const [recentlyViewedIds, setRecentlyViewedIds] = useState<string[]>(INITIAL_RECENTLY_VIEWED_IDS);
@@ -136,6 +224,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isDeviceFrame, setIsDeviceFrame] = useState(false);
   const [isLoginPromptOpen, setIsLoginPromptOpen] = useState(false);
   const [loginPromptReason, setLoginPromptReason] = useState('Furima Sandboxはログイン不要のモックモードです。');
+  const [isSandboxPanelOpen, setIsSandboxPanelOpen] = useState(false);
   // This is intentionally always enabled: the site is a self-contained demo, so every mock action is available without an external account.
   const isAuthenticated = true;
 
@@ -143,12 +232,81 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const actionTraceRef = useRef<ActionTraceEntry[]>([]);
   const idempotencyCacheRef = useRef(new Map<string, ActionResult<unknown>>());
   const listingDraftsRef = useRef(new Map<string, Partial<MercariItem>>());
+  const checkoutIdsRef = useRef(new Map<string, string>());
   const purchasedItemIdsRef = useRef(new Set<string>());
   const stateRef = useRef<MercariAgentSnapshot | null>(null);
+
+  const marketplaceState = domain.getState();
+  const personas = buildSandboxPersonas(marketplaceState);
+  const activePersona = personas.find((persona) => persona.id === marketplaceState.currentUserId) ?? personas[0]!;
+  const activeSeed = SANDBOX_PERSONAS.find((persona) => persona.id === marketplaceState.currentUserId) ?? SANDBOX_PERSONAS[0];
+  const activeDomainUser = marketplaceState.users.find((candidate) => candidate.id === marketplaceState.currentUserId);
+  const user: UserProfile = {
+    name: activeDomainUser?.displayName ?? activeSeed.name,
+    avatar: activeDomainUser?.avatar ?? activeSeed.avatar,
+    rating: activeDomainUser?.ratingSummary.average ?? activeSeed.rating,
+    ratingsCount: activeDomainUser?.ratingSummary.count ?? activeSeed.ratingsCount,
+    isVerified: activeDomainUser?.identityVerificationStatus === 'VERIFIED',
+    salesBalance: activeDomainUser?.salesBalance ?? activeSeed.salesBalance,
+    points: activeDomainUser?.points ?? activeSeed.points,
+    hasDPointLinked: activeSeed.hasDPointLinked,
+  };
+  const sandboxActivity = buildSandboxActivity(marketplaceState);
 
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const buyingItem = items.find((item) => item.id === buyingItemId) ?? null;
   const activeNotification = notifications.find((item) => item.id === activeNotificationId) ?? null;
+
+  const syncDomain = () => {
+    const domain = domainRef.current;
+    if (!domain) return;
+    const domainState = domain.getState();
+    stateVersionRef.current = Math.max(stateVersionRef.current, domainState.stateVersion);
+    setItems(domain.getLegacyItems().map((item) => ({ ...item, isLiked: Boolean(item.isLiked) })));
+    const savedListingIds = new Set(domainState.savedItems.filter((saved) => saved.userId === domainState.currentUserId).map((saved) => saved.listingId));
+    setSavedItemIds(domainState.listings.filter((listing) => savedListingIds.has(listing.id)).map((listing) => listing.itemId));
+    const generatedNotifications = domain.getNotifications().map((notification) => ({ id: notification.id, type: 'you' as const, title: notification.title, date: 'たった今', isRead: notification.isRead, content: notification.content }));
+    const fixtureNotifications = domainState.currentUserId === SANDBOX_PERSONAS[0].id ? cloneNotifications(INITIAL_NOTIFICATIONS) : [];
+    setNotifications([...generatedNotifications, ...fixtureNotifications.filter((notification) => !generatedNotifications.some((generated) => generated.id === notification.id))].slice(0, 50));
+    setDomainRevision((previous) => previous + 1);
+  };
+
+  useEffect(() => {
+    syncDomain();
+  }, []);
+
+  const mapDomainError = (error: DomainErrorCode): AgentErrorCode => {
+    if (error === 'LISTING_NOT_FOUND' || error === 'ITEM_NOT_FOUND') return 'ITEM_NOT_FOUND';
+    if (error === 'LISTING_UNAVAILABLE') return 'LISTING_UNAVAILABLE';
+    if (error === 'LISTING_VERSION_CONFLICT') return 'LISTING_VERSION_CONFLICT';
+    if (error === 'CANNOT_PURCHASE_OWN_LISTING') return 'CANNOT_PURCHASE_OWN_LISTING';
+    if (error === 'USER_BLOCKED') return 'USER_BLOCKED';
+    if (error === 'PAYMENT_NOT_COMPLETED') return 'PAYMENT_NOT_COMPLETED';
+    if (error === 'RATING_NOT_ALLOWED') return 'RATING_NOT_ALLOWED';
+    if (error === 'INVALID_TRANSITION') return 'INVALID_INPUT';
+    if (error === 'AUCTION_CLOSED') return 'ALREADY_SOLD';
+    if (error === 'NOT_AUCTION') return 'NOT_AUCTION';
+    if (error === 'BID_TOO_LOW') return 'BID_TOO_LOW';
+    if (error === 'USER_NOT_FOUND') return 'USER_NOT_FOUND';
+    if (error === 'PERMISSION_DENIED') return 'PERMISSION_DENIED';
+    return 'INVALID_INPUT';
+  };
+
+  const switchPersona = (userId: string): ActionResult<SandboxPersona> => {
+    const result = domainRef.current.switchCurrentUser(userId);
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    setSelectedItemId(null);
+    setBuyingItemId(null);
+    setIsSearchOpenState(false);
+    setIsListingModalOpenState(false);
+    setActiveNotificationId(null);
+    checkoutIdsRef.current.clear();
+    purchasedItemIdsRef.current.clear();
+    syncDomain();
+    const persona = buildSandboxPersonas(domainRef.current.getState()).find((candidate) => candidate.id === userId);
+    if (!persona) return failure('USER_NOT_FOUND', result.stateVersion, '切り替え先のペルソナが見つかりません');
+    return success(persona, result.stateVersion);
+  };
 
   const requestLogin = (reason = 'この操作にはログインが必要です。') => {
     setLoginPromptReason(reason);
@@ -196,9 +354,14 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   useEffect(() => {
+    const currentPersonas = buildSandboxPersonas(domainRef.current.getState());
     stateRef.current = {
       version: '1',
       stateVersion: stateVersionRef.current,
+      currentUserId: marketplaceState.currentUserId,
+      personas: currentPersonas,
+      activeTransactionsCount: marketplaceState.transactions.filter((transaction) => transaction.transactionStatus === 'ACTIVE').length,
+      openTasksCount: marketplaceState.tasks.filter((task) => !task.completedAt).length,
       currentMainTab: mainTab,
       currentHomeTab: homeTab,
       currentCategory: categoryName,
@@ -211,7 +374,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       itemsCount: items.length,
       items: cloneItems(items),
     };
-  }, [mainTab, homeTab, categoryName, searchQuery, selectedItemId, buyingItemId, searchHistory, recentlyViewedIds, savedItemIds, items]);
+  }, [mainTab, homeTab, categoryName, searchQuery, selectedItemId, buyingItemId, searchHistory, recentlyViewedIds, savedItemIds, items, domainRevision, marketplaceState.currentUserId, marketplaceState.transactions, marketplaceState.tasks]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -279,12 +442,17 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
     if (target.isLiked === liked) return success(undefined, stateVersionRef.current);
+    const domain = domainRef.current;
+    if (domain) {
+      const listingResult = domain.likeListing(target.listingId ?? `listing-${itemId}`, domain.getState().currentUserId, liked);
+      if (!listingResult.ok) return failure(mapDomainError(listingResult.error), listingResult.stateVersion, listingResult.message);
+    }
     setItems((previous) => previous.map((item) => item.id !== itemId ? item : ({
       ...item,
       isLiked: liked,
       likesCount: liked ? item.likesCount + 1 : Math.max(0, item.likesCount - 1),
     })));
-    return success(undefined, bumpStateVersion());
+    return success(undefined, domain?.getState().stateVersion ?? bumpStateVersion());
   };
 
   const setSaved = (itemId: string, saved: boolean): ActionResult<undefined> => {
@@ -296,8 +464,13 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
     const alreadySaved = savedItemIds.includes(itemId);
     if (alreadySaved === saved) return success(undefined, stateVersionRef.current);
+    const domain = domainRef.current;
+    if (domain) {
+      const savedResult = domain.saveListing(target.listingId ?? `listing-${itemId}`, domain.getState().currentUserId, saved);
+      if (!savedResult.ok) return failure(mapDomainError(savedResult.error), savedResult.stateVersion, savedResult.message);
+    }
     setSavedItemIds((previous) => saved ? [...previous, itemId] : previous.filter((id) => id !== itemId));
-    return success(undefined, bumpStateVersion());
+    return success(undefined, domain?.getState().stateVersion ?? bumpStateVersion());
   };
 
   const toggleLikeItem = (itemId: string) => {
@@ -324,9 +497,19 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
     if (target.isSold || purchasedItemIdsRef.current.has(itemId)) return failure('ALREADY_SOLD', stateVersionRef.current, 'この商品は購入できません');
+    if (target.isAuction) {
+      setIsSearchOpenState(false);
+      setBuyingItemId(itemId);
+      return success(undefined, bumpStateVersion());
+    }
+    const listingId = target.listingId ?? `listing-${itemId}`;
+    const checkout = domainRef.current?.createCheckout({ buyerId: domainRef.current.getState().currentUserId, listingId });
+    if (!checkout) return failure('INVALID_INPUT', stateVersionRef.current, '購入手続きを開始できません');
+    if (!checkout.ok) return failure(mapDomainError(checkout.error), checkout.stateVersion, checkout.message);
+    checkoutIdsRef.current.set(itemId, checkout.data.id);
     setIsSearchOpenState(false);
     setBuyingItemId(itemId);
-    return success(undefined, bumpStateVersion());
+    return success(undefined, checkout.stateVersion);
   };
 
   const purchaseItem = (itemId: string): ActionResult<undefined> => {
@@ -337,9 +520,21 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
     if (target.isSold || purchasedItemIdsRef.current.has(itemId)) return failure('ALREADY_SOLD', stateVersionRef.current, 'この商品はすでに売り切れています');
+    if (target.isAuction) return failure('NOT_AUCTION', stateVersionRef.current, 'オークション商品は入札で購入します');
+    const domain = domainRef.current;
+    if (!domain) return failure('INVALID_INPUT', stateVersionRef.current, '購入処理を開始できません');
+    let checkoutId = checkoutIdsRef.current.get(itemId);
+    if (!checkoutId) {
+      const checkout = domain.createCheckout({ buyerId: domain.getState().currentUserId, listingId: target.listingId ?? `listing-${itemId}` });
+      if (!checkout.ok) return failure(mapDomainError(checkout.error), checkout.stateVersion, checkout.message);
+      checkoutId = checkout.data.id;
+      checkoutIdsRef.current.set(itemId, checkoutId);
+    }
+    const confirmed = domain.confirmPurchase(checkoutId);
+    if (!confirmed.ok) return failure(mapDomainError(confirmed.error), confirmed.stateVersion, confirmed.message);
     purchasedItemIdsRef.current.add(itemId);
-    setItems((previous) => previous.map((item) => item.id === itemId ? { ...item, isSold: true } : item));
-    return success(undefined, bumpStateVersion());
+    syncDomain();
+    return success(undefined, confirmed.stateVersion);
   };
 
   const placeBid = (itemId: string, amount: number): ActionResult<{ currentBid: number; bidsCount: number }> => {
@@ -350,11 +545,15 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
     if (!target.isAuction) return failure('NOT_AUCTION', stateVersionRef.current, 'この商品はオークション商品ではありません');
-    const minimumBid = (target.currentBid ?? target.price) + 100;
-    if (!Number.isInteger(amount) || amount < minimumBid) return failure('BID_TOO_LOW', stateVersionRef.current, `入札額は¥${minimumBid.toLocaleString()}以上で入力してください`);
-    const bidsCount = (target.bidsCount ?? 0) + 1;
-    setItems((previous) => previous.map((item) => item.id === itemId ? { ...item, currentBid: amount, bidsCount } : item));
-    return success({ currentBid: amount, bidsCount }, bumpStateVersion());
+    const domain = domainRef.current;
+    const listingId = target.listingId ?? `listing-${itemId}`;
+    const auction = domain?.getState().auctions.find((value) => value.listingId === listingId);
+    if (!domain || !auction) return failure('NOT_AUCTION', stateVersionRef.current, 'オークション情報が見つかりません');
+    const result = domain.placeBid(auction.id, domain.getState().currentUserId, amount);
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    const bidsCount = domain.getState().bids.filter((bid) => bid.auctionId === auction.id).length;
+    return success({ currentBid: result.data.amount, bidsCount }, result.stateVersion);
   };
 
   const addNewItem = (newItemData: Partial<MercariItem>): ActionResult<MercariItem> => {
@@ -364,32 +563,30 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
     const title = newItemData.title?.trim() ?? '';
     const price = newItemData.price ?? 1000;
-    if (!title || !Number.isInteger(price) || price < 300) return failure('INVALID_INPUT', stateVersionRef.current, 'タイトルと価格を入力してください');
-    const newItem: MercariItem = {
-      id: createId('item'),
-      title,
+    if (!title || !Number.isInteger(price) || price < 300 || price > 9_999_999) return failure('INVALID_INPUT', stateVersionRef.current, 'タイトルと価格を入力してください（価格は300円〜9,999,999円）');
+    const domain = domainRef.current;
+    if (!domain) return failure('INVALID_INPUT', stateVersionRef.current, '出品処理を開始できません');
+    const draft = domain.addListingDraft(domain.getState().currentUserId, {
+      item: { title, description: newItemData.description?.trim() || 'Furima Sandboxで見つけてもらえる、すてきな商品です。', condition: 'GOOD' },
+      categoryId: newItemData.category?.[0] || 'その他',
       price,
+      saleType: newItemData.isAuction ? 'AUCTION' : 'FIXED_PRICE',
+      shippingPayer: newItemData.shippingFee?.includes('購入者') ? 'BUYER' : 'SELLER',
+      shippingMethod: newItemData.shippingMethod?.includes('郵便') ? 'POST' : 'MERCARI_STANDARD',
+      shippingOrigin: newItemData.origin || '東京都',
+      shippingDays: Number(newItemData.shippingDays?.match(/\d+/)?.[0] ?? 2),
+      packageSize: 'MEDIUM',
+      isAnonymous: true,
       images: newItemData.images?.length ? [...newItemData.images] : ['/images/products/knit.jpg'],
-      isSold: false,
-      isAuction: newItemData.isAuction,
-      currentBid: newItemData.currentBid,
-      bidsCount: newItemData.bidsCount,
-      timeLeft: newItemData.timeLeft,
-      description: newItemData.description?.trim() || 'Furima Sandboxで見つけてもらえる、すてきな商品です。',
-      category: newItemData.category?.length ? [...newItemData.category] : ['その他'],
-      condition: newItemData.condition || '目立った傷や汚れなし',
-      shippingFee: newItemData.shippingFee || '送料込み（出品者負担）',
-      shippingMethod: newItemData.shippingMethod || 'ゆうゆう配送',
-      origin: newItemData.origin || '東京都',
-      shippingDays: newItemData.shippingDays || '1〜2日で発送',
-      likesCount: 0,
-      isLiked: false,
-      seller: { name: user.name, avatar: user.avatar, rating: user.rating, ratingsCount: user.ratingsCount, isVerified: user.isVerified },
-      comments: [],
-    };
-    setItems((previous) => [newItem, ...previous]);
+    });
+    if (!draft.ok) return failure(mapDomainError(draft.error), draft.stateVersion, draft.message);
+    const published = domain.publishListing(draft.data.id);
+    if (!published.ok) return failure(mapDomainError(published.error), published.stateVersion, published.message);
+    syncDomain();
+    const newItem = domain.getLegacyItems().find((item) => item.id === draft.data.itemId);
+    if (!newItem) return failure('ITEM_NOT_FOUND', published.stateVersion, '出品商品を生成できませんでした');
     setIsListingModalOpen(false);
-    return success(cloneItem(newItem), bumpStateVersion());
+    return success(cloneItem(newItem), published.stateVersion);
   };
 
   const addComment = (itemId: string, text: string): ActionResult<undefined> => {
@@ -400,11 +597,79 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     const normalizedText = text.trim();
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
-    if (target.isSold) return failure('ALREADY_SOLD', stateVersionRef.current, '売り切れの商品にはコメントできません');
     if (!normalizedText) return failure('INVALID_INPUT', stateVersionRef.current, 'コメントを入力してください');
-    const newComment = { id: createId('comment'), userName: user.name, userAvatar: user.avatar, text: normalizedText, date: 'たった今' };
-    setItems((previous) => previous.map((item) => item.id === itemId ? { ...item, comments: [...item.comments, newComment] } : item));
-    return success(undefined, bumpStateVersion());
+    const domain = domainRef.current;
+    if (!domain) return failure('INVALID_INPUT', stateVersionRef.current, 'コメント処理を開始できません');
+    const result = domain.addListingComment(target.listingId ?? `listing-${itemId}`, domain.getState().currentUserId, normalizedText);
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+
+  const completePayment = (transactionId: string): ActionResult<undefined> => {
+    const result = domainRef.current?.completePayment(transactionId);
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '支払い処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+  const updateCheckout = (itemId: string, paymentLabel: string): ActionResult<undefined> => {
+    const domain = domainRef.current;
+    const checkoutId = checkoutIdsRef.current.get(itemId);
+    if (!domain || !checkoutId) return failure('CHECKOUT_NOT_FOUND', stateVersionRef.current, '購入手続きが見つかりません');
+    const state = domain.getState();
+    const checkout = state.checkouts.find((candidate) => candidate.id === checkoutId);
+    const paymentMethod = state.paymentMethods.find((method) => method.userId === checkout?.buyerId && (paymentLabel.includes('コンビニ') ? method.type === 'CONVENIENCE_STORE' : paymentLabel.includes('残高') ? method.type === 'BALANCE' : method.type === 'CREDIT_CARD'));
+    if (!paymentMethod) return failure('INVALID_INPUT', stateVersionRef.current, '支払い方法が見つかりません');
+    const result = domain.updateCheckout(checkoutId, { paymentMethodId: paymentMethod.id });
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    return success(undefined, result.stateVersion);
+  };
+  const markAsShipped = (transactionId: string): ActionResult<undefined> => {
+    const result = domainRef.current?.markAsShipped(transactionId);
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '発送処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+  const updateShipmentStatus = (transactionId: string, status: ShipmentStatus): ActionResult<undefined> => {
+    const result = domainRef.current?.updateShipmentStatus(transactionId, status);
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '配送処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+  const rateTransaction = (transactionId: string, rating: number, comment = ''): ActionResult<undefined> => {
+    const domain = domainRef.current;
+    if (!domain) return failure('INVALID_INPUT', stateVersionRef.current, '評価処理を開始できません');
+    const state = domain.getState();
+    const transaction = state.transactions.find((value) => value.id === transactionId);
+    const result = transaction ? domain.rateTransaction(transactionId, state.currentUserId, rating, comment) : undefined;
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '評価処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+  const pauseListing = (listingId: string): ActionResult<undefined> => {
+    const result = domainRef.current?.pauseListing(listingId);
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '公開停止処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+  const resumeListing = (listingId: string): ActionResult<undefined> => {
+    const result = domainRef.current?.resumeListing(listingId);
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '再公開処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
+  };
+  const deleteListing = (listingId: string): ActionResult<undefined> => {
+    const result = domainRef.current?.deleteListing(listingId);
+    if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '削除処理を開始できません');
+    if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
+    syncDomain();
+    return success(undefined, result.stateVersion);
   };
 
   const openNotification = (notificationId: string) => {
@@ -428,8 +693,9 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const idempotencyKey = options?.idempotencyKey ?? options?.requestId;
     const cached = idempotencyKey ? idempotencyCacheRef.current.get(idempotencyKey) : undefined;
     if (cached) return cached as ActionResult<T>;
+    const actorId = domainRef.current.getState().currentUserId;
     const result = operation();
-    actionTraceRef.current = [...actionTraceRef.current.slice(-99), { action, requestId: options?.requestId, idempotencyKey: options?.idempotencyKey, payload, result: result as ActionResult<unknown>, at: new Date().toISOString() }];
+    actionTraceRef.current = [...actionTraceRef.current.slice(-99), { action, actorId, requestId: options?.requestId, idempotencyKey: options?.idempotencyKey, payload, result: result as ActionResult<unknown>, at: new Date().toISOString() }];
     if (idempotencyKey) idempotencyCacheRef.current.set(idempotencyKey, result as ActionResult<unknown>);
     return result;
   };
@@ -446,6 +712,15 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const api: MercariAgentAPI = {
+      switchPersona: (userId, options) => runAgentAction('switchPersona', { userId }, options, () => switchPersona(userId)),
+      getPersonas: () => buildSandboxPersonas(domainRef.current.getState()),
+      getWorldState: () => ({
+        exportedAt: new Date().toISOString(),
+        marketplace: domainRef.current.getState(),
+        ui: getSnapshot(),
+        actionTrace: actionTraceRef.current.map((entry) => ({ ...entry })),
+      }),
+      getActivity: (limit = 20) => buildSandboxActivity(domainRef.current.getState(), limit),
       navigateTab: (tab, options) => runAgentAction('navigateTab', { tab }, options, () => { navigateToTab(tab); return success(undefined, bumpStateVersion()); }),
       navigateHomeSubTab: (tab, options) => runAgentAction('navigateHomeSubTab', { tab }, options, () => { navigateToTab('home'); setHomeTab(tab); return success(undefined, bumpStateVersion()); }),
       navigateCategory: (category, options) => runAgentAction('navigateCategory', { category }, options, () => openCategory(category)),
@@ -461,6 +736,10 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       startPurchase: (itemId, options) => runAgentAction('startPurchase', { itemId }, options, () => startPurchase(itemId)),
       confirmPurchase: (itemId, options) => runAgentAction('confirmPurchase', { itemId }, options, () => purchaseItem(itemId)),
       placeBid: (itemId, amount, options) => runAgentAction('placeBid', { itemId, amount }, options, () => placeBid(itemId, amount)),
+      completePayment: (transactionId, options) => runAgentAction('completePayment', { transactionId }, options, () => completePayment(transactionId)),
+      markAsShipped: (transactionId, options) => runAgentAction('markAsShipped', { transactionId }, options, () => markAsShipped(transactionId)),
+      advanceShipment: (transactionId, options) => runAgentAction('advanceShipment', { transactionId }, options, () => updateShipmentStatus(transactionId, 'DELIVERED')),
+      rateTransaction: (transactionId, rating, comment = '', options) => runAgentAction('rateTransaction', { transactionId, rating, comment }, options, () => rateTransaction(transactionId, rating, comment)),
       buyItem: (itemId, options) => runAgentAction('buyItem', { itemId }, options, () => startPurchase(itemId)),
       getSnapshot,
       getItems: () => cloneItems(stateRef.current?.items ?? []),
@@ -468,11 +747,13 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       searchItems,
       getState: getSnapshot,
       getActionTrace: () => actionTraceRef.current.map((entry) => ({ ...entry })),
-      resetScenario: (options) => runAgentAction('resetScenario', {}, options, () => { setItems(cloneItems(INITIAL_ITEMS).map((item) => ({ ...item, isLiked: false }))); setNotifications(cloneNotifications(INITIAL_NOTIFICATIONS)); navigateToTab('home'); setHomeTab('recommend'); setSearchQuery(''); setSearchHistory([...INITIAL_SEARCH_HISTORY]); setActiveNotificationId(null); setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]); setSavedItemIds([]); listingDraftsRef.current.clear(); purchasedItemIdsRef.current.clear(); idempotencyCacheRef.current.clear(); actionTraceRef.current = []; return success(undefined, bumpStateVersion()); }),
+      resetScenario: (options) => runAgentAction('resetScenario', {}, options, () => { domain.reset(createInitialMarketplaceState()); syncDomain(); setNotifications(cloneNotifications(INITIAL_NOTIFICATIONS)); navigateToTab('home'); setHomeTab('recommend'); setSearchQuery(''); setSearchHistory([...INITIAL_SEARCH_HISTORY]); setActiveNotificationId(null); setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]); setSavedItemIds([]); setIsSandboxPanelOpen(false); listingDraftsRef.current.clear(); checkoutIdsRef.current.clear(); purchasedItemIdsRef.current.clear(); idempotencyCacheRef.current.clear(); actionTraceRef.current = []; return success(undefined, bumpStateVersion()); }),
     };
+    window.__FURIMA_SANDBOX_API__ = api;
     window.__SHOP_API__ = api;
     window.__MERCARI_API__ = api;
     return () => {
+      if (window.__FURIMA_SANDBOX_API__ === api) delete window.__FURIMA_SANDBOX_API__;
       if (window.__SHOP_API__ === api) delete window.__SHOP_API__;
       if (window.__MERCARI_API__ === api) delete window.__MERCARI_API__;
     };
@@ -480,7 +761,9 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-    return <MercariContext.Provider value={{ isAuthenticated, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, addComment, recentlyViewedIds, savedItemIds, user, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame }}>{children}</MercariContext.Provider>;
+    const transactions = marketplaceState.transactions.filter((transaction) => transaction.buyerId === marketplaceState.currentUserId || transaction.sellerId === marketplaceState.currentUserId);
+    const transactionPhase = (transactionId: string) => { const transaction = marketplaceState.transactions.find((value) => value.id === transactionId); return transaction ? deriveTransactionPhase(transaction) : null; };
+    return <MercariContext.Provider value={{ isAuthenticated, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, addComment, marketplaceState, transactions, transactionPhase, completePayment, updateCheckout, markAsShipped, updateShipmentStatus, rateTransaction, pauseListing, resumeListing, deleteListing, personas, activePersona, switchPersona, sandboxActivity, isSandboxPanelOpen, setIsSandboxPanelOpen, recentlyViewedIds, savedItemIds, user, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame }}>{children}</MercariContext.Provider>;
 };
 
 export const useMercari = () => {

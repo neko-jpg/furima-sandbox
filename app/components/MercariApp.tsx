@@ -17,6 +17,7 @@ import { BrowseDirectoryView, isBrowseDirectoryRoute } from './views/BrowseDirec
 import { BuyModal } from './modals/BuyModal';
 import { LoginPromptModal } from './modals/LoginPromptModal';
 import { DemoNoticeBar } from './DemoNotice';
+import { SandboxPanel, SandboxToolbar } from './SandboxSwitcher';
 
 export const MercariApp: React.FC = () => {
   const {
@@ -27,6 +28,7 @@ export const MercariApp: React.FC = () => {
     isSearchOpen,
     searchQuery,
     isDeviceFrame,
+    marketplaceState,
   } = useMercari();
 
   const renderCurrentView = () => {
@@ -52,7 +54,7 @@ export const MercariApp: React.FC = () => {
   return (
     <div className="min-h-screen bg-[var(--shop-bg)] font-sans text-white">
       <div
-        className={`mx-auto flex w-full flex-col bg-[var(--shop-bg)] transition-all duration-300 ${
+        className={`relative mx-auto flex w-full flex-col bg-[var(--shop-bg)] transition-all duration-300 ${
           isDeviceFrame
             ? 'relative max-w-[430px] h-[100dvh] overflow-hidden sm:my-4 sm:h-[900px] sm:rounded-[34px] sm:border-[8px] sm:border-[#343438] sm:shadow-2xl'
             : 'min-h-screen max-w-none'
@@ -60,6 +62,7 @@ export const MercariApp: React.FC = () => {
         data-testid="shop-app-container"
       >
         <DemoNoticeBar />
+        <SandboxToolbar />
 
         {/* Header */}
         <Header />
@@ -83,8 +86,9 @@ export const MercariApp: React.FC = () => {
 
         {isSearchOpen && !searchQuery.trim() && <SearchView />}
 
-        <BuyModal />
+        <BuyModal key={marketplaceState.currentUserId} />
         <LoginPromptModal />
+        <SandboxPanel />
       </div>
     </div>
   );

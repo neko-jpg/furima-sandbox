@@ -136,10 +136,9 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
 };
 
 const GuestActions: React.FC = () => {
-  const { requestLogin, navigateToTab } = useMercari();
+  const { activePersona, setIsSandboxPanelOpen, navigateToTab } = useMercari();
   return <div className="flex shrink-0 items-center gap-1.5">
-    <button type="button" onClick={() => requestLogin('ログインすると、いいね・保存・購入などの機能を利用できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">ログイン</button>
-    <button type="button" onClick={() => requestLogin('会員登録すると、商品を購入・出品できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">会員登録</button>
+    <button type="button" onClick={() => setIsSandboxPanelOpen(true)} className="mr-1 flex items-center gap-2 rounded-full border border-[var(--shop-border)] bg-[var(--shop-surface)] py-1.5 pl-1.5 pr-3 text-sm font-bold text-white hover:border-[var(--shop-blue)]" aria-label="体験ユーザーを切り替える"><img src={activePersona.avatar} alt="" className="h-7 w-7 rounded-full object-cover" /><span className="max-w-24 truncate">{activePersona.name}</span></button>
     <button type="button" onClick={() => navigateToTab('notifications')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">お知らせ</button>
     <button type="button" onClick={() => navigateToTab('sell')} className="rounded-md bg-[var(--shop-accent)] px-4 py-2.5 text-sm font-bold text-white shadow-[0_4px_12px_rgba(255,59,74,.2)] hover:bg-[var(--shop-accent-strong)]">出品</button>
     <button type="button" className="rounded-md px-2 py-2 text-xs font-bold text-[var(--shop-muted)] hover:text-white">日本語</button>

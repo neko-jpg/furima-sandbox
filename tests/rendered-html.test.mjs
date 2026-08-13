@@ -20,11 +20,12 @@ test("server-renders the Furima Sandbox app shell", async () => {
   assert.match(html, /Furima Sandbox - /);
   assert.match(html, /Furima Sandboxの動くフリマUIモック/);
   assert.match(html, /本サイトは「Mercari AI Agent Hackathon for PM」提出用に作成したデモ・モックサイトです/);
+  assert.match(html, /このユーザーとして体験中/);
   assert.doesNotMatch(html, /Starter Project|Building your site|SkeletonPreview/);
 });
 
 test("domain state and agent API invariants are covered by source-level contracts", async () => {
-  const [context, types, detail, buyModal, listing, globals, app, header, home, category, shop, search] = await Promise.all([
+  const [context, types, detail, buyModal, listing, globals, app, header, home, category, shop, search, sandbox] = await Promise.all([
     readFile(new URL("app/context/MercariContext.tsx", root), "utf8"),
     readFile(new URL("app/types/mercari.ts", root), "utf8"),
     readFile(new URL("app/components/views/ItemDetailView.tsx", root), "utf8"),
@@ -37,6 +38,7 @@ test("domain state and agent API invariants are covered by source-level contract
     readFile(new URL("app/components/views/CategoryView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/ShopView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/SearchView.tsx", root), "utf8"),
+    readFile(new URL("app/components/SandboxSwitcher.tsx", root), "utf8"),
   ]);
   assert.match(context, /useState<string \| null>\(null\)/);
   assert.match(context, /const selectedItem = items\.find\(\(item\) => item\.id === selectedItemId\)/);
@@ -46,6 +48,10 @@ test("domain state and agent API invariants are covered by source-level contract
   assert.match(context, /failure\('ALREADY_SOLD'/);
   assert.match(context, /window\.__MERCARI_API__ = api/);
   assert.match(context, /window\.__SHOP_API__ = api/);
+  assert.match(context, /window\.__FURIMA_SANDBOX_API__ = api/);
+  assert.match(context, /getWorldState/);
+  assert.match(context, /switchPersona/);
+  assert.match(context, /getActivity/);
   assert.match(context, /getSnapshot/);
   assert.match(context, /idempotencyKey/);
   assert.match(context, /getActionTrace/);
@@ -82,4 +88,6 @@ test("domain state and agent API invariants are covered by source-level contract
   assert.match(shop, /data-testid="shop-view"/);
   assert.match(shop, /openCategory\(`ショップカテゴリ:\$\{group\.name\}`\)/);
   assert.match(home, /openCategory\('PC'\)/);
+  assert.match(sandbox, /誰として市場に入りますか？/);
+  assert.match(sandbox, /ユーザー間の循環を試す/);
 });

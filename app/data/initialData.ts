@@ -26,16 +26,73 @@ const localProductImages: Record<string, string> = {
 const productImage = (id: string) => localProductImages[id] ? `/images/products/${localProductImages[id]}` : image(id);
 const knitImage = productImage('photo-1485968579580-b6d095142e6e');
 
-export const INITIAL_USER: UserProfile = {
-  name: 'Natsuki',
-  avatar: image('photo-1534528741775-53994a69daeb'),
-  rating: 4.9,
-  ratingsCount: 128,
-  isVerified: true,
-  salesBalance: 18400,
-  points: 620,
-  hasDPointLinked: true,
-};
+export interface SandboxPersonaSeed extends UserProfile {
+  id: string;
+  bio: string;
+  role: string;
+  accent: string;
+}
+
+export const SANDBOX_PERSONAS: SandboxPersonaSeed[] = [
+  {
+    id: 'user-natsuki',
+    name: 'Natsuki',
+    avatar: image('photo-1534528741775-53994a69daeb'),
+    rating: 4.9,
+    ratingsCount: 128,
+    isVerified: true,
+    salesBalance: 18400,
+    points: 620,
+    hasDPointLinked: true,
+    bio: '掘り出し物を探すのが好き。最初の取引では購入者として参加します。',
+    role: '購入者からスタート',
+    accent: '#4cb9ff',
+  },
+  {
+    id: 'user-サクラ',
+    name: 'サクラ',
+    avatar: image('photo-1438761681033-6461ffad8d80'),
+    rating: 4.9,
+    ratingsCount: 128,
+    isVerified: true,
+    salesBalance: 26300,
+    points: 340,
+    hasDPointLinked: true,
+    bio: 'クローゼットの服を丁寧に出品。Natsukiへ発送するタスクがあります。',
+    role: '出品者からスタート',
+    accent: '#ff6573',
+  },
+  {
+    id: 'user-techgeek',
+    name: 'TechGeek',
+    avatar: image('photo-1500648767791-00dcc994a43e'),
+    rating: 4.9,
+    ratingsCount: 210,
+    isVerified: true,
+    salesBalance: 82100,
+    points: 120,
+    hasDPointLinked: false,
+    bio: 'PCや周辺機器を中心に売買する常連ユーザーです。',
+    role: 'ガジェット出品者',
+    accent: '#54d98d',
+  },
+  {
+    id: 'user-izu',
+    name: 'izu',
+    avatar: image('photo-1535713875002-d1d0cf377fde'),
+    rating: 5,
+    ratingsCount: 54,
+    isVerified: true,
+    salesBalance: 6900,
+    points: 80,
+    hasDPointLinked: false,
+    bio: '本を中心に出品。完了済みの商品を持つライトユーザーです。',
+    role: '本の出品者',
+    accent: '#ffcf4a',
+  },
+];
+
+export const INITIAL_USER: UserProfile = SANDBOX_PERSONAS[0];
 
 const seller = (name: string, avatarId: string, rating: number, ratingsCount: number): MercariItem['seller'] => ({
   name,
