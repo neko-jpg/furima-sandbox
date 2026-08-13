@@ -1,0 +1,43 @@
+{
+  "inputCount": 1200,
+  "keptCount": 1009,
+  "rejectedCount": 191,
+  "keptByCategory": {
+    "家電・スマホ / オーディオ": 60,
+    "インテリア・住まい・小物 / 家具": 60,
+    "ゲーム・おもちゃ・グッズ / ゲーム": 60,
+    "家電・スマホ / 生活家電": 58,
+    "本・マンガ / 本・雑誌": 60,
+    "家電・スマホ / カメラ": 59,
+    "レディース / バッグ": 40,
+    "ホビー / コレクション": 56,
+    "家電・スマホ / スマートフォン": 59,
+    "ファッション / 靴・アクセサリー": 52,
+    "メンズ / 靴": 55,
+    "ゲーム・おもちゃ・グッズ / おもちゃ": 59,
+    "スポーツ・レジャー / スポーツ用品": 59,
+    "インテリア・住まい・小物 / 照明": 60,
+    "メンズ / トップス": 16,
+    "家電・スマホ / PC・タブレット": 60,
+    "インテリア・住まい・小物 / インテリア": 60,
+    "キッチン用品 / 調理器具": 60,
+    "レディース / トップス": 14,
+    "ベビー・キッズ / 子ども用品": 2
+  },
+  "rejectedReasons": {
+    "room_without_item": 4,
+    "too_dark": 22,
+    "non_product_logo": 3,
+    "non_product_illustration": 1,
+    "non_product_cartoon": 4,
+    "flat_image": 1,
+    "electronics_person_only": 1,
+    "fashion_portrait_only": 123,
+    "person_primary_subject": 58
+  },
+  "rawSources": [
+    "public\\images\\products\\pexels-candidates",
+    "public\\images\\products\\pexels-candidates-1000"
+  ],
+  "selectedFolder": "C:\\development\\メルカリUI_kit\\public\\images\\products\\pexels-selected"
+}

@@ -71,7 +71,12 @@ test("domain state and agent API invariants are covered by source-level contract
   assert.doesNotMatch(home, /openCategory\(category\.target\)/);
   assert.match(search, /setSearchQuery\(normalizedQuery\)/);
   assert.match(search, /tokenizeSearchQuery/);
-  assert.match(search, /queryTokens\.every/);
+  assert.match(search, /searchCatalogItems/);
+  assert.match(context, /searchCatalogItems\(stateRef\.current\?\.items/);
+  assert.match(types, /productFamilyId\?: string/);
+  assert.match(types, /variantId\?: string/);
+  assert.match(types, /attributes\?: Record<string, string>/);
+  assert.match(types, /inventoryPolicy\?: 'SINGLE' \| 'MULTI'/);
   assert.match(search, /検索キーワードを入力/);
   assert.match(search, /を削除/);
   assert.match(header, /検索履歴/);

@@ -43,12 +43,13 @@ export const ProductCard: React.FC<{
       <div className="relative aspect-square overflow-hidden bg-[#3b3b3e]">
         <img src={item.images[0]} alt={item.title} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
         {item.isSold && <span className="absolute -left-5 top-2 z-10 w-16 -rotate-45 bg-[var(--shop-accent)] py-0.5 text-center text-[8px] font-black tracking-wide text-white shadow">SOLD</span>}
+        {item.isDemo && !item.isSold && <span className="absolute right-2 top-2 rounded-full border border-white/15 bg-[#143247]/95 px-1.5 py-0.5 text-[8px] font-black tracking-wide text-[var(--shop-blue)] shadow">DEMO</span>}
         {item.isAuction && <span className="absolute left-2 top-2 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-bold text-white">入札 {item.bidsCount ?? 0}</span>}
         <span className="absolute bottom-1.5 left-1.5 rounded-full bg-black/85 px-1.5 py-0.5 text-[11px] font-black text-white">¥{(item.currentBid ?? item.price).toLocaleString()}</span>
       </div>
       <div className="hidden p-2.5 sm:block">
         <p className="line-clamp-2 min-h-[35px] text-xs leading-4 text-white md:text-[13px]">{item.title}</p>
-        <p className="mt-1 truncate text-[10px] text-[var(--shop-subtle)]">{item.seller.name} ・ ★{item.seller.rating.toFixed(1)}</p>
+        <p className="mt-1 truncate text-[10px] text-[var(--shop-subtle)]">{item.seller.name} ・ ★{item.seller.rating.toFixed(1)}{item.inventoryPolicy === 'MULTI' && !item.isSold && ` ・ 在庫${item.inventoryQuantity ?? 1}点`}</p>
       </div>
     </button>
     {onLike && (

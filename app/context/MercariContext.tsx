@@ -6,6 +6,7 @@ import type {
   ActionTraceEntry,
   AgentActionOptions,
   HomeTab,
+  InventoryMovement,
   MainTab,
   MercariAgentAPI,
   MercariAgentSnapshot,
@@ -13,15 +14,25 @@ import type {
   NotificationItem,
   UserProfile,
 } from '../types/mercari';
+import { CATALOG_ITEMS } from '../data/catalogData';
 import { INITIAL_ITEMS, INITIAL_NOTIFICATIONS, INITIAL_USER } from '../data/initialData';
+import { searchCatalogItems } from '../components/searchUtils';
 
 const PREFERENCES_STORAGE_KEY = 'shop-ui-preferences-v1';
+const INVENTORY_STORAGE_KEY = 'shop-inventory-v1';
+
+const INITIAL_CATALOG_ITEMS = [...INITIAL_ITEMS, ...CATALOG_ITEMS];
 
 interface PersistedPreferences {
   likedItemIds?: string[];
   searchHistory?: string[];
   recentlyViewedIds?: string[];
   savedItemIds?: string[];
+}
+
+interface PersistedInventory {
+  soldItemIds?: string[];
+  inventoryQuantities?: Record<string, number>;
 }
 
 const readPersistedPreferences = (): PersistedPreferences => {
@@ -34,6 +45,16 @@ const readPersistedPreferences = (): PersistedPreferences => {
   }
 };
 
+const readPersistedInventory = (): PersistedInventory => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(INVENTORY_STORAGE_KEY);
+    return raw ? JSON.parse(raw) as PersistedInventory : {};
+  } catch {
+    return {};
+  }
+};
+
 const INITIAL_SEARCH_HISTORY = ['ゲーム・おもちゃ・グッズ', '本・雑誌・漫画', 'ファッション, メンズ', 'ノートPC', 'PC', 'ゲーム', '本・マンガ', 'ファッション'];
 const INITIAL_RECENTLY_VIEWED_IDS = ['pc-2', 'pc-1', 'item-8', 'item-5', 'fashion-2', 'game-1'];
 
@@ -41,11 +62,44 @@ const cloneItem = (item: MercariItem): MercariItem => ({
   ...item,
   images: [...item.images],
   category: [...item.category],
+  searchTags: item.searchTags ? [...item.searchTags] : undefined,
+  attributes: item.attributes ? { ...item.attributes } : undefined,
   seller: { ...item.seller },
   comments: item.comments.map((comment) => ({ ...comment })),
 });
 const cloneItems = (items: MercariItem[]) => items.map(cloneItem);
 const cloneNotifications = (items: NotificationItem[]) => items.map((item) => ({ ...item }));
+const createInitialItems = () => cloneItems(INITIAL_CATALOG_ITEMS).map((item) => ({
+  ...item,
+  isLiked: false,
+  inventoryPolicy: item.inventoryPolicy ?? 'SINGLE',
+  inventoryQuantity: item.isSold ? 0 : item.inventoryQuantity ?? 1,
+  reservedQuantity: item.reservedQuantity ?? 0,
+  listingStatus: item.isSold ? 'SOLD' as const : item.listingStatus ?? 'ACTIVE' as const,
+}));
+const createInitialInventoryMovements = (): InventoryMovement[] => INITIAL_CATALOG_ITEMS.flatMap((item) => {
+  const importedAt = '2026-01-01T00:00:00.000Z';
+  const initialQuantity = item.inventoryInitialQuantity ?? item.inventoryQuantity ?? 1;
+  const initialIn: InventoryMovement = {
+    id: `seed-in-${item.id}`,
+    itemId: item.id,
+    sku: item.sku,
+    type: 'IN',
+    quantity: initialQuantity,
+    reason: item.isDemo ? 'デモカタログ初期インポート' : '初期在庫',
+    at: importedAt,
+  };
+  if (!item.isSold) return [initialIn];
+  return [initialIn, {
+    id: `seed-out-${item.id}`,
+    itemId: item.id,
+    sku: item.sku,
+    type: 'OUT',
+    quantity: initialQuantity,
+    reason: '初期SOLD状態',
+    at: importedAt,
+  }];
+});
 const createId = (prefix: string) => typeof globalThis.crypto?.randomUUID === 'function'
   ? `${prefix}-${globalThis.crypto.randomUUID()}`
   : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -126,13 +180,14 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [buyingItemId, setBuyingItemId] = useState<string | null>(null);
   const [isPurchaseCompleteOpen, setIsPurchaseCompleteOpen] = useState(false);
   const [isListingModalOpen, setIsListingModalOpenState] = useState(false);
-  const [items, setItems] = useState<MercariItem[]>(() => cloneItems(INITIAL_ITEMS).map((item) => ({ ...item, isLiked: false })));
+  const [items, setItems] = useState<MercariItem[]>(createInitialItems);
   const [user] = useState<UserProfile>(INITIAL_USER);
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => cloneNotifications(INITIAL_NOTIFICATIONS));
   const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null);
   const [recentlyViewedIds, setRecentlyViewedIds] = useState<string[]>(INITIAL_RECENTLY_VIEWED_IDS);
   const [savedItemIds, setSavedItemIds] = useState<string[]>([]);
   const [isPreferencesHydrated, setIsPreferencesHydrated] = useState(false);
+  const [isInventoryHydrated, setIsInventoryHydrated] = useState(false);
   const [isDeviceFrame, setIsDeviceFrame] = useState(false);
   const [isLoginPromptOpen, setIsLoginPromptOpen] = useState(false);
   const [loginPromptReason, setLoginPromptReason] = useState('Furima Sandboxはログイン不要のモックモードです。');
@@ -143,8 +198,25 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const actionTraceRef = useRef<ActionTraceEntry[]>([]);
   const idempotencyCacheRef = useRef(new Map<string, ActionResult<unknown>>());
   const listingDraftsRef = useRef(new Map<string, Partial<MercariItem>>());
-  const purchasedItemIdsRef = useRef(new Set<string>());
+  const [initialInventoryMovements] = useState<InventoryMovement[]>(createInitialInventoryMovements);
+  const inventoryMovementsRef = useRef<InventoryMovement[]>(initialInventoryMovements);
   const stateRef = useRef<MercariAgentSnapshot | null>(null);
+
+  // React state is the rendering source, while this ref is the synchronous source
+  // for the agent bridge. Keep both sides aligned inside each domain action so an
+  // agent can read the new snapshot immediately after an action resolves.
+  const patchStateRef = (patch: Partial<MercariAgentSnapshot>) => {
+    if (!stateRef.current) return;
+    stateRef.current = {
+      ...stateRef.current,
+      ...patch,
+      stateVersion: stateVersionRef.current,
+      searchHistory: patch.searchHistory ? [...patch.searchHistory] : stateRef.current.searchHistory,
+      recentlyViewedIds: patch.recentlyViewedIds ? [...patch.recentlyViewedIds] : stateRef.current.recentlyViewedIds,
+      savedItemIds: patch.savedItemIds ? [...patch.savedItemIds] : stateRef.current.savedItemIds,
+      items: patch.items ? cloneItems(patch.items) : stateRef.current.items,
+    };
+  };
 
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const buyingItem = items.find((item) => item.id === buyingItemId) ?? null;
@@ -157,6 +229,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const closeLoginPrompt = () => setIsLoginPromptOpen(false);
   const setHomeTab = (tab: HomeTab) => {
     setHomeTabState(tab);
+    patchStateRef({ currentHomeTab: tab });
   };
 
   const setIsSearchOpen = (open: boolean) => {
@@ -165,6 +238,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setSelectedItemId(null);
       setBuyingItemId(null);
       setIsListingModalOpenState(false);
+      patchStateRef({ selectedItemId: null, buyingItemId: null });
     }
   };
 
@@ -180,6 +254,12 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setBuyingItemId(null);
     setIsListingModalOpenState(false);
     setActiveNotificationId(null);
+    patchStateRef({
+      currentMainTab: tab,
+      currentCategory: null,
+      selectedItemId: null,
+      buyingItemId: null,
+    });
   };
 
   const setIsListingModalOpen = (open: boolean) => {
@@ -192,6 +272,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setIsSearchOpenState(false);
       setSelectedItemId(null);
       setBuyingItemId(null);
+      patchStateRef({ selectedItemId: null, buyingItemId: null });
     }
   };
 
@@ -233,6 +314,38 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [isAuthenticated]);
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const persisted = readPersistedInventory();
+      const persistedSoldIds = new Set(persisted.soldItemIds ?? []);
+      const persistedQuantities = persisted.inventoryQuantities ?? {};
+      if (persistedSoldIds.size > 0 || Object.keys(persistedQuantities).length > 0) {
+        setItems((previous) => previous.map((item) => {
+          const rawQuantity = persistedQuantities[item.id];
+          const hasQuantityOverride = typeof rawQuantity === 'number' && Number.isFinite(rawQuantity);
+          if (!item.isSold && !persistedSoldIds.has(item.id) && !hasQuantityOverride) return item;
+          const quantity = persistedSoldIds.has(item.id)
+            ? 0
+            : hasQuantityOverride
+              ? Math.max(0, Math.floor(rawQuantity))
+              : item.isSold
+                ? 0
+                : item.inventoryQuantity ?? 1;
+          const isSold = quantity === 0;
+          return {
+            ...item,
+            isSold,
+            inventoryQuantity: quantity,
+            reservedQuantity: 0,
+            listingStatus: isSold ? 'SOLD' : 'ACTIVE',
+          };
+        }));
+      }
+      setIsInventoryHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined' || !isPreferencesHydrated) return;
     try {
       window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify({
@@ -246,17 +359,50 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [isPreferencesHydrated, items, searchHistory, recentlyViewedIds, savedItemIds]);
 
-  const bumpStateVersion = () => {
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isInventoryHydrated) return;
+    try {
+      window.localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify({
+        soldItemIds: items.filter((item) => item.isSold).map((item) => item.id),
+        inventoryQuantities: Object.fromEntries(items.map((item) => [item.id, item.inventoryQuantity ?? (item.isSold ? 0 : 1)])),
+      } satisfies PersistedInventory));
+    } catch {
+      // Storage can be unavailable in private browsing or embedded previews.
+    }
+  }, [isInventoryHydrated, items]);
+
+  const bumpStateVersion = (patch: Partial<MercariAgentSnapshot> = {}) => {
     stateVersionRef.current += 1;
+    patchStateRef(patch);
     return stateVersionRef.current;
+  };
+
+  const recordInventoryMovement = (item: MercariItem, type: InventoryMovement['type'], quantity: number, reason: string, referenceId?: string) => {
+    const movement: InventoryMovement = {
+      id: createId('inventory-movement'),
+      itemId: item.id,
+      sku: item.sku,
+      type,
+      quantity,
+      reason,
+      referenceId,
+      at: new Date().toISOString(),
+    };
+    inventoryMovementsRef.current = [...inventoryMovementsRef.current.slice(-1999), movement];
+    return movement;
   };
 
   const addSearchHistory = (query: string) => {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) return;
-    setSearchHistory((previous) => [normalizedQuery, ...previous.filter((item) => item !== normalizedQuery)].slice(0, 10));
+    const nextSearchHistory = [normalizedQuery, ...(stateRef.current?.searchHistory ?? searchHistory).filter((item) => item !== normalizedQuery)].slice(0, 10);
+    setSearchHistory(nextSearchHistory);
+    patchStateRef({ searchHistory: nextSearchHistory });
   };
-  const clearSearchHistory = () => setSearchHistory([]);
+  const clearSearchHistory = () => {
+    setSearchHistory([]);
+    patchStateRef({ searchHistory: [] });
+  };
 
   const openCategory = (category: string): ActionResult<undefined> => {
     const normalizedCategory = category.trim();
@@ -268,7 +414,12 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setBuyingItemId(null);
     setIsListingModalOpenState(false);
     setActiveNotificationId(null);
-    return success(undefined, bumpStateVersion());
+    return success(undefined, bumpStateVersion({
+      currentMainTab: 'category',
+      currentCategory: normalizedCategory,
+      selectedItemId: null,
+      buyingItemId: null,
+    }));
   };
 
   const setLiked = (itemId: string, liked: boolean): ActionResult<undefined> => {
@@ -279,12 +430,13 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
     if (target.isLiked === liked) return success(undefined, stateVersionRef.current);
-    setItems((previous) => previous.map((item) => item.id !== itemId ? item : ({
+    const nextItems = (stateRef.current?.items ?? []).map((item) => item.id !== itemId ? item : ({
       ...item,
       isLiked: liked,
       likesCount: liked ? item.likesCount + 1 : Math.max(0, item.likesCount - 1),
-    })));
-    return success(undefined, bumpStateVersion());
+    }));
+    setItems(nextItems);
+    return success(undefined, bumpStateVersion({ items: nextItems }));
   };
 
   const setSaved = (itemId: string, saved: boolean): ActionResult<undefined> => {
@@ -294,10 +446,12 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
-    const alreadySaved = savedItemIds.includes(itemId);
+    const liveSavedItemIds = stateRef.current?.savedItemIds ?? savedItemIds;
+    const alreadySaved = liveSavedItemIds.includes(itemId);
     if (alreadySaved === saved) return success(undefined, stateVersionRef.current);
-    setSavedItemIds((previous) => saved ? [...previous, itemId] : previous.filter((id) => id !== itemId));
-    return success(undefined, bumpStateVersion());
+    const nextSavedItemIds = saved ? [...liveSavedItemIds, itemId] : liveSavedItemIds.filter((id) => id !== itemId);
+    setSavedItemIds(nextSavedItemIds);
+    return success(undefined, bumpStateVersion({ savedItemIds: nextSavedItemIds }));
   };
 
   const toggleLikeItem = (itemId: string) => {
@@ -308,13 +462,20 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const openItem = (itemId: string): ActionResult<undefined> => {
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
-    setIsSearchOpenState(false);
     setBuyingItemId(null);
     setSelectedItemId(itemId);
-    setRecentlyViewedIds((previous) => [itemId, ...previous.filter((id) => id !== itemId)].slice(0, 12));
-    return success(undefined, bumpStateVersion());
+    const nextRecentlyViewedIds = [itemId, ...(stateRef.current?.recentlyViewedIds ?? recentlyViewedIds).filter((id) => id !== itemId)].slice(0, 12);
+    setRecentlyViewedIds(nextRecentlyViewedIds);
+    return success(undefined, bumpStateVersion({
+      selectedItemId: itemId,
+      buyingItemId: null,
+      recentlyViewedIds: nextRecentlyViewedIds,
+    }));
   };
-  const closeItem = () => setSelectedItemId(null);
+  const closeItem = () => {
+    setSelectedItemId(null);
+    patchStateRef({ selectedItemId: null });
+  };
 
   const startPurchase = (itemId: string): ActionResult<undefined> => {
     if (!isAuthenticated) {
@@ -323,10 +484,10 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
-    if (target.isSold || purchasedItemIdsRef.current.has(itemId)) return failure('ALREADY_SOLD', stateVersionRef.current, 'この商品は購入できません');
-    setIsSearchOpenState(false);
+    const availableQuantity = target.inventoryQuantity ?? (target.isSold ? 0 : 1);
+    if (target.isSold || availableQuantity <= 0) return failure('ALREADY_SOLD', stateVersionRef.current, 'この商品は購入できません');
     setBuyingItemId(itemId);
-    return success(undefined, bumpStateVersion());
+    return success(undefined, bumpStateVersion({ buyingItemId: itemId }));
   };
 
   const purchaseItem = (itemId: string): ActionResult<undefined> => {
@@ -336,10 +497,20 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
     const target = stateRef.current?.items.find((item) => item.id === itemId);
     if (!target) return failure('ITEM_NOT_FOUND', stateVersionRef.current);
-    if (target.isSold || purchasedItemIdsRef.current.has(itemId)) return failure('ALREADY_SOLD', stateVersionRef.current, 'この商品はすでに売り切れています');
-    purchasedItemIdsRef.current.add(itemId);
-    setItems((previous) => previous.map((item) => item.id === itemId ? { ...item, isSold: true } : item));
-    return success(undefined, bumpStateVersion());
+    const availableQuantity = target.inventoryQuantity ?? (target.isSold ? 0 : 1);
+    if (target.isSold || availableQuantity <= 0) return failure('ALREADY_SOLD', stateVersionRef.current, 'この商品はすでに売り切れています');
+    const nextQuantity = Math.max(0, availableQuantity - 1);
+    const nextIsSold = nextQuantity === 0;
+    const nextItems = (stateRef.current?.items ?? []).map((item) => item.id === itemId ? {
+      ...item,
+      isSold: nextIsSold,
+      inventoryQuantity: nextQuantity,
+      reservedQuantity: 0,
+      listingStatus: nextIsSold ? 'SOLD' as const : 'ACTIVE' as const,
+    } : item);
+    setItems(nextItems);
+    recordInventoryMovement(target, 'OUT', 1, 'デモ購入完了', `purchase-${itemId}-${stateVersionRef.current + 1}`);
+    return success(undefined, bumpStateVersion({ items: nextItems }));
   };
 
   const placeBid = (itemId: string, amount: number): ActionResult<{ currentBid: number; bidsCount: number }> => {
@@ -353,8 +524,9 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const minimumBid = (target.currentBid ?? target.price) + 100;
     if (!Number.isInteger(amount) || amount < minimumBid) return failure('BID_TOO_LOW', stateVersionRef.current, `入札額は¥${minimumBid.toLocaleString()}以上で入力してください`);
     const bidsCount = (target.bidsCount ?? 0) + 1;
-    setItems((previous) => previous.map((item) => item.id === itemId ? { ...item, currentBid: amount, bidsCount } : item));
-    return success({ currentBid: amount, bidsCount }, bumpStateVersion());
+    const nextItems = (stateRef.current?.items ?? []).map((item) => item.id === itemId ? { ...item, currentBid: amount, bidsCount } : item);
+    setItems(nextItems);
+    return success({ currentBid: amount, bidsCount }, bumpStateVersion({ items: nextItems }));
   };
 
   const addNewItem = (newItemData: Partial<MercariItem>): ActionResult<MercariItem> => {
@@ -365,12 +537,24 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const title = newItemData.title?.trim() ?? '';
     const price = newItemData.price ?? 1000;
     if (!title || !Number.isInteger(price) || price < 300) return failure('INVALID_INPUT', stateVersionRef.current, 'タイトルと価格を入力してください');
+    const inventoryPolicy = newItemData.inventoryPolicy ?? 'SINGLE';
+    const requestedInventoryQuantity = newItemData.inventoryQuantity;
+    const inventoryQuantity = inventoryPolicy === 'MULTI' && Number.isInteger(requestedInventoryQuantity) && (requestedInventoryQuantity ?? 0) > 0
+      ? requestedInventoryQuantity ?? 1
+      : 1;
     const newItem: MercariItem = {
       id: createId('item'),
+      sku: newItemData.sku || `FBS-${Date.now().toString(36).toUpperCase()}`,
       title,
       price,
       images: newItemData.images?.length ? [...newItemData.images] : ['/images/products/knit.jpg'],
       isSold: false,
+      inventoryPolicy,
+      inventoryInitialQuantity: inventoryQuantity,
+      inventoryQuantity,
+      reservedQuantity: 0,
+      listingStatus: 'ACTIVE',
+      isDemo: newItemData.isDemo ?? true,
       isAuction: newItemData.isAuction,
       currentBid: newItemData.currentBid,
       bidsCount: newItemData.bidsCount,
@@ -384,12 +568,32 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       shippingDays: newItemData.shippingDays || '1〜2日で発送',
       likesCount: 0,
       isLiked: false,
+      brand: newItemData.brand,
+      size: newItemData.size,
+      color: newItemData.color,
+      shippingSize: newItemData.shippingSize,
+      isAnonymousShipping: newItemData.isAnonymousShipping ?? true,
+      isAuthenticityEligible: newItemData.isAuthenticityEligible,
+      sellerType: newItemData.sellerType ?? 'individual',
+      sourceUrl: newItemData.sourceUrl,
+      sourcePhotographer: newItemData.sourcePhotographer,
+      sourceAttribution: newItemData.sourceAttribution,
+      sourceChecksum: newItemData.sourceChecksum,
+      productFamilyId: newItemData.productFamilyId,
+      productFamilyName: newItemData.productFamilyName,
+      variantId: newItemData.variantId,
+      variantName: newItemData.variantName,
+      productType: newItemData.productType,
+      searchTags: newItemData.searchTags ? [...newItemData.searchTags] : undefined,
+      attributes: newItemData.attributes ? { ...newItemData.attributes } : undefined,
       seller: { name: user.name, avatar: user.avatar, rating: user.rating, ratingsCount: user.ratingsCount, isVerified: user.isVerified },
       comments: [],
     };
-    setItems((previous) => [newItem, ...previous]);
+    const nextItems = [newItem, ...(stateRef.current?.items ?? [])];
+    setItems(nextItems);
     setIsListingModalOpen(false);
-    return success(cloneItem(newItem), bumpStateVersion());
+    recordInventoryMovement(newItem, 'IN', inventoryQuantity, newItem.isDemo ? 'デモカタログ登録' : '新規出品');
+    return success(cloneItem(newItem), bumpStateVersion({ items: nextItems }));
   };
 
   const addComment = (itemId: string, text: string): ActionResult<undefined> => {
@@ -403,8 +607,9 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (target.isSold) return failure('ALREADY_SOLD', stateVersionRef.current, '売り切れの商品にはコメントできません');
     if (!normalizedText) return failure('INVALID_INPUT', stateVersionRef.current, 'コメントを入力してください');
     const newComment = { id: createId('comment'), userName: user.name, userAvatar: user.avatar, text: normalizedText, date: 'たった今' };
-    setItems((previous) => previous.map((item) => item.id === itemId ? { ...item, comments: [...item.comments, newComment] } : item));
-    return success(undefined, bumpStateVersion());
+    const nextItems = (stateRef.current?.items ?? []).map((item) => item.id === itemId ? { ...item, comments: [...item.comments, newComment] } : item);
+    setItems(nextItems);
+    return success(undefined, bumpStateVersion({ items: nextItems }));
   };
 
   const openNotification = (notificationId: string) => {
@@ -422,6 +627,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     recentlyViewedIds: [...(stateRef.current?.recentlyViewedIds ?? [])],
     savedItemIds: [...(stateRef.current?.savedItemIds ?? [])],
     items: cloneItems(stateRef.current?.items ?? []),
+    inventoryMovements: inventoryMovementsRef.current.slice(-100).map((movement) => ({ ...movement })),
   });
 
   const runAgentAction = <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, operation: () => ActionResult<T>): ActionResult<T> => {
@@ -435,12 +641,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const searchItems = (query: string) => {
-    const tokens = query.split(/[\s\u3000]+/u).map((token) => token.trim().toLowerCase()).filter(Boolean);
-    if (!tokens.length) return [];
-    return (stateRef.current?.items ?? []).filter((item) => {
-      const searchable = `${item.title} ${item.description} ${item.category.join(' ')}`.toLowerCase();
-      return tokens.every((token) => searchable.includes(token));
-    }).map(cloneItem);
+    return searchCatalogItems(stateRef.current?.items ?? [], query).map(cloneItem);
   };
 
   useEffect(() => {
@@ -449,7 +650,14 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       navigateTab: (tab, options) => runAgentAction('navigateTab', { tab }, options, () => { navigateToTab(tab); return success(undefined, bumpStateVersion()); }),
       navigateHomeSubTab: (tab, options) => runAgentAction('navigateHomeSubTab', { tab }, options, () => { navigateToTab('home'); setHomeTab(tab); return success(undefined, bumpStateVersion()); }),
       navigateCategory: (category, options) => runAgentAction('navigateCategory', { category }, options, () => openCategory(category)),
-      search: (query, options) => runAgentAction('search', { query }, options, () => { if (!query.trim()) return failure('INVALID_INPUT', stateVersionRef.current); setIsSearchOpen(true); setSearchQuery(query.trim()); addSearchHistory(query); return success(undefined, bumpStateVersion()); }),
+      search: (query, options) => runAgentAction('search', { query }, options, () => {
+        const normalizedQuery = query.trim();
+        if (!normalizedQuery) return failure('INVALID_INPUT', stateVersionRef.current);
+        setIsSearchOpen(true);
+        setSearchQuery(normalizedQuery);
+        addSearchHistory(normalizedQuery);
+        return success(undefined, bumpStateVersion({ searchQuery: normalizedQuery, selectedItemId: null, buyingItemId: null }));
+      }),
       openItem: (itemId, options) => runAgentAction('openItem', { itemId }, options, () => openItem(itemId)),
       closeItem: (options) => runAgentAction('closeItem', {}, options, () => { closeItem(); return success(undefined, bumpStateVersion()); }),
       setLiked: (itemId, liked, options) => runAgentAction('setLiked', { itemId, liked }, options, () => setLiked(itemId, liked)),
@@ -468,7 +676,38 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       searchItems,
       getState: getSnapshot,
       getActionTrace: () => actionTraceRef.current.map((entry) => ({ ...entry })),
-      resetScenario: (options) => runAgentAction('resetScenario', {}, options, () => { setItems(cloneItems(INITIAL_ITEMS).map((item) => ({ ...item, isLiked: false }))); setNotifications(cloneNotifications(INITIAL_NOTIFICATIONS)); navigateToTab('home'); setHomeTab('recommend'); setSearchQuery(''); setSearchHistory([...INITIAL_SEARCH_HISTORY]); setActiveNotificationId(null); setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]); setSavedItemIds([]); listingDraftsRef.current.clear(); purchasedItemIdsRef.current.clear(); idempotencyCacheRef.current.clear(); actionTraceRef.current = []; return success(undefined, bumpStateVersion()); }),
+      getInventoryMovements: (itemId) => inventoryMovementsRef.current
+        .filter((movement) => !itemId || movement.itemId === itemId)
+        .map((movement) => ({ ...movement })),
+      resetScenario: (options) => runAgentAction('resetScenario', {}, options, () => {
+        const resetItems = createInitialItems();
+        setItems(resetItems);
+        setNotifications(cloneNotifications(INITIAL_NOTIFICATIONS));
+        navigateToTab('home');
+        setHomeTab('recommend');
+        setSearchQuery('');
+        setSearchHistory([...INITIAL_SEARCH_HISTORY]);
+        setActiveNotificationId(null);
+        setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]);
+        setSavedItemIds([]);
+        listingDraftsRef.current.clear();
+        inventoryMovementsRef.current = createInitialInventoryMovements();
+        if (typeof window !== 'undefined') window.localStorage.removeItem(INVENTORY_STORAGE_KEY);
+        idempotencyCacheRef.current.clear();
+        actionTraceRef.current = [];
+        return success(undefined, bumpStateVersion({
+          currentMainTab: 'home',
+          currentHomeTab: 'recommend',
+          currentCategory: null,
+          searchQuery: '',
+          selectedItemId: null,
+          buyingItemId: null,
+          searchHistory: [...INITIAL_SEARCH_HISTORY],
+          recentlyViewedIds: [...INITIAL_RECENTLY_VIEWED_IDS],
+          savedItemIds: [],
+          items: resetItems,
+        }));
+      }),
     };
     window.__SHOP_API__ = api;
     window.__MERCARI_API__ = api;
