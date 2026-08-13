@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 const createdAt = () => text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`);
 const updatedAt = () => text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`);
@@ -57,3 +57,113 @@ export const reports = sqliteTable('reports', { id: text('id').primaryKey(), rep
 export const moderationCases = sqliteTable('moderation_cases', { id: text('id').primaryKey(), entityType: text('entity_type').notNull(), entityId: text('entity_id').notNull(), reason: text('reason').notNull(), reportedBy: text('reported_by').notNull(), status: text('status').notNull(), action: text('action') });
 export const listingRevisions = sqliteTable('listing_revisions', { listingId: text('listing_id').notNull(), version: integer('version').notNull(), changedFields: json('changed_fields').notNull(), changedAt: text('changed_at').notNull() }, (table) => ({ pk: primaryKey({ columns: [table.listingId, table.version] }) }));
 export const transactionEvents = sqliteTable('transaction_events', { id: text('id').primaryKey(), transactionId: text('transaction_id').notNull(), type: text('type').notNull(), actorId: text('actor_id').notNull(), payload: json('payload').notNull().default({}), createdAt: createdAt() });
+
+/*
+ * Simulation primitives deliberately live beside the marketplace records.
+ * The UI currently runs an in-process world, while these tables define the
+ * durable boundary used by hosted worlds and future workers.
+ */
+export const worlds = sqliteTable('worlds', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  seed: integer('seed').notNull(),
+  status: text('status').notNull().default('PAUSED'),
+  speed: integer('speed').notNull().default(1),
+  simulatedAt: text('simulated_at').notNull(),
+  tick: integer('tick').notNull().default(0),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const worldSnapshots = sqliteTable('world_snapshots', {
+  worldId: text('world_id').primaryKey(),
+  stateVersion: integer('state_version').notNull().default(0),
+  marketplaceState: json('marketplace_state').notNull().default({}),
+  sandboxState: json('sandbox_state').notNull().default({}),
+  updatedAt: updatedAt(),
+});
+
+export const wallets = sqliteTable('wallets', {
+  id: text('id').primaryKey(),
+  worldId: text('world_id').notNull(),
+  ownerId: text('owner_id').notNull(),
+  ownerType: text('owner_type').notNull(),
+  availableBalance: integer('available_balance').notNull().default(0),
+  escrowBalance: integer('escrow_balance').notNull().default(0),
+  updatedAt: updatedAt(),
+}, (table) => ({
+  owner: uniqueIndex('idx_wallets_world_owner').on(table.worldId, table.ownerId),
+}));
+
+export const ledgerEntries = sqliteTable('ledger_entries', {
+  id: text('id').primaryKey(),
+  worldId: text('world_id').notNull(),
+  walletId: text('wallet_id').notNull(),
+  transactionId: text('transaction_id'),
+  correlationId: text('correlation_id').notNull(),
+  type: text('type').notNull(),
+  amount: integer('amount').notNull(),
+  description: text('description').notNull(),
+  balanceAfter: integer('balance_after').notNull(),
+  createdAt: createdAt(),
+}, (table) => ({
+  walletCreated: index('idx_ledger_entries_wallet_created').on(table.walletId, table.createdAt),
+  transaction: index('idx_ledger_entries_transaction').on(table.transactionId),
+}));
+
+export const worldEvents = sqliteTable('world_events', {
+  id: text('id').primaryKey(),
+  eventType: text('event_type').notNull(),
+  worldId: text('world_id').notNull(),
+  actorId: text('actor_id').notNull(),
+  actorType: text('actor_type').notNull(),
+  targetId: text('target_id'),
+  causedBy: text('caused_by'),
+  correlationId: text('correlation_id').notNull(),
+  metadata: json('metadata').notNull().default({}),
+  occurredAt: text('occurred_at').notNull(),
+}, (table) => ({
+  timeline: index('idx_world_events_world_occurred').on(table.worldId, table.occurredAt),
+  correlation: index('idx_world_events_correlation').on(table.correlationId),
+}));
+
+export const agents = sqliteTable('agents', {
+  id: text('id').primaryKey(),
+  worldId: text('world_id').notNull(),
+  ownerId: text('owner_id').notNull(),
+  type: text('type').notNull(),
+  name: text('name').notNull(),
+  configuration: json('configuration').notNull().default({}),
+  createdAt: createdAt(),
+});
+
+export const agentRuns = sqliteTable('agent_runs', {
+  id: text('id').primaryKey(),
+  worldId: text('world_id').notNull(),
+  agentId: text('agent_id').notNull(),
+  correlationId: text('correlation_id').notNull(),
+  goal: text('goal').notNull(),
+  status: text('status').notNull(),
+  budget: integer('budget').notNull(),
+  selectedItemId: text('selected_item_id'),
+  transactionId: text('transaction_id'),
+  result: json('result').notNull().default({}),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => ({
+  worldStatus: index('idx_agent_runs_world_status').on(table.worldId, table.status),
+}));
+
+export const agentActions = sqliteTable('agent_actions', {
+  id: text('id').primaryKey(),
+  worldId: text('world_id').notNull(),
+  runId: text('run_id').notNull(),
+  eventId: text('event_id'),
+  type: text('type').notNull(),
+  status: text('status').notNull(),
+  input: json('input').notNull().default({}),
+  output: json('output').notNull().default({}),
+  createdAt: createdAt(),
+}, (table) => ({
+  runCreated: index('idx_agent_actions_run_created').on(table.runId, table.createdAt),
+}));

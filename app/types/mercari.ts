@@ -113,6 +113,7 @@ export type AgentErrorCode =
   | 'USER_NOT_FOUND'
   | 'PERMISSION_DENIED'
   | 'CONFIRMATION_REQUIRED'
+  | 'INSUFFICIENT_FUNDS'
   | 'AUTH_REQUIRED';
 
 export type ActionResult<T = undefined> =

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ArrowRight, Clock3, Flame, Heart } from 'lucide-react';
+import { Activity, ArrowRight, Bot, Clock3, Flame, Heart } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
 import { Footer } from '../Footer';
@@ -52,6 +52,8 @@ export const HomeView: React.FC = () => {
           </div>
         </div>
 
+        {homeTab === 'recommend' && <WorldActivityFeed />}
+
         {homeTab !== 'auction' && <ShopPromo />}
 
         {homeTab === 'recommend' && (isAuthenticated ? (
@@ -79,6 +81,35 @@ export const HomeView: React.FC = () => {
       </div>
       <Footer />
     </div>
+  );
+};
+
+const WorldActivityFeed: React.FC = () => {
+  const { sandboxState, setSandboxMode, setIsSandboxConsoleOpen } = useMercari();
+  const latestEvents = sandboxState.events.slice(-4).reverse();
+  const openOperator = () => {
+    setSandboxMode('operator');
+    setIsSandboxConsoleOpen(true);
+  };
+  return (
+    <section className="mt-5 overflow-hidden rounded-2xl border border-[#31515f] bg-[linear-gradient(120deg,#122b35,#1a3038)]" aria-labelledby="world-activity-heading">
+      <div className="flex items-center justify-between gap-3 border-b border-[#31515f] px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="relative flex h-2 w-2 shrink-0"><span className={`absolute inline-flex h-full w-full rounded-full bg-[#54d98d] opacity-60 ${sandboxState.world.status === 'playing' ? 'animate-ping' : ''}`} /><span className="relative inline-flex h-2 w-2 rounded-full bg-[#54d98d]" /></span>
+          <div className="min-w-0"><p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#74cdea]">Live world</p><h2 id="world-activity-heading" className="truncate text-xs font-black text-white">NPC Market Activity</h2></div>
+        </div>
+        <button type="button" onClick={openOperator} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[#507180] px-2.5 py-1.5 text-[10px] font-black text-[#bfe7f5] hover:bg-white/5"><Activity className="h-3.5 w-3.5" />因果を見る</button>
+      </div>
+      <div className="grid gap-px bg-[#31515f] sm:grid-cols-2 lg:grid-cols-4">
+        {latestEvents.length ? latestEvents.map((event) => (
+          <div key={event.eventId} className="min-w-0 bg-[#172a31] px-4 py-3">
+            <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.1em] text-[#9f89ef]">{event.actorType === 'ai_agent' ? <Bot className="h-3 w-3" /> : <Activity className="h-3 w-3" />}{event.actorType}</div>
+            <p className="mt-1 truncate text-[11px] font-bold text-white">{event.eventType.replace(/[._-]+/gu, ' ')}</p>
+            <p className="mt-1 truncate font-mono text-[8px] text-[#698690]">{event.actorId}</p>
+          </div>
+        )) : <p className="col-span-full bg-[#172a31] px-4 py-4 text-xs text-[#8da3ac]">Play または Step で市場を動かしてください。</p>}
+      </div>
+    </section>
   );
 };
 

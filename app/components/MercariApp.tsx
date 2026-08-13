@@ -18,6 +18,7 @@ import { BuyModal } from './modals/BuyModal';
 import { LoginPromptModal } from './modals/LoginPromptModal';
 import { DemoNoticeBar } from './DemoNotice';
 import { SandboxPanel, SandboxToolbar } from './SandboxSwitcher';
+import { SandboxConsole } from './SandboxConsole';
 
 export const MercariApp: React.FC = () => {
   const {
@@ -29,6 +30,8 @@ export const MercariApp: React.FC = () => {
     searchQuery,
     isDeviceFrame,
     marketplaceState,
+    isSandboxConsoleOpen,
+    sandboxMode,
   } = useMercari();
 
   const renderCurrentView = () => {
@@ -89,6 +92,7 @@ export const MercariApp: React.FC = () => {
         <BuyModal key={marketplaceState.currentUserId} />
         <LoginPromptModal />
         <SandboxPanel />
+        {isSandboxConsoleOpen && <SandboxConsole key={sandboxMode} />}
       </div>
     </div>
   );

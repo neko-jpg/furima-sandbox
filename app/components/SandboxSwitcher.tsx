@@ -4,8 +4,10 @@ import React from 'react';
 import {
   Activity,
   ArrowRight,
+  Bot,
   Check,
   CircleDollarSign,
+  Gauge,
   PackageCheck,
   RotateCcw,
   ShieldCheck,
@@ -17,16 +19,31 @@ import {
 import { useMercari } from '../context/MercariContext';
 
 export const SandboxToolbar: React.FC = () => {
-  const { activePersona, marketplaceState, personas, setIsSandboxPanelOpen, isDeviceFrame } = useMercari();
+  const {
+    activePersona,
+    marketplaceState,
+    personas,
+    setIsSandboxPanelOpen,
+    setIsSandboxConsoleOpen,
+    setSandboxMode,
+    sandboxState,
+    isDeviceFrame,
+  } = useMercari();
   const availableListings = marketplaceState.listings.filter((listing) => listing.status === 'PUBLISHED').length;
   const activeTransactions = marketplaceState.transactions.filter((transaction) => transaction.transactionStatus === 'ACTIVE').length;
+  const isPlaying = sandboxState.world.status === 'playing';
+
+  const openConsole = (mode: 'user' | 'operator') => {
+    setSandboxMode(mode);
+    setIsSandboxConsoleOpen(true);
+  };
 
   return (
     <section className="border-b border-[#31515f] bg-[linear-gradient(90deg,#112b35,#173643_55%,#12272f)] text-white" aria-label="サンドボックス操作バー" data-testid="sandbox-toolbar">
       <div className="mx-auto flex min-h-[56px] w-full max-w-[1368px] items-center gap-3 px-4 md:px-0">
         <div className="hidden items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--shop-success)] md:flex">
-          <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--shop-success)] opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--shop-success)]" /></span>
-          Live sandbox
+          <span className="relative flex h-2 w-2"><span className={`absolute inline-flex h-full w-full rounded-full bg-[var(--shop-success)] opacity-60 ${isPlaying ? 'animate-ping' : ''}`} /><span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--shop-success)]" /></span>
+          {isPlaying ? 'World running' : 'World paused'}
         </div>
 
         <button
@@ -48,11 +65,15 @@ export const SandboxToolbar: React.FC = () => {
             <WorldStat icon={<Users className="h-3.5 w-3.5" />} value={`${personas.length}人`} label="体験ユーザー" />
             <WorldStat icon={<ShoppingBag className="h-3.5 w-3.5" />} value={`${availableListings}件`} label="公開中" />
             <WorldStat icon={<Activity className="h-3.5 w-3.5" />} value={`${activeTransactions}件`} label="進行中の取引" />
+            <WorldStat icon={<Gauge className="h-3.5 w-3.5" />} value={`${sandboxState.world.speed}x`} label={`tick ${sandboxState.world.tick}`} />
           </div>
         )}
 
-        <button type="button" onClick={() => setIsSandboxPanelOpen(true)} className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-black text-[#17313b] hover:bg-[#dff4fb]">
-          {isDeviceFrame ? 'ユーザー選択' : 'サンドボックスを開く'}
+        <button type="button" onClick={() => openConsole('user')} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[#76d2ef] px-3 py-2 text-xs font-black text-[#10272f] hover:bg-[#a4e5f8]">
+          <Bot className="h-3.5 w-3.5" />{isDeviceFrame ? 'Agent' : 'AIに依頼'}
+        </button>
+        <button type="button" onClick={() => openConsole('operator')} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[#6f95a4] px-2.5 py-2 text-xs font-black text-white hover:bg-white/10 sm:px-3">
+          <Gauge className="h-3.5 w-3.5" /><span className="hidden sm:inline">運営コンソール</span><span className="sm:hidden">運営</span>
         </button>
       </div>
     </section>
@@ -76,6 +97,7 @@ export const SandboxPanel: React.FC = () => {
     setIsSandboxPanelOpen,
     switchPersona,
     navigateToTab,
+    resetSimulation,
   } = useMercari();
 
   if (!isSandboxPanelOpen) return null;
@@ -93,7 +115,7 @@ export const SandboxPanel: React.FC = () => {
   };
 
   const resetScenario = () => {
-    window.__FURIMA_SANDBOX_API__?.resetScenario({ requestId: `reset-${Date.now()}` });
+    resetSimulation();
     setIsSandboxPanelOpen(false);
   };
 

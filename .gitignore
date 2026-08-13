@@ -30,6 +30,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,9 @@ yarn-error.log*
 /outputs/
 /work/
 *.tsbuildinfo
+
+# Python simulation sidecar
+simulation/.venv/
+simulation/.pytest_cache/
+simulation/**/__pycache__/
+*.pyc

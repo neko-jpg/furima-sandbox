@@ -19,6 +19,7 @@ import type {
 import { INITIAL_ITEMS, INITIAL_NOTIFICATIONS, SANDBOX_PERSONAS } from '../data/initialData';
 import { createMarketplaceState, deriveTransactionPhase, MarketplaceDomain } from '../domain/marketplace';
 import type { DomainErrorCode, MarketplaceState, ShipmentStatus, Transaction } from '../domain/marketplace';
+import { useSandboxRuntime, type SandboxMode, type SandboxRuntimeState } from '../hooks/useSandboxRuntime';
 
 const PREFERENCES_STORAGE_KEY = 'shop-ui-preferences-v1';
 
@@ -187,6 +188,17 @@ interface MercariContextType {
   sandboxActivity: SandboxActivityEntry[];
   isSandboxPanelOpen: boolean;
   setIsSandboxPanelOpen: (open: boolean) => void;
+  isSandboxConsoleOpen: boolean;
+  setIsSandboxConsoleOpen: (open: boolean) => void;
+  sandboxMode: SandboxMode;
+  setSandboxMode: (mode: SandboxMode) => void;
+  sandboxState: SandboxRuntimeState;
+  stepSimulation: () => Promise<SandboxRuntimeState>;
+  setSimulationPlaying: (playing: boolean) => SandboxRuntimeState;
+  setSimulationSpeed: (speed: number) => SandboxRuntimeState;
+  runBuyerAgent: (goal: string) => unknown;
+  confirmAgentRun: (runId: string) => unknown;
+  resetSimulation: () => unknown;
   recentlyViewedIds: string[];
   savedItemIds: string[];
   setSaved: (itemId: string, saved: boolean) => ActionResult<undefined>;
@@ -271,6 +283,33 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setDomainRevision((previous) => previous + 1);
   };
 
+  const resetDomainForSimulation = () => {
+    listingDraftsRef.current.clear();
+    checkoutIdsRef.current.clear();
+    purchasedItemIdsRef.current.clear();
+    idempotencyCacheRef.current.clear();
+    actionTraceRef.current = [];
+    setNotifications(cloneNotifications(INITIAL_NOTIFICATIONS));
+    setMainTab('home');
+    setHomeTabState('recommend');
+    setSearchQuery('');
+    setSearchHistory([...INITIAL_SEARCH_HISTORY]);
+    setSelectedItemId(null);
+    setBuyingItemId(null);
+    setActiveNotificationId(null);
+    setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]);
+    setSavedItemIds([]);
+    setIsSandboxPanelOpen(false);
+    syncDomain();
+  };
+
+  const sandboxRuntime = useSandboxRuntime({
+    domain,
+    domainRevision,
+    onDomainChange: syncDomain,
+    resetDomain: resetDomainForSimulation,
+  });
+
   useEffect(() => {
     syncDomain();
   }, []);
@@ -303,6 +342,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     checkoutIdsRef.current.clear();
     purchasedItemIdsRef.current.clear();
     syncDomain();
+    sandboxRuntime.recordHumanAction('session.persona_switched', userId);
     const persona = buildSandboxPersonas(domainRef.current.getState()).find((candidate) => candidate.id === userId);
     if (!persona) return failure('USER_NOT_FOUND', result.stateVersion, '切り替え先のペルソナが見つかりません');
     return success(persona, result.stateVersion);
@@ -452,6 +492,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isLiked: liked,
       likesCount: liked ? item.likesCount + 1 : Math.max(0, item.likesCount - 1),
     })));
+    sandboxRuntime.recordHumanAction(liked ? 'product.liked' : 'product.unliked', target.listingId ?? `listing-${itemId}`, { itemId });
     return success(undefined, domain?.getState().stateVersion ?? bumpStateVersion());
   };
 
@@ -470,6 +511,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (!savedResult.ok) return failure(mapDomainError(savedResult.error), savedResult.stateVersion, savedResult.message);
     }
     setSavedItemIds((previous) => saved ? [...previous, itemId] : previous.filter((id) => id !== itemId));
+    sandboxRuntime.recordHumanAction(saved ? 'product.saved' : 'product.unsaved', target.listingId ?? `listing-${itemId}`, { itemId });
     return success(undefined, domain?.getState().stateVersion ?? bumpStateVersion());
   };
 
@@ -485,6 +527,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setBuyingItemId(null);
     setSelectedItemId(itemId);
     setRecentlyViewedIds((previous) => [itemId, ...previous.filter((id) => id !== itemId)].slice(0, 12));
+    sandboxRuntime.recordHumanAction('product.viewed', target.listingId ?? `listing-${itemId}`, { itemId });
     return success(undefined, bumpStateVersion());
   };
   const closeItem = () => setSelectedItemId(null);
@@ -530,11 +573,14 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       checkoutId = checkout.data.id;
       checkoutIdsRef.current.set(itemId, checkoutId);
     }
-    const confirmed = domain.confirmPurchase(checkoutId);
-    if (!confirmed.ok) return failure(mapDomainError(confirmed.error), confirmed.stateVersion, confirmed.message);
+    const confirmed = sandboxRuntime.confirmHumanCheckout(checkoutId);
+    if (!confirmed.ok) {
+      const error = confirmed.error === 'INSUFFICIENT_FUNDS' ? 'INSUFFICIENT_FUNDS' : mapDomainError(confirmed.error as DomainErrorCode);
+      return failure(error, domain.getState().stateVersion, confirmed.error === 'INSUFFICIENT_FUNDS' ? 'Market Creditsが不足しています' : confirmed.error);
+    }
     purchasedItemIdsRef.current.add(itemId);
     syncDomain();
-    return success(undefined, confirmed.stateVersion);
+    return success(undefined, domain.getState().stateVersion);
   };
 
   const placeBid = (itemId: string, amount: number): ActionResult<{ currentBid: number; bidsCount: number }> => {
@@ -586,6 +632,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const newItem = domain.getLegacyItems().find((item) => item.id === draft.data.itemId);
     if (!newItem) return failure('ITEM_NOT_FOUND', published.stateVersion, '出品商品を生成できませんでした');
     setIsListingModalOpen(false);
+    sandboxRuntime.recordHumanAction('listing.published', published.data.id, { itemId: draft.data.itemId, price });
     return success(cloneItem(newItem), published.stateVersion);
   };
 
@@ -603,6 +650,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const result = domain.addListingComment(target.listingId ?? `listing-${itemId}`, domain.getState().currentUserId, normalizedText);
     if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
     syncDomain();
+    sandboxRuntime.recordHumanAction('listing.commented', target.listingId ?? `listing-${itemId}`, { itemId });
     return success(undefined, result.stateVersion);
   };
 
@@ -611,6 +659,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '支払い処理を開始できません');
     if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
     syncDomain();
+    sandboxRuntime.syncSandbox('human');
     return success(undefined, result.stateVersion);
   };
   const updateCheckout = (itemId: string, paymentLabel: string): ActionResult<undefined> => {
@@ -630,6 +679,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '発送処理を開始できません');
     if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
     syncDomain();
+    sandboxRuntime.syncSandbox('human');
     return success(undefined, result.stateVersion);
   };
   const updateShipmentStatus = (transactionId: string, status: ShipmentStatus): ActionResult<undefined> => {
@@ -637,6 +687,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '配送処理を開始できません');
     if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
     syncDomain();
+    sandboxRuntime.syncSandbox('system');
     return success(undefined, result.stateVersion);
   };
   const rateTransaction = (transactionId: string, rating: number, comment = ''): ActionResult<undefined> => {
@@ -648,6 +699,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!result) return failure('INVALID_INPUT', stateVersionRef.current, '評価処理を開始できません');
     if (!result.ok) return failure(mapDomainError(result.error), result.stateVersion, result.message);
     syncDomain();
+    sandboxRuntime.syncSandbox('human');
     return success(undefined, result.stateVersion);
   };
   const pauseListing = (listingId: string): ActionResult<undefined> => {
@@ -747,7 +799,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       searchItems,
       getState: getSnapshot,
       getActionTrace: () => actionTraceRef.current.map((entry) => ({ ...entry })),
-      resetScenario: (options) => runAgentAction('resetScenario', {}, options, () => { domain.reset(createInitialMarketplaceState()); syncDomain(); setNotifications(cloneNotifications(INITIAL_NOTIFICATIONS)); navigateToTab('home'); setHomeTab('recommend'); setSearchQuery(''); setSearchHistory([...INITIAL_SEARCH_HISTORY]); setActiveNotificationId(null); setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]); setSavedItemIds([]); setIsSandboxPanelOpen(false); listingDraftsRef.current.clear(); checkoutIdsRef.current.clear(); purchasedItemIdsRef.current.clear(); idempotencyCacheRef.current.clear(); actionTraceRef.current = []; return success(undefined, bumpStateVersion()); }),
+      resetScenario: (options) => runAgentAction('resetScenario', {}, options, () => { sandboxRuntime.resetSimulation(); return success(undefined, bumpStateVersion()); }),
     };
     window.__FURIMA_SANDBOX_API__ = api;
     window.__SHOP_API__ = api;
@@ -763,7 +815,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     const transactions = marketplaceState.transactions.filter((transaction) => transaction.buyerId === marketplaceState.currentUserId || transaction.sellerId === marketplaceState.currentUserId);
     const transactionPhase = (transactionId: string) => { const transaction = marketplaceState.transactions.find((value) => value.id === transactionId); return transaction ? deriveTransactionPhase(transaction) : null; };
-    return <MercariContext.Provider value={{ isAuthenticated, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, addComment, marketplaceState, transactions, transactionPhase, completePayment, updateCheckout, markAsShipped, updateShipmentStatus, rateTransaction, pauseListing, resumeListing, deleteListing, personas, activePersona, switchPersona, sandboxActivity, isSandboxPanelOpen, setIsSandboxPanelOpen, recentlyViewedIds, savedItemIds, user, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame }}>{children}</MercariContext.Provider>;
+    return <MercariContext.Provider value={{ isAuthenticated, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, addComment, marketplaceState, transactions, transactionPhase, completePayment, updateCheckout, markAsShipped, updateShipmentStatus, rateTransaction, pauseListing, resumeListing, deleteListing, personas, activePersona, switchPersona, sandboxActivity, isSandboxPanelOpen, setIsSandboxPanelOpen, isSandboxConsoleOpen: sandboxRuntime.isSandboxConsoleOpen, setIsSandboxConsoleOpen: sandboxRuntime.setIsSandboxConsoleOpen, sandboxMode: sandboxRuntime.sandboxMode, setSandboxMode: sandboxRuntime.setSandboxMode, sandboxState: sandboxRuntime.sandboxState, stepSimulation: sandboxRuntime.stepSimulation, setSimulationPlaying: sandboxRuntime.setSimulationPlaying, setSimulationSpeed: sandboxRuntime.setSimulationSpeed, runBuyerAgent: sandboxRuntime.runBuyerAgent, confirmAgentRun: sandboxRuntime.confirmAgentRun, resetSimulation: sandboxRuntime.resetSimulation, recentlyViewedIds, savedItemIds, user, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame }}>{children}</MercariContext.Provider>;
 };
 
 export const useMercari = () => {

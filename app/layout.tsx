@@ -14,8 +14,8 @@ const inter = Inter({
   variable: '--font-inter',
 });
 
-const title = 'Furima Sandbox - ユーザー間で循環するフリマ体験';
-const description = 'Furima Sandboxの動くフリマUIモック。架空ユーザーとして出品・購入・発送・評価までを体験し、すべての市場状態をAPIから観測できるOSSサンドボックス。';
+const title = 'Furima Sandbox - Marketplace Simulation & Agent Evaluation';
+const description = 'Human・NPC・AI Agentが同じ市場で行動し、Mesaによるシミュレーションと因果イベント、Wallet Ledgerを観測できるオープンなMarketplace Sandbox。';
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
       title,
       description,
       type: 'website',
-      images: [{ url: socialImage, width: 1728, height: 908, alt: 'Furima Sandbox — 同じ市場を、4人の視点で。' }],
+      images: [{ url: socialImage, width: 1729, height: 910, alt: 'Furima Sandbox — Marketplace Simulation & Agent Evaluation, powered by Mesa 3.5.1.' }],
     },
     twitter: {
       card: 'summary_large_image',
