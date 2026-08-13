@@ -1,15 +1,21 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Barcode, Camera, CheckCircle2, ChevronRight, FileText, ImagePlus, Lightbulb, ShieldCheck, Sparkles, Truck, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
-import { CATALOG_FAMILIES, CATALOG_VARIANTS } from '../../data/catalogData';
+import { CATALOG_FAMILIES, CATALOG_VARIANTS } from '../../data/catalogMetadata';
 import { Footer } from '../Footer';
 
 type ListingTab = 'basic' | 'details' | 'review';
 type TemplateName = 'book' | 'fashion' | 'device';
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const MAX_LISTING_IMAGES = 20;
+const MAX_TOTAL_IMAGE_BYTES = 4 * 1024 * 1024;
 
 interface ListingDraft {
+  draftId?: string;
   title: string;
   price: string;
   description: string;
@@ -47,8 +53,24 @@ const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   reader.readAsDataURL(file);
 });
 
+const fileToOptimizedDataUrl = async (file: File): Promise<string> => {
+  if (!file.type.startsWith('image/')) throw new Error('unsupported-image-type');
+  if (typeof globalThis.createImageBitmap !== 'function') return fileToDataUrl(file);
+  const bitmap = await globalThis.createImageBitmap(file);
+  const maxDimension = 1600;
+  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) { bitmap.close(); return fileToDataUrl(file); }
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvas.toDataURL('image/webp', 0.82);
+};
+
 export const ListingView: React.FC = () => {
-  const { isListingModalOpen, setIsListingModalOpen, addNewItem, isDeviceFrame } = useMercari();
+  const { isListingModalOpen, setIsListingModalOpen, createListingDraft, updateListingDraft, submitListing, activeActor, isDeviceFrame } = useMercari();
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
   const [description, setDescription] = useState('');
@@ -74,10 +96,19 @@ export const ListingView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ListingTab>('basic');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [savedDraft, setSavedDraft] = useState<ListingDraft | null>(null);
+  const [savedDraft, setSavedDraft] = useState<ListingDraft | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem('furima-listing-draft-v2');
+      return raw ? JSON.parse(raw) as ListingDraft : null;
+    } catch {
+      return null;
+    }
+  });
   const [isDraftsOpen, setIsDraftsOpen] = useState(false);
   const [isTemplateOpen, setIsTemplateOpen] = useState(false);
   const [hasPolicyAccepted, setHasPolicyAccepted] = useState(false);
+  const listingModalRef = React.useRef<HTMLDivElement>(null);
 
   const imagePreview = imagePreviews[0] ?? null;
   const numericPrice = Number(price);
@@ -116,27 +147,53 @@ export const ListingView: React.FC = () => {
 
   useEffect(() => {
     if (!isListingModalOpen) return undefined;
+    const previousActiveElement = document.activeElement as HTMLElement | null;
+    const focusFirstControl = () => listingModalRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsListingModalOpen(false);
         reset();
+        return;
       }
+      if (event.key !== 'Tab' || !listingModalRef.current) return;
+      const focusable = Array.from(listingModalRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
+    window.setTimeout(focusFirstControl, 0);
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      if (previousActiveElement?.isConnected) previousActiveElement.focus();
+    };
   }, [isListingModalOpen, setIsListingModalOpen]);
 
   const chooseImage = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []).slice(0, 20);
+    const remainingSlots = Math.max(0, MAX_LISTING_IMAGES - imagePreviews.length);
+    const files = Array.from(event.target.files ?? []).slice(0, remainingSlots);
     if (!files.length) return;
+    if (files.some((file) => !file.type.startsWith('image/'))) {
+      setError('画像ファイルだけを選択してください。');
+      return;
+    }
     const oversized = files.find((file) => file.size > 10 * 1024 * 1024);
     if (oversized) {
       setError('1枚10MB以下の画像を選択してください。');
       return;
     }
     try {
-      const previews = await Promise.all(files.map(fileToDataUrl));
-      setImagePreviews(previews);
+      const previews = await Promise.all(files.map(fileToOptimizedDataUrl));
+      const nextPreviews = [...imagePreviews, ...previews];
+      const totalBytes = nextPreviews.reduce((sum, preview) => sum + preview.length, 0);
+      if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+        setError('画像の合計容量は8MB以内にしてください。自動圧縮後も大きい画像を減らしてください。');
+        return;
+      }
+      setImagePreviews(nextPreviews);
+      event.target.value = '';
       setError(null);
       if (isAutoInputOn) {
         setIsAnalyzing(true);
@@ -160,11 +217,44 @@ export const ListingView: React.FC = () => {
     window.setTimeout(() => setNotice(null), 2600);
   };
 
-  const currentDraft = (): ListingDraft => ({ title, price, description, category, condition, brand, color, size, familyId, variantId, inventoryPolicy, inventoryQuantity, shippingFee, shippingMethod, origin, shippingDays, shippingSize, isAnonymousShipping, imagePreviews });
+  const currentDraft = (): ListingDraft => ({ draftId: savedDraft?.draftId, title, price, description, category, condition, brand, color, size, familyId, variantId, inventoryPolicy, inventoryQuantity, shippingFee, shippingMethod, origin, shippingDays, shippingSize, isAnonymousShipping, imagePreviews });
+
+  const currentListingInput = (): Partial<import('../../types/mercari').MercariItem> => ({
+    title,
+    price: numericPrice,
+    description,
+    category: category ? [category] : undefined,
+    condition,
+    brand: brand || undefined,
+    color: color || undefined,
+    size: size || undefined,
+    images: imagePreviews.length ? imagePreviews : undefined,
+    shippingFee,
+    shippingMethod,
+    origin,
+    shippingDays,
+    shippingSize,
+    isAnonymousShipping,
+    productFamilyId: selectedFamily?.id,
+    productFamilyName: selectedFamily?.name,
+    variantId: selectedVariant?.id,
+    variantName: selectedVariant?.name,
+    productType: selectedFamily?.productType,
+    searchTags: selectedSearchTags,
+    attributes: selectedVariant?.attributes,
+    inventoryPolicy,
+    inventoryQuantity: normalizedInventoryQuantity,
+  });
 
   const saveDraft = () => {
     if (!title.trim() && !price && imagePreviews.length === 0) { showNotice('商品名・価格・画像のいずれかを入力してから保存してください'); return; }
-    setSavedDraft(currentDraft());
+    const draft = currentDraft();
+    let result = draft.draftId ? updateListingDraft(draft.draftId, currentListingInput()) : createListingDraft(currentListingInput());
+    if (!result.ok && draft.draftId && result.error === 'DRAFT_NOT_FOUND') result = createListingDraft(currentListingInput());
+    if (!result.ok) { setError(result.message || '下書きを保存できませんでした。seller actorへ切り替えてください。'); return; }
+    const nextDraft = { ...draft, draftId: result.data.draftId };
+    setSavedDraft(nextDraft);
+    try { window.localStorage.setItem('furima-listing-draft-v2', JSON.stringify(nextDraft)); } catch { /* storage is optional */ }
     showNotice('下書きを保存しました。あとで同じ状態から再開できます。');
   };
 
@@ -195,11 +285,16 @@ export const ListingView: React.FC = () => {
   const confirmListing = () => {
     if (hasBlockingIssue) { setError('チェックでブロックされた項目を修正してから出品してください。'); return; }
     if (!hasPolicyAccepted) { setError('出品ポリシーを確認してチェックを入れてください。'); return; }
-    const result = addNewItem({ title, price: numericPrice, description, category: category ? [category] : undefined, condition: condition || undefined, brand: brand || undefined, color: color || undefined, size: size || undefined, images: imagePreviews.length ? imagePreviews : undefined, shippingFee, shippingMethod, origin, shippingDays, shippingSize, isAnonymousShipping, productFamilyId: selectedFamily?.id, productFamilyName: selectedFamily?.name, variantId: selectedVariant?.id, variantName: selectedVariant?.name, productType: selectedFamily?.productType, searchTags: selectedSearchTags, attributes: selectedVariant?.attributes, inventoryPolicy, inventoryQuantity: normalizedInventoryQuantity });
+    const draft = currentDraft();
+    let created = draft.draftId ? updateListingDraft(draft.draftId, currentListingInput()) : createListingDraft(currentListingInput());
+    if (!created.ok && draft.draftId && created.error === 'DRAFT_NOT_FOUND') created = createListingDraft(currentListingInput());
+    if (!created.ok) { setError(created.message || '下書きを作成できませんでした。seller actorへ切り替えてください。'); return; }
+    const result = submitListing(created.data.draftId);
     if (!result.ok) { setError(result.message || '入力内容を確認してください。'); return; }
     setSavedDraft(null);
+    try { window.localStorage.removeItem('furima-listing-draft-v2'); } catch { /* storage is optional */ }
     reset();
-    showNotice('商品をモック出品しました。ホームの新着商品に追加されています。');
+    showNotice(`商品をモック出品しました（${activeActor.name}）。ホームの新着商品に追加されています。`);
   };
 
   const submit = (event: React.FormEvent) => {
@@ -234,7 +329,7 @@ export const ListingView: React.FC = () => {
       {isDraftsOpen && <DraftSheet draft={savedDraft} onClose={() => setIsDraftsOpen(false)} onResume={resumeDraft} />}
       {isTemplateOpen && <TemplateSheet onSelect={applyTemplate} onClose={() => setIsTemplateOpen(false)} />}
 
-      {isListingModalOpen && <div className="absolute inset-0 z-50 flex flex-col overflow-hidden bg-[var(--shop-bg)] animate-slide-up" role="dialog" aria-modal="true" aria-labelledby="listing-modal-title"><div className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--shop-border)] bg-[rgba(31,31,33,.96)] px-4 py-3 backdrop-blur-xl"><button type="button" onClick={() => { setIsListingModalOpen(false); reset(); }} aria-label="出品画面を閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface)] hover:text-white" data-testid="close-listing-modal-btn"><X className="h-6 w-6" /></button><div className="text-center"><h2 id="listing-modal-title" className="font-black text-white">商品の出品</h2><p className="text-[10px] text-[var(--shop-muted)]">入力内容はすべてデモ状態です</p></div><button type="button" onClick={reset} className="text-xs font-bold text-[var(--shop-blue)]">リセット</button></div>
+      {isListingModalOpen && <div ref={listingModalRef} className="absolute inset-0 z-50 flex flex-col overflow-hidden bg-[var(--shop-bg)] animate-slide-up" role="dialog" aria-modal="true" aria-labelledby="listing-modal-title"><div className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--shop-border)] bg-[rgba(31,31,33,.96)] px-4 py-3 backdrop-blur-xl"><button type="button" onClick={() => { setIsListingModalOpen(false); reset(); }} aria-label="出品画面を閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface)] hover:text-white" data-testid="close-listing-modal-btn"><X className="h-6 w-6" /></button><div className="text-center"><h2 id="listing-modal-title" className="font-black text-white">商品の出品</h2><p className="text-[10px] text-[var(--shop-muted)]">入力内容はすべてデモ状態です</p></div><button type="button" onClick={reset} className="text-xs font-bold text-[var(--shop-blue)]">リセット</button></div>
         <div className="border-b border-[var(--shop-border)] bg-[var(--shop-surface)] px-4 py-2"><div className="mx-auto grid max-w-[800px] grid-cols-3 gap-1">{tabs.map((tab) => <button type="button" key={tab.id} onClick={() => setActiveTab(tab.id)} className={`rounded-lg px-2 py-2 text-left ${activeTab === tab.id ? 'bg-[#16394d] text-[var(--shop-blue)]' : 'text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]'}`}><span className="block text-[11px] font-black">{tab.label}</span><span className="mt-0.5 block truncate text-[9px]">{tab.note}</span></button>)}</div></div>
         <form onSubmit={submit} className="shop-scrollbar flex-1 overflow-y-auto px-4 py-5 md:mx-auto md:w-full md:max-w-[800px] md:px-7">
           {activeTab === 'basic' && <>

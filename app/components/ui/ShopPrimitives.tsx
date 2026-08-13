@@ -3,6 +3,7 @@
 import React from 'react';
 import { ArrowRight, Heart, Star } from 'lucide-react';
 import type { MercariItem } from '../../types/mercari';
+import { ShopImage } from './ShopImage';
 
 export const SectionHeader: React.FC<{
   title: string;
@@ -41,7 +42,7 @@ export const ProductCard: React.FC<{
   <article className={`group relative min-w-0 overflow-hidden border border-[var(--shop-border)] bg-[var(--shop-surface)] transition-transform hover:-translate-y-0.5 hover:border-[#68686f] ${compact ? 'rounded-md' : 'rounded-lg'}`}>
     <button type="button" onClick={onOpen} className="block w-full text-left" data-testid={`item-card-${item.id}`}>
       <div className="relative aspect-square overflow-hidden bg-[#3b3b3e]">
-        <img src={item.images[0]} alt={item.title} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+        <ShopImage src={item.images[0]} alt={item.title} loading="lazy" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
         {item.isSold && <span className="absolute -left-5 top-2 z-10 w-16 -rotate-45 bg-[var(--shop-accent)] py-0.5 text-center text-[8px] font-black tracking-wide text-white shadow">SOLD</span>}
         {item.isDemo && !item.isSold && <span className="absolute right-2 top-2 rounded-full border border-white/15 bg-[#143247]/95 px-1.5 py-0.5 text-[8px] font-black tracking-wide text-[var(--shop-blue)] shadow">DEMO</span>}
         {item.isAuction && <span className="absolute left-2 top-2 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-bold text-white">入札 {item.bidsCount ?? 0}</span>}

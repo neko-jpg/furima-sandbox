@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React from 'react';
 import { ArrowRight, Camera, Clock3, Flame, Heart, Search, ShoppingBag } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';

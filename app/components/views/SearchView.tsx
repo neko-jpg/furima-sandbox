@@ -6,21 +6,14 @@ import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
 import { createFilterState, FilterSidebar, FilterState } from '../ui/FilterSidebar';
 import { ProductCard } from '../ui/ShopPrimitives';
-import { joinSearchTokens, searchCatalogItems, tokenizeSearchQuery } from '../searchUtils';
-
-const categorySearchAliases: Record<string, string[]> = {
-  ファッション: ['ファッション', 'レディース', 'メンズ'],
-  'ゲーム・おもちゃ・グッズ': ['ゲーム・おもちゃ', 'ゲーム', 'グッズ', 'ホビー', 'フィギュア', 'トレーディングカード'],
-  '本・雑誌・漫画': ['本・マンガ', '本', 'マンガ', '漫画', '雑誌'],
-  'スマホ・タブレット・パソコン': ['家電・スマホ', 'スマホ', 'タブレット', 'PC', 'パソコン'],
-  'ベビー・キッズ': ['ベビー', 'キッズ'],
-};
+import { filterCatalogItems, joinSearchTokens, searchCatalogItems, tokenizeSearchQuery } from '../searchUtils';
 
 export const SearchView: React.FC = () => {
-  const { setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, items, openItem, setLiked, isDeviceFrame, openCategory } = useMercari();
+  const { setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, items, openItem, setLiked, isDeviceFrame, openCategory, sandboxSnapshot } = useMercari();
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [filters, setFilters] = useState<FilterState>(() => createFilterState());
   const [sortOrder, setSortOrder] = useState<'new' | 'priceAsc' | 'priceDesc' | 'likes'>('new');
+  const [visibleCount, setVisibleCount] = useState(60);
   const tokens = useMemo(() => tokenizeSearchQuery(searchQuery), [searchQuery]);
   const [draftQuery, setDraftQuery] = useState('');
 
@@ -32,35 +25,16 @@ export const SearchView: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setIsSearchOpen]);
 
-  const updateFilter = <K extends keyof FilterState>(key: K, value: FilterState[K]) => setFilters((current) => ({ ...current, [key]: value }));
-  const clearFilters = () => setFilters(createFilterState());
+  const updateFilter = <K extends keyof FilterState>(key: K, value: FilterState[K]) => { setVisibleCount(60); setFilters((current) => ({ ...current, [key]: value })); };
+  const clearFilters = () => { setVisibleCount(60); setFilters(createFilterState()); };
   const queryText = joinSearchTokens(tokens);
   const query = queryText.trim().toLowerCase();
   const isResultPage = Boolean(query);
-  const rawResults = useMemo(() => query ? searchCatalogItems(items, searchQuery) : [], [items, query, searchQuery]);
+  const rawResults = useMemo(() => query && sandboxSnapshot.scenarioId !== 'zero_search_results' ? searchCatalogItems(items, searchQuery) : [], [items, query, searchQuery, sandboxSnapshot.scenarioId]);
 
   const results = useMemo(() => {
-    const categoryAliases = categorySearchAliases[filters.category] ?? [filters.category];
-    const normalizedBrand = filters.brand.trim().toLowerCase();
-    const normalizedExclude = filters.excludeKeyword.trim().toLowerCase();
-    const normalizedColor = filters.color.toLowerCase();
-    const normalizedSize = filters.size.toLowerCase();
-    return [...rawResults]
-      .filter((item) => filters.category === 'すべて' || item.category.some((value) => categoryAliases.some((alias) => value.includes(alias))))
-      .filter((item) => filters.salesStatus === 'all' || (filters.salesStatus === 'available' ? !item.isSold : item.isSold))
-      .filter((item) => !filters.condition || item.condition === filters.condition)
-      .filter((item) => !filters.minPrice || item.price >= Number(filters.minPrice))
-      .filter((item) => !filters.maxPrice || item.price <= Number(filters.maxPrice))
-      .filter((item) => filters.subcategory === 'すべて' || item.category.some((value) => value.includes(filters.subcategory)))
-      .filter((item) => !normalizedBrand || `${item.title} ${item.description} ${item.category.join(' ')} ${item.seller.name}`.toLowerCase().includes(normalizedBrand))
-      .filter((item) => !normalizedSize || `${item.title} ${item.description} ${item.category.join(' ')}`.toLowerCase().includes(normalizedSize))
-      .filter((item) => !normalizedColor || `${item.title} ${item.description}`.toLowerCase().includes(normalizedColor))
-      .filter((item) => !filters.shippingFee || item.shippingFee === filters.shippingFee)
-      .filter((item) => !filters.shippingOption || (filters.shippingOption === '匿名配送' ? item.isAnonymousShipping !== false : item.shippingMethod.includes(filters.shippingOption.replace('メルカリ便', '配送'))))
-      .filter((item) => !filters.listingType || (filters.listingType === 'オークション' ? item.isAuction : !item.isAuction))
-      .filter((item) => !filters.sellerType || (item.sellerType ?? 'individual') === (filters.sellerType === 'ショップ' ? 'shop' : 'individual'))
-      .filter((item) => !normalizedExclude || !`${item.title} ${item.description}`.toLowerCase().includes(normalizedExclude))
-      .sort((a, b) => sortOrder === 'priceAsc' ? a.price - b.price : sortOrder === 'priceDesc' ? b.price - a.price : sortOrder === 'likes' ? b.likesCount - a.likesCount : b.id.localeCompare(a.id));
+    return filterCatalogItems(rawResults, filters)
+      .sort((a, b) => sortOrder === 'priceAsc' ? a.price - b.price : sortOrder === 'priceDesc' ? b.price - a.price : sortOrder === 'likes' ? b.likesCount - a.likesCount : Date.parse(b.createdAt ?? '1970-01-01') - Date.parse(a.createdAt ?? '1970-01-01'));
   }, [filters, rawResults, sortOrder]);
 
   const activeFilterLabels = useMemo(() => {
@@ -90,6 +64,7 @@ export const SearchView: React.FC = () => {
     const normalizedQuery = joinSearchTokens(normalizedTokens);
     setSearchQuery(normalizedQuery);
     setDraftQuery('');
+    setVisibleCount(60);
     if (shouldAddHistory && normalizedQuery) addSearchHistory(normalizedQuery);
   };
 
@@ -142,7 +117,7 @@ export const SearchView: React.FC = () => {
         {query ? (
           <div className="grid gap-10 lg:grid-cols-[268px_minmax(0,1fr)]">
             <aside className="hidden lg:block" aria-label="検索結果を絞り込む"><FilterSidebar idPrefix="search-desktop" {...filterProps} /></aside>
-            <SearchResults results={results} rawCount={rawResults.length} openItem={openItem} setLiked={setLiked} query={queryText} compact={isDeviceFrame} sortOrder={sortOrder} activeFilterLabels={activeFilterLabels} onClearFilters={clearFilters} onCycleSort={() => setSortOrder((current) => current === 'new' ? 'priceAsc' : current === 'priceAsc' ? 'priceDesc' : current === 'priceDesc' ? 'likes' : 'new')} onOpenFilters={() => setIsFilterOpen(true)} />
+            <SearchResults results={results.slice(0, visibleCount)} totalCount={results.length} rawCount={rawResults.length} openItem={openItem} setLiked={setLiked} query={queryText} compact={isDeviceFrame} sortOrder={sortOrder} activeFilterLabels={activeFilterLabels} onClearFilters={clearFilters} onLoadMore={() => setVisibleCount((current) => current + 60)} onCycleSort={() => { setVisibleCount(60); setSortOrder((current) => current === 'new' ? 'priceAsc' : current === 'priceAsc' ? 'priceDesc' : current === 'priceDesc' ? 'likes' : 'new'); }} onOpenFilters={() => setIsFilterOpen(true)} />
           </div>
         ) : <SearchHistory history={searchHistory} setQuery={(value) => commitTokens(tokenizeSearchQuery(value))} addHistory={addSearchHistory} clearHistory={clearSearchHistory} />}
       </div>
@@ -161,13 +136,13 @@ const SearchHistory: React.FC<{ history: string[]; setQuery: (query: string) => 
   </section>
 );
 
-const SearchResults: React.FC<{ results: MercariItem[]; rawCount: number; openItem: (id: string) => void; setLiked: (id: string, liked: boolean) => unknown; query: string; compact?: boolean; sortOrder: string; activeFilterLabels: string[]; onClearFilters: () => void; onCycleSort: () => void; onOpenFilters: () => void }> = ({ results, rawCount, openItem, setLiked, query, compact = false, sortOrder, activeFilterLabels, onClearFilters, onCycleSort, onOpenFilters }) => (
+const SearchResults: React.FC<{ results: MercariItem[]; totalCount: number; rawCount: number; openItem: (id: string) => void; setLiked: (id: string, liked: boolean) => unknown; query: string; compact?: boolean; sortOrder: string; activeFilterLabels: string[]; onClearFilters: () => void; onLoadMore: () => void; onCycleSort: () => void; onOpenFilters: () => void }> = ({ results, totalCount, rawCount, openItem, setLiked, query, compact = false, sortOrder, activeFilterLabels, onClearFilters, onLoadMore, onCycleSort, onOpenFilters }) => (
   <section aria-labelledby="search-results-title">
     <div className="mb-4 flex items-center justify-between gap-3"><div><h2 id="search-results-title" className="text-base font-bold text-white">「{query}」の検索結果</h2><p className="mt-1 text-xs text-[var(--shop-muted)]" aria-live="polite">{results.length}件の商品{activeFilterLabels.length > 0 && <span>（全{rawCount}件から絞り込み中）</span>}</p></div><div className="flex shrink-0 gap-2"><button type="button" onClick={onCycleSort} className="flex items-center gap-1 rounded-full border border-[var(--shop-border)] px-2.5 py-1.5 text-[10px] text-[var(--shop-muted)] hover:text-white"><SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />{sortOrder === 'new' ? '新しい順' : sortOrder === 'priceAsc' ? '価格の安い順' : sortOrder === 'priceDesc' ? '価格の高い順' : 'いいね順'}</button><button type="button" onClick={onOpenFilters} className="rounded-full border border-[var(--shop-border)] px-2.5 py-1.5 text-[10px] text-[var(--shop-muted)] hover:text-white lg:hidden">絞り込み{activeFilterLabels.length > 0 && ` ${activeFilterLabels.length}`}</button></div></div>
     <div className="mb-6 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-3" aria-label="適用中の絞り込み">
       <div className="flex flex-wrap items-center gap-2"><span className="text-xs font-black text-white">適用中の条件</span>{activeFilterLabels.length === 0 ? <span className="text-xs text-[var(--shop-muted)]">なし</span> : activeFilterLabels.map((label) => <span key={label} className="rounded-full border border-[var(--shop-blue)]/40 bg-[#16394d] px-2.5 py-1 text-[10px] font-bold text-[var(--shop-blue)]">{label}</span>)}{activeFilterLabels.length > 0 && <button type="button" onClick={onClearFilters} className="ml-auto text-[10px] font-bold text-[var(--shop-blue)] hover:text-white">すべて解除</button>}</div>
     </div>
-    {results.length === 0 ? <div className="rounded-lg border border-dashed border-[var(--shop-border)] py-16 text-center text-sm text-[var(--shop-muted)]">一致する商品が見つかりませんでした</div> : <div className={`grid grid-cols-3 gap-1.5 ${compact ? '' : 'sm:gap-2.5 md:grid-cols-4 md:gap-4 lg:grid-cols-5'}`}>{results.map((item) => <ProductCard key={item.id} item={item} compact={compact} onOpen={() => openItem(item.id)} onLike={(liked) => setLiked(item.id, liked)} />)}</div>}
+    {results.length === 0 ? <div className="rounded-lg border border-dashed border-[var(--shop-border)] py-16 text-center text-sm text-[var(--shop-muted)]">一致する商品が見つかりませんでした</div> : <><div className={`grid grid-cols-3 gap-1.5 ${compact ? '' : 'sm:gap-2.5 md:grid-cols-4 md:gap-4 lg:grid-cols-5'}`}>{results.map((item) => <ProductCard key={item.id} item={item} compact={compact} onOpen={() => openItem(item.id)} onLike={(liked) => setLiked(item.id, liked)} />)}</div>{results.length < totalCount && <button type="button" onClick={onLoadMore} className="mx-auto mt-8 block rounded-full border border-[var(--shop-blue)] px-6 py-2.5 text-xs font-bold text-[var(--shop-blue)] hover:bg-[#16394d]">さらに60件読み込む（残り{totalCount - results.length}件）</button>}</>}
   </section>
 );
 

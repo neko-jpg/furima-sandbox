@@ -21,6 +21,7 @@ from scipy.fftpack import dct
 ROOT = Path("public/images/products")
 RAW_SOURCES = [ROOT / "pexels-candidates", ROOT / "pexels-candidates-1000"]
 OUTPUT = ROOT / "pexels-selected"
+REVIEW_OUTPUT = Path("docs/reference-assets/pexels-review")
 
 GLOBAL_BAD_TERMS = (
     "illustration", "graphic design", "screenshot", "logo", "poster",
@@ -219,6 +220,7 @@ def main() -> int:
     if not items:
         raise SystemExit("候補manifestが見つかりません")
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    REVIEW_OUTPUT.mkdir(parents=True, exist_ok=True)
     for old_file in OUTPUT.glob("*.jpg"):
         old_file.unlink()
 
@@ -262,12 +264,12 @@ def main() -> int:
             "selectedPath": str(destination.resolve()),
         })
 
-    all_manifest_path = OUTPUT / "review-manifest.json"
+    all_manifest_path = REVIEW_OUTPUT / "review-manifest.json"
     all_manifest_path.write_text(json.dumps(reviewed, ensure_ascii=False, indent=2), encoding="utf-8")
     selected_manifest_path = OUTPUT / "manifest.json"
     selected_manifest_path.write_text(json.dumps(selected_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    make_contact_sheet(selected_manifest, OUTPUT / "contact-sheet.jpg")
-    make_category_sheets(selected_manifest, OUTPUT / "review-sheets")
+    make_contact_sheet(selected_manifest, REVIEW_OUTPUT / "contact-sheet.jpg")
+    make_category_sheets(selected_manifest, REVIEW_OUTPUT / "review-sheets")
 
     rejected = len(reviewed) - len(kept)
     summary = {

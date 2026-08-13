@@ -1,6 +1,5 @@
 import type { MercariItem, NotificationItem, UserProfile } from '../types/mercari';
 
-const image = (id: string) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=900&q=82`;
 const localProductImages: Record<string, string> = {
   'photo-1544716278-ca5e3f4abd8c': 'book-intro.jpg',
   'photo-1532012197267-da84d127e765': 'book-data.jpg',
@@ -22,13 +21,17 @@ const localProductImages: Record<string, string> = {
   'photo-1511512578047-dfb367046420': 'device.jpg',
   'photo-1563089145-599997674d42': 'fashion-jacket.jpg',
   'photo-1521369909029-2afed882baee': 'fashion-bag.jpg',
+  'photo-1593640408182-31c70c8268f5': 'pc-desktop.jpg',
+  'photo-1527443224154-c4a3942d3acf': 'pc-desktop.jpg',
+  'photo-1495474472287-4d71bcdd2085': 'device.jpg',
+  'photo-1507473885765-e6ed057f782c': 'device.jpg',
 };
-const productImage = (id: string) => localProductImages[id] ? `/images/products/${localProductImages[id]}` : image(id);
+const productImage = (id: string) => `/images/products/${localProductImages[id] ?? 'device.jpg'}`;
 const knitImage = productImage('photo-1485968579580-b6d095142e6e');
 
 export const INITIAL_USER: UserProfile = {
   name: 'Natsuki',
-  avatar: image('photo-1534528741775-53994a69daeb'),
+  avatar: '/favicon.svg',
   rating: 4.9,
   ratingsCount: 128,
   isVerified: true,
@@ -39,7 +42,7 @@ export const INITIAL_USER: UserProfile = {
 
 const seller = (name: string, avatarId: string, rating: number, ratingsCount: number): MercariItem['seller'] => ({
   name,
-  avatar: image(avatarId),
+  avatar: avatarId.startsWith('/') ? avatarId : '/favicon.svg',
   rating,
   ratingsCount,
   isVerified: true,
@@ -100,7 +103,7 @@ export const INITIAL_ITEMS: MercariItem[] = [
     shippingDays: '1〜2日で発送',
     likesCount: 3,
     seller: seller('izu', 'photo-1535713875002-d1d0cf377fde', 5, 54),
-    comments: [{ id: 'c-1', userName: 'りお', userAvatar: image('photo-1494790108377-be9c29b29330'), text: '丁寧な説明ありがとうございます。', date: '2日前' }],
+    comments: [{ id: 'c-1', userName: 'りお', userAvatar: '/favicon.svg', text: '丁寧な説明ありがとうございます。', date: '2日前' }],
   },
   {
     id: 'item-2',

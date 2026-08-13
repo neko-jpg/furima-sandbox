@@ -1,5 +1,11 @@
 # Furima Sandbox UI Kit
 
+## Sandbox operation notes
+
+- `exportState` and `importState` are operator-only API commands. They require `scope: "sandbox-control"` and an authenticated `admin` or `platform` actor; ordinary actors receive `FORBIDDEN`.
+- `wrangler.jsonc` is the local D1 migration configuration. Its placeholder `database_id` must be replaced with the real D1 database ID before running `npm run db:migrate:remote`.
+- Local previews with no D1 binding use localStorage. The deployed D1 state endpoint is intended for synthetic sandbox data and must be placed behind the deployment's authentication/access policy before handling real user data.
+
 Furima Sandboxは、AIエージェント連携のデモに使える、動作するフリマUIモックです。商品カタログ、検索、いいね、コメント、購入、出品、通知、マイページをローカルfixtureで再現しています。
 
 ## 開発
@@ -15,6 +21,7 @@ npm run dev
 npm run lint
 npm run build
 npm test
+npm run assets:audit
 ```
 
 ## Agent API
@@ -24,6 +31,26 @@ npm test
 読み取りには `getSnapshot()`, `getItems()`, `getItem(id)`, `searchItems(query)`、操作には `setLiked`, `startPurchase`, `confirmPurchase`, `createListingDraft`, `submitListing` などを使います。操作結果は `ActionResult` で返り、`idempotencyKey`, `getActionTrace()`, `resetScenario()` に対応しています。
 
 購入や出品はUIだけでなくdomain action側でも入力と状態を検証します。
+
+## Sandbox の境界と永続化
+
+通常のagent操作とsandbox制御操作は分離しています。購入者・出品者のAPIには現在actorの取引・walletだけを返し、`switchActor`、シナリオロード、仮想時計、障害注入は `scope: "sandbox-control"` かつ admin/platform actor が必要です。Sandbox Inspector はデモ検証用の運営画面です。
+
+実行時状態は、D1 binding がある環境では `/api/sandbox/state` を介して `sandbox_states` へ保存し、`if-match-state-version` で楽観的競合を検出します。D1 がないローカルプレビューでは localStorage にフォールバックします。デプロイ前に `.openai/hosting.json` の `d1` binding を `DB` に設定してください。
+
+```powershell
+npm run db:generate
+npm run db:migrate:local
+npm run db:migrate:remote
+```
+
+`db:migrate:remote` は対象 D1 のバックアップと適用先確認後に実行してください。D1 のバックアップ、保持期間、復旧演習はデプロイ環境の運用手順にも登録してください。
+
+## 画像・カタログ運用
+
+`public/images/products/pexels-selected/` だけが実行時の商品画像です。参考スクリーンショットは `docs/reference-assets/` に移し、公開静的 asset から除外しています。`npm run assets:audit` は公開対象の容量と2MiB以上のファイルを確認します。
+
+カタログAPIは `limit` 最大160、`offset`、`q`、`category` に対応し、ブラウザはページ単位で取得します。実運用では CDN の Brotli 圧縮、ETag/If-None-Match、検索インデックス、R2 画像配信を追加してください。
 
 ## カタログ画像とローカル収集
 

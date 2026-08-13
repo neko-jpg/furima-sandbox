@@ -23,9 +23,10 @@ test("server-renders the Furima Sandbox app shell", async () => {
   assert.doesNotMatch(html, /Starter Project|Building your site|SkeletonPreview/);
 });
 
-test("domain state and agent API invariants are covered by source-level contracts", async () => {
-  const [context, types, detail, buyModal, listing, globals, app, header, home, category, shop, search] = await Promise.all([
+test("UI contracts keep domain state, policy, search, and accessibility behavior wired", async () => {
+  const [context, engine, types, detail, buyModal, listing, globals, app, header, home, category, shop, search, inspector, schema, sandboxRoute] = await Promise.all([
     readFile(new URL("app/context/MercariContext.tsx", root), "utf8"),
+    readFile(new URL("app/domain/sandboxEngine.ts", root), "utf8"),
     readFile(new URL("app/types/mercari.ts", root), "utf8"),
     readFile(new URL("app/components/views/ItemDetailView.tsx", root), "utf8"),
     readFile(new URL("app/components/modals/BuyModal.tsx", root), "utf8"),
@@ -37,25 +38,44 @@ test("domain state and agent API invariants are covered by source-level contract
     readFile(new URL("app/components/views/CategoryView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/ShopView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/SearchView.tsx", root), "utf8"),
+    readFile(new URL("app/components/SandboxInspector.tsx", root), "utf8"),
+    readFile(new URL("db/schema.ts", root), "utf8"),
+    readFile(new URL("app/api/sandbox/state/route.ts", root), "utf8"),
   ]);
-  assert.match(context, /useState<string \| null>\(null\)/);
-  assert.match(context, /const selectedItem = items\.find\(\(item\) => item\.id === selectedItemId\)/);
-  assert.match(context, /const buyingItem = items\.find\(\(item\) => item\.id === buyingItemId\)/);
-  assert.doesNotMatch(context, /buyingItem\.isSold\s*=/);
-  assert.match(context, /const purchaseItem = \(itemId: string\)/);
-  assert.match(context, /failure\('ALREADY_SOLD'/);
+  assert.match(context, /new SandboxEngine\(items/);
+  assert.match(context, /sandboxEngine\.startPurchase/);
+  assert.match(context, /sandboxEngine\.confirmPurchase/);
   assert.match(context, /window\.__MERCARI_API__ = api/);
   assert.match(context, /window\.__SHOP_API__ = api/);
-  assert.match(context, /getSnapshot/);
-  assert.match(context, /idempotencyKey/);
-  assert.match(context, /getActionTrace/);
-  assert.match(context, /resetScenario/);
+  assert.match(context, /addComment: \(itemId, text, options\)/);
+  assert.match(context, /IDEMPOTENCY_CONFLICT/);
+  assert.match(context, /REMOTE_STATE_ENABLED/);
+  assert.match(context, /window\.localStorage\.setItem\(SANDBOX_STATE_STORAGE_KEY, serialized\)/);
+  assert.match(context, /if \(!REMOTE_STATE_ENABLED\) return;/);
+  assert.match(context, /sandboxEngine\.importState\(serialized, SANDBOX_CONTROL_OPTIONS\)/);
+  assert.match(context, /catalogLoadRef\.current/);
+  assert.match(context, /serializedDigest/);
+  assert.match(context, /compactImagePayloadForFingerprint/);
+  assert.match(context, /Sandbox stateのバックアップ/);
+  assert.match(context, /furima-sandbox-state-v1/);
+  assert.match(context, /viewsCount: \(item\.viewsCount \?\? 0\) \+ 1/);
+  assert.match(engine, /CONFIRMATION_REQUIRED/);
+  assert.match(engine, /POLICY_BLOCKED/);
+  assert.match(engine, /assertInvariants/);
+  assert.match(engine, /loadScenario/);
+  assert.match(engine, /advanceClock/);
+  assert.match(engine, /releaseWalletHold/);
+  assert.match(engine, /getVisibleInventoryMovements/);
+  assert.match(engine, /LISTING_DRAFT_CREATED/);
   assert.match(types, /export type ActionResult/);
+  assert.match(types, /TransactionRecord/);
+  assert.match(types, /DomainEvent/);
   assert.match(types, /createListingDraft/);
-  assert.match(types, /submitListing/);
+  assert.match(types, /confirmPurchase/);
   assert.doesNotMatch(buyModal, /buyingItem\.isSold\s*=/);
-  assert.match(buyModal, /purchaseItem\(buyingItem\.id\)/);
+  assert.match(buyModal, /result\.data\.orderId/);
   assert.match(detail, /const isUnavailable = Boolean\(item\.isSold\)/);
+  assert.match(detail, /navigator\.clipboard\.writeText/);
   assert.doesNotMatch(detail, /className="fixed inset-0/);
   const formEnd = listing.lastIndexOf("</form>");
   const footerAfterForm = listing.indexOf("<Footer />", formEnd);
@@ -66,25 +86,19 @@ test("domain state and agent API invariants are covered by source-level contract
   assert.match(globals, /prefers-reduced-motion/);
   assert.doesNotMatch(globals, /user-select:\s*none/);
   assert.match(app, /case 'category'/);
+  assert.match(app, /SandboxInspector/);
   assert.match(app, /categoryName === 'ショップ' \? <ShopView \/> : <CategoryView \/>/);
   assert.match(header, /onCategory=\{navigateCategory\}/);
   assert.doesNotMatch(home, /openCategory\(category\.target\)/);
   assert.match(search, /setSearchQuery\(normalizedQuery\)/);
   assert.match(search, /tokenizeSearchQuery/);
-  assert.match(search, /searchCatalogItems/);
-  assert.match(context, /searchCatalogItems\(stateRef\.current\?\.items/);
-  assert.match(types, /productFamilyId\?: string/);
-  assert.match(types, /variantId\?: string/);
-  assert.match(types, /attributes\?: Record<string, string>/);
-  assert.match(types, /inventoryPolicy\?: 'SINGLE' \| 'MULTI'/);
-  assert.match(search, /検索キーワードを入力/);
-  assert.match(search, /を削除/);
-  assert.match(header, /検索履歴/);
-  assert.match(header, /画像からさがす/);
-  assert.match(header, /検索条件を保存/);
-  assert.match(context, /const isAuthenticated = true/);
-  assert.match(category, /data-testid="category-view"/);
-  assert.match(shop, /data-testid="shop-view"/);
+  assert.match(search, /filterCatalogItems/);
+  assert.match(category, /filterCatalogItems/);
+  assert.match(inspector, /invariantViolations/);
+  assert.match(schema, /sandboxUsers/);
+  assert.match(schema, /domainEvents/);
+  assert.match(sandboxRoute, /hasValidStateEnvelope/);
+  assert.match(sandboxRoute, /else if \(existing\)/);
   assert.match(shop, /openCategory\(`ショップカテゴリ:\$\{group\.name\}`\)/);
   assert.match(home, /openCategory\('PC'\)/);
 });

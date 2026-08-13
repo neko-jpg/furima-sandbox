@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, Layers3, Monitor, Search, ScanLine, Tag, X } from 'lucide-react';
+import { Heart, Layers3, Monitor, Search, ScanLine, Tag, UserRound, X } from 'lucide-react';
 import { useMercari } from '../context/MercariContext';
 import { joinSearchTokens, tokenizeSearchQuery } from './searchUtils';
 import type { HomeTab, MainTab } from '../types/mercari';
@@ -15,6 +15,7 @@ const desktopCategories = [
   ['レディース', 'レディース'],
   ['ベビー・キッズ', 'ベビー・キッズ'],
 ] as const;
+const SAVED_QUERY_STORAGE_KEY = 'shop-saved-queries-v1';
 
 export const ShopMark: React.FC<{ compact?: boolean }> = ({ compact = false }) => (
   <span
@@ -60,10 +61,27 @@ export const Header: React.FC = () => {
 const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
   const { searchQuery, setSearchQuery, setIsSearchOpen, searchHistory, addSearchHistory, clearSearchHistory, openCategory } = useMercari();
   const [draftQuery, setDraftQuery] = useState('');
-  const [savedQueries, setSavedQueries] = useState<string[]>([]);
+  const [savedQueries, setSavedQueries] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem(SAVED_QUERY_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) as unknown : [];
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string').slice(0, 10) : [];
+    } catch {
+      return [];
+    }
+  });
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const tokens = useMemo(() => tokenizeSearchQuery(searchQuery), [searchQuery]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SAVED_QUERY_STORAGE_KEY, JSON.stringify(savedQueries.slice(0, 10)));
+    } catch {
+      // Storage can be unavailable in private browsing or embedded previews.
+    }
+  }, [savedQueries]);
 
   useEffect(() => {
     if (mobileMode) return undefined;
@@ -109,7 +127,7 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
   };
 
   const toggleSavedQuery = (query: string) => {
-    setSavedQueries((previous) => previous.includes(query) ? previous.filter((item) => item !== query) : [...previous, query]);
+    setSavedQueries((previous) => previous.includes(query) ? previous.filter((item) => item !== query) : [query, ...previous].slice(0, 10));
   };
 
   if (mobileMode) {
@@ -136,10 +154,10 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
 };
 
 const GuestActions: React.FC = () => {
-  const { requestLogin, navigateToTab } = useMercari();
+  const { requestLogin, navigateToTab, activeActor } = useMercari();
   return <div className="flex shrink-0 items-center gap-1.5">
-    <button type="button" onClick={() => requestLogin('ログインすると、いいね・保存・購入などの機能を利用できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">ログイン</button>
-    <button type="button" onClick={() => requestLogin('会員登録すると、商品を購入・出品できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">会員登録</button>
+    <span className="hidden items-center gap-1 rounded-md border border-[var(--shop-border)] px-2.5 py-2 text-xs font-bold text-[var(--shop-muted)] lg:flex" title={`現在のactor: ${activeActor.id}`}><UserRound className="h-3.5 w-3.5" />{activeActor.id} ({activeActor.role})</span>
+    {!activeActor.authenticated && <><button type="button" onClick={() => requestLogin('ログインすると、いいね・保存・購入などの機能を利用できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">ログイン</button><button type="button" onClick={() => requestLogin('会員登録すると、商品を購入・出品できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">会員登録</button></>}
     <button type="button" onClick={() => navigateToTab('notifications')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">お知らせ</button>
     <button type="button" onClick={() => navigateToTab('sell')} className="rounded-md bg-[var(--shop-accent)] px-4 py-2.5 text-sm font-bold text-white shadow-[0_4px_12px_rgba(255,59,74,.2)] hover:bg-[var(--shop-accent-strong)]">出品</button>
     <button type="button" className="rounded-md px-2 py-2 text-xs font-bold text-[var(--shop-muted)] hover:text-white">日本語</button>

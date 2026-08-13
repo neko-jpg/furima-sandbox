@@ -108,4 +108,89 @@ export const itemMatchesSearchQuery = (item: MercariItem, query: string): boolea
   return includeTokens.every((token) => searchable.includes(token)) && excludeTokens.every((token) => !searchable.includes(token));
 };
 
-export const searchCatalogItems = (items: MercariItem[], query: string): MercariItem[] => items.filter((item) => itemMatchesSearchQuery(item, query));
+export const searchCatalogItems = (items: MercariItem[], query: string): MercariItem[] => items.filter((item) => isPubliclyVisible(item) && itemMatchesSearchQuery(item, query));
+
+export interface CatalogFilterSpec {
+  category?: string;
+  subcategory?: string;
+  brand?: string;
+  size?: string;
+  salesStatus?: 'all' | 'available' | 'sold';
+  sellerType?: string;
+  condition?: string;
+  minPrice?: string | number;
+  maxPrice?: string | number;
+  discountOption?: string;
+  appraisal?: string;
+  listingType?: string;
+  guarantee?: string;
+  color?: string;
+  shippingOption?: string;
+  shippingFee?: string;
+  timeSale?: string;
+  excludeKeyword?: string;
+}
+
+const isAvailable = (item: MercariItem): boolean => item.listingStatus !== 'HELD' && !item.isSold && ((item.inventoryQuantity ?? 1) - (item.reservedQuantity ?? 0)) > 0;
+const isPubliclyVisible = (item: MercariItem): boolean => item.listingStatus !== 'HELD' && item.listingStatus !== 'DRAFT' && item.listingStatus !== 'ARCHIVED';
+const isSoldListing = (item: MercariItem): boolean => item.isSold || item.listingStatus === 'SOLD' || ((item.inventoryQuantity ?? 0) - (item.reservedQuantity ?? 0)) <= 0;
+
+const percentFromTimeSale = (value: string): number => {
+  const match = value.match(/(\d+)/u);
+  return match ? Number(match[1]) : 0;
+};
+
+/**
+ * Apply every visible filter against the structured product fields. Keeping
+ * this in one pure function prevents the search page and the agent API from
+ * silently drifting apart.
+ */
+export const filterCatalogItems = (items: MercariItem[], filters: CatalogFilterSpec): MercariItem[] => {
+  const category = filters.category?.trim() ?? '';
+  const subcategory = filters.subcategory?.trim() ?? '';
+  const brand = normalizeSearchText(filters.brand?.trim() ?? '');
+  const size = normalizeSearchText(filters.size?.trim() ?? '');
+  const color = normalizeSearchText(filters.color?.trim() ?? '');
+  const excluded = normalizeSearchText(filters.excludeKeyword?.trim() ?? '');
+  const minPrice = filters.minPrice === '' || filters.minPrice === undefined ? undefined : Number(filters.minPrice);
+  const maxPrice = filters.maxPrice === '' || filters.maxPrice === undefined ? undefined : Number(filters.maxPrice);
+  const categoryAliases = category && category !== 'すべて' ? [category, ...(categorySearchAliasesFor(category))] : [];
+
+  return items.filter((item) => {
+    if (!isPubliclyVisible(item)) return false;
+    if (categoryAliases.length && !item.category.some((value) => categoryAliases.some((alias) => normalizeSearchText(value).includes(normalizeSearchText(alias)) || normalizeSearchText(alias).includes(normalizeSearchText(value))))) return false;
+    if (subcategory && subcategory !== 'すべて' && !item.category.some((value) => normalizeSearchText(value).includes(normalizeSearchText(subcategory)))) return false;
+    if (filters.salesStatus === 'available' && !isAvailable(item)) return false;
+    if (filters.salesStatus === 'sold' && !isSoldListing(item)) return false;
+    if (filters.condition && item.condition !== filters.condition) return false;
+    if (minPrice !== undefined && Number.isFinite(minPrice) && item.price < minPrice) return false;
+    if (maxPrice !== undefined && Number.isFinite(maxPrice) && item.price > maxPrice) return false;
+    if (brand && !normalizeSearchText(item.brand ?? item.attributes?.brand ?? '').includes(brand)) return false;
+    if (size && !normalizeSearchText(item.size ?? item.attributes?.size ?? '').includes(size)) return false;
+    if (color && !normalizeSearchText(item.color ?? item.attributes?.color ?? '').includes(color)) return false;
+    if (filters.shippingFee && item.shippingFee !== filters.shippingFee) return false;
+    if (filters.shippingOption === '匿名配送' && item.isAnonymousShipping === false) return false;
+    if (filters.shippingOption && filters.shippingOption !== '匿名配送' && !item.shippingMethod.includes(filters.shippingOption.replace('メルカリ便', '配送'))) return false;
+    if (filters.listingType === 'オークション' && !item.isAuction) return false;
+    if (filters.listingType === '通常出品' && item.isAuction) return false;
+    if (filters.sellerType && (item.sellerType ?? 'individual') !== (filters.sellerType === 'ショップ' ? 'shop' : 'individual')) return false;
+    if (filters.discountOption === 'クーポン対象' && !item.isCouponEligible) return false;
+    if (filters.discountOption === 'タイムセール' && !item.isTimeSale) return false;
+    if (filters.appraisal === '対象' && !item.isAuthenticityEligible) return false;
+    if (filters.guarantee === '対象' && !item.isGuaranteeEligible) return false;
+    if (filters.timeSale && (!item.isTimeSale || (item.discountRate ?? 0) < percentFromTimeSale(filters.timeSale))) return false;
+    if (excluded && getItemSearchText(item).includes(excluded)) return false;
+    return true;
+  });
+};
+
+export const categorySearchAliasesFor = (category: string): string[] => {
+  const aliases: Record<string, string[]> = {
+    ファッション: ['レディース', 'メンズ'],
+    'ゲーム・おもちゃ・グッズ': ['ゲーム・おもちゃ', 'ゲーム', 'グッズ', 'ホビー', 'フィギュア', 'トレーディングカード'],
+    '本・雑誌・漫画': ['本・マンガ', '本', 'マンガ', '漫画', '雑誌'],
+    'スマホ・タブレット・パソコン': ['家電・スマホ', 'スマホ', 'タブレット', 'PC', 'パソコン'],
+    'ベビー・キッズ': ['ベビー', 'キッズ'],
+  };
+  return aliases[category] ?? [];
+};
