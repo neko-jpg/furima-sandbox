@@ -37,9 +37,11 @@ yarn-error.log*
 
 /dist/
 /.wrangler/
+/.codex-runtime/
 /outputs/
 /work/
 *.tsbuildinfo
+/worker-configuration.d.ts
 
 # local browser / QA artifacts
 /.playwright-cli/

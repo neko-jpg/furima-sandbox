@@ -18,6 +18,7 @@ import { BuyModal } from './modals/BuyModal';
 import { LoginPromptModal } from './modals/LoginPromptModal';
 import { DemoNoticeBar } from './DemoNotice';
 import { DemoGuide } from './DemoGuide';
+import { SandboxInspector } from './SandboxInspector';
 
 export const MercariApp: React.FC = () => {
   const {
@@ -91,6 +92,7 @@ export const MercariApp: React.FC = () => {
 
         <BuyModal />
         <LoginPromptModal />
+        <SandboxInspector />
       </div>
     </div>
   );

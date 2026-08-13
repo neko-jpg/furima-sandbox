@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, CreditCard, Gavel, MapPin, ShieldCheck, Tag, WalletCards, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
@@ -71,13 +73,25 @@ export const BuyModal: React.FC = () => {
       setPurchaseError('取引条件とデモ規約を確認してから確定してください。');
       return;
     }
-    const result = isAuction ? placeBid(buyingItem.id, Number(bidAmount || minimumBid)) : purchaseItem(buyingItem.id);
-    if (!result.ok) {
-      setPurchaseError(result.message || (result.error === 'ALREADY_SOLD' ? 'この商品はすでに売り切れています。' : '処理に失敗しました。入力内容を確認してください。'));
-      return;
+    if (isAuction) {
+      const result = placeBid(buyingItem.id, Number(bidAmount || minimumBid));
+      if (!result.ok) {
+        setPurchaseError(result.message || '処理に失敗しました。入力内容を確認してください。');
+        return;
+      }
+      setOrderId(`BID-${buyingItem.id.slice(-6).toUpperCase()}`);
+    } else {
+      const result = purchaseItem(buyingItem.id, {
+        couponDiscount: couponApplied ? 500 : 0,
+        pointsDiscount: pointsApplied ? 200 : 0,
+      });
+      if (!result.ok) {
+        setPurchaseError(result.message || (result.error === 'ALREADY_SOLD' ? 'この商品はすでに売り切れています。' : '処理に失敗しました。入力内容を確認してください。'));
+        return;
+      }
+      setOrderId(result.data.orderId);
     }
     setPurchaseError(null);
-    setOrderId(`DEMO-${buyingItem.id.slice(-6).toUpperCase()}`);
     setIsCompleted(true);
   };
 
@@ -115,7 +129,7 @@ export const BuyModal: React.FC = () => {
             <div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-bg)] p-3"><div className="flex items-start gap-2.5 text-xs text-[var(--shop-text)]"><input id="purchase-policy" aria-label="取引条件・デモ規約を確認しました" type="checkbox" checked={hasAgreed} onChange={(event) => { setHasAgreed(event.target.checked); setPurchaseError(null); }} className="mt-0.5 h-4 w-4 accent-[var(--shop-accent)]" /> <span><span className="font-bold text-white">取引条件・デモ規約を確認しました</span><span className="mt-1 block leading-5 text-[var(--shop-muted)]">確定すると、通常商品はSOLD、オークションは入札履歴に反映されます。実サービスの決済・返金は行われません。</span></span></div><div className="mt-3 flex items-center gap-2 text-[10px] text-[var(--shop-muted)]"><ShieldCheck className="h-4 w-4 text-[var(--shop-blue)]" />返品・補償ポリシーはデモ用に表示しています</div></div>
             {purchaseError && <p className="text-xs text-red-300" role="alert">{purchaseError}</p>}
             <button type="button" onClick={handleConfirm} disabled={!hasAgreed} className="w-full rounded-xl bg-[var(--shop-accent)] py-3.5 text-sm font-black text-white shadow-lg transition-colors hover:bg-[var(--shop-accent-strong)] disabled:cursor-not-allowed disabled:bg-[#55555a]" data-testid="confirm-purchase-btn">{isAuction ? '入札を確定する（デモ）' : '購入を確定する（デモ）'}</button>
-            <p className="text-center text-[10px] text-[var(--shop-subtle)]">{isAuction ? '現在価格と入札件数が即時に更新されます。' : '購入後は商品カードとAPIスナップショットがSOLDに更新されます。'}</p>
+            <p className="text-center text-[10px] text-[var(--shop-subtle)]">{isAuction ? '現在価格と入札履歴がDomain Eventに記録されます。' : '購入後は予約・決済・発送待ちの取引が作成され、Inspectorで次の操作を確認できます。'}</p>
             {changeSheet && <CheckoutSheet type={changeSheet} current={changeSheet === 'payment' ? paymentMethod : shippingAddress} onClose={() => setChangeSheet(null)} onSelect={(value) => { if (changeSheet === 'payment') setPaymentMethod(value); else setShippingAddress(value); setChangeSheet(null); }} />}
           </div>
         )}

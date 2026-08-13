@@ -4,6 +4,7 @@ import React, { useMemo } from 'react';
 import { ArrowRight, ChevronRight } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import type { MercariItem } from '../../types/mercari';
+import { ShopImage } from '../ui/ShopImage';
 
 export const MyListView: React.FC = () => {
   const { items, recentlyViewedIds, openItem, setIsSearchOpen, setSearchQuery } = useMercari();
@@ -75,7 +76,7 @@ const MyListProductCard: React.FC<{ item: MercariItem; onOpen: () => void }> = (
   <article className="group min-w-0">
     <button type="button" onClick={onOpen} className="block w-full text-left" data-testid={`my-list-item-${item.id}`}>
       <div className="relative aspect-square overflow-hidden rounded-lg bg-[var(--shop-surface)]">
-        <img src={item.images[0]} alt={`${item.title}のサムネイル${item.isSold ? ' 売り切れ' : ''}`} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+        <ShopImage src={item.images[0]} alt={`${item.title}のサムネイル${item.isSold ? ' 売り切れ' : ''}`} loading="lazy" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
         {item.isSold && <span className="absolute -left-7 top-3 z-10 w-24 -rotate-45 bg-[var(--shop-accent)] py-1 text-center text-[10px] font-black tracking-wide text-white shadow">SOLD</span>}
         <span className="absolute bottom-2 left-2 rounded-full bg-black/85 px-2 py-0.5 text-xs font-black text-white">¥{(item.currentBid ?? item.price).toLocaleString()}</span>
       </div>

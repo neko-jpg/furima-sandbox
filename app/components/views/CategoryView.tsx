@@ -3,24 +3,9 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronRight, RotateCcw, Save, SlidersHorizontal, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
+import { categorySearchAliasesFor, filterCatalogItems } from '../searchUtils';
 import { createFilterState, FilterSidebar, FilterState, filterCategories } from '../ui/FilterSidebar';
 import { ProductCard } from '../ui/ShopPrimitives';
-
-const categoryAliases: Record<string, string[]> = {
-  'ゲーム・おもちゃ・グッズ': ['ゲーム・おもちゃ', 'ゲーム・おもちゃ・グッズ', 'ゲーム', 'トレーディングカード', 'ホビー', 'フィギュア'],
-  'ホビー・楽器・アート': ['ホビー', '楽器', 'アート', 'フィギュア'],
-  '本・雑誌・漫画': ['本・マンガ', '本・雑誌・漫画', '本', 'マンガ', '漫画', '雑誌'],
-  'CD・DVD・ブルーレイ': ['CD', 'DVD', 'ブルーレイ', '音楽', '映画'],
-  'スマホ・タブレット・パソコン': ['家電・スマホ', 'スマホ', 'タブレット', 'PC', 'パソコン'],
-  PC: ['PC', 'パソコン', 'ノートPC', 'タブレット'],
-  'テレビ・オーディオ・カメラ': ['テレビ', 'オーディオ', 'カメラ'],
-  '生活家電・空調': ['家電・スマホ', '生活家電', '空調'],
-  ファッション: ['ファッション', 'レディース', 'メンズ'],
-  メンズ: ['メンズ', 'ファッション'],
-  レディース: ['レディース', 'ファッション'],
-  'ベビー・キッズ': ['ベビー', 'キッズ'],
-  '家具・インテリア': ['インテリア・住まい・小物', '家具', 'インテリア'],
-};
 
 const conditionChips = ['新品・未使用', '目立った傷や汚れなし'];
 
@@ -40,32 +25,18 @@ export const CategoryView: React.FC = () => {
   const activeFilters = filters.category === selectedCategory ? filters : createFilterState(selectedCategory);
 
   const sourceItems = useMemo(() => {
-    const normalItems = items.filter((item) => !item.isAuction);
-    if (!categoryName || categoryName === 'すべてのカテゴリ') return normalItems;
-    const aliases = categoryAliases[categoryName] ?? [categoryName];
-    const matched = normalItems.filter((item) => item.category.some((value) => aliases.some((alias) => value.includes(alias))));
-    return matched.length ? matched : normalItems;
+    if (!categoryName || categoryName === 'すべてのカテゴリ') return items;
+    if (categoryName === 'オークション') return items.filter((item) => item.isAuction);
+    if (categoryName === '人気の商品') return [...items].sort((a, b) => b.likesCount - a.likesCount);
+    if (categoryName === 'ブランド') return items.filter((item) => Boolean(item.brand));
+    if (categoryName.startsWith('ショップカテゴリ:')) return items.filter((item) => item.sellerType === 'shop');
+    const aliases = categorySearchAliasesFor(categoryName);
+    const targetTerms = [categoryName, ...aliases].map((value) => value.toLocaleLowerCase('ja-JP'));
+    return items.filter((item) => item.category.some((value) => targetTerms.some((term) => value.toLocaleLowerCase('ja-JP').includes(term) || term.includes(value.toLocaleLowerCase('ja-JP')))));
   }, [categoryName, items]);
 
   const results = useMemo(() => {
-    const normalizedBrand = activeFilters.brand.trim().toLowerCase();
-    const normalizedExclude = activeFilters.excludeKeyword.trim().toLowerCase();
-    const normalizedColor = activeFilters.color.toLowerCase();
-    const normalizedSize = activeFilters.size.toLowerCase();
-    return [...sourceItems]
-      .filter((item) => activeFilters.salesStatus === 'all' || (activeFilters.salesStatus === 'available' ? !item.isSold : item.isSold))
-      .filter((item) => !activeFilters.condition || item.condition === activeFilters.condition)
-      .filter((item) => !activeFilters.minPrice || item.price >= Number(activeFilters.minPrice))
-      .filter((item) => !activeFilters.maxPrice || item.price <= Number(activeFilters.maxPrice))
-      .filter((item) => activeFilters.subcategory === 'すべて' || item.category.some((value) => value.includes(activeFilters.subcategory)))
-      .filter((item) => !normalizedBrand || `${item.title} ${item.description} ${item.category.join(' ')} ${item.seller.name}`.toLowerCase().includes(normalizedBrand))
-      .filter((item) => !normalizedSize || `${item.title} ${item.description} ${item.category.join(' ')}`.toLowerCase().includes(normalizedSize))
-      .filter((item) => !normalizedColor || `${item.title} ${item.description}`.toLowerCase().includes(normalizedColor))
-      .filter((item) => !activeFilters.shippingFee || item.shippingFee === activeFilters.shippingFee)
-      .filter((item) => !activeFilters.shippingOption || item.shippingMethod.includes(activeFilters.shippingOption.replace('メルカリ便', '配送')))
-      .filter((item) => !activeFilters.listingType || (activeFilters.listingType === 'オークション' ? item.isAuction : !item.isAuction))
-      .filter((item) => !normalizedExclude || !`${item.title} ${item.description}`.toLowerCase().includes(normalizedExclude))
-      .sort((a, b) => sort === 'priceAsc' ? a.price - b.price : sort === 'priceDesc' ? b.price - a.price : sort === 'new' ? b.id.localeCompare(a.id) : b.likesCount - a.likesCount);
+    return filterCatalogItems(sourceItems, activeFilters).sort((a, b) => sort === 'priceAsc' ? a.price - b.price : sort === 'priceDesc' ? b.price - a.price : sort === 'new' ? (b.createdAt ?? '').localeCompare(a.createdAt ?? '') : b.likesCount - a.likesCount);
   }, [activeFilters, sort, sourceItems]);
 
   const showNotice = (message: string) => {

@@ -51856,7 +51856,7 @@ export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({
   viewsCount: seed.viewsCount,
   seller: {
     name: seed.sellerName,
-    avatar: seed.sellerAvatar,
+    avatar: '/favicon.svg',
     rating: seed.rating,
     ratingsCount: seed.ratingsCount,
     isVerified: true,
