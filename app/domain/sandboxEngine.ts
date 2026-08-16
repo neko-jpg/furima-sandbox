@@ -203,6 +203,7 @@ export interface CloseAuctionResult {
 }
 
 export class SandboxEngine {
+  private eventSubscribers: Set<(event: DomainEvent) => void> = new Set();
   private initialItems: MercariItem[];
   private readonly initialNotifications: NotificationItem[];
   private readonly sandboxId: string;
@@ -565,6 +566,11 @@ export class SandboxEngine {
 
   public getTransactions(actorId?: string): TransactionRecord[] {
     return clone(this.state.transactions.filter((transaction) => !actorId || transaction.buyerId === actorId || transaction.sellerId === actorId));
+  }
+
+  public subscribe(handler: (event: DomainEvent) => void): () => void {
+    this.eventSubscribers.add(handler);
+    return () => this.eventSubscribers.delete(handler);
   }
 
   public getDomainEvents(): DomainEvent[] {

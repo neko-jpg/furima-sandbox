@@ -1486,6 +1486,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
         syncFromEngine();
         return success(undefined, result.stateVersion);
       }),
+      subscribe: (handler) => sandboxEngine.subscribe(handler),
     };
     window.__SHOP_API__ = api;
     window.__MERCARI_API__ = api;

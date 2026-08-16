@@ -1,3 +1,5 @@
+import type { components } from "./openapi";
+
 export interface Seller {
   name: string;
   avatar: string;
@@ -69,30 +71,21 @@ export interface ListingDraft {
   updatedAt: string;
 }
 
-export interface MercariItem {
-  id: string;
-  title: string;
-  price: number;
+export type MercariItem = Omit<components["schemas"]["MercariItem"], "condition" | "images"> & {
+  condition: string;
   images: string[];
-  /** @deprecated Use imageRefs for new listing/media flows. */
-  imageRefs?: string[];
+  sellerId?: string;
+  isLiked?: boolean;
+  likesCount: number;
+  seller: Seller;
+  comments: CommentItem[];
+  viewsCount?: number;
+  viewedAt?: string;
   isSold?: boolean;
   isAuction?: boolean;
   currentBid?: number;
   bidsCount?: number;
   timeLeft?: string;
-  description: string;
-  category: string[];
-  condition: string;
-  shippingFee: string;
-  shippingMethod: string;
-  origin: string;
-  shippingDays: string;
-  likesCount: number;
-  isLiked?: boolean;
-  seller: Seller;
-  comments: CommentItem[];
-  viewsCount?: number;
   brand?: string;
   size?: string;
   color?: string;
@@ -108,9 +101,6 @@ export interface MercariItem {
   productType?: string;
   searchTags?: string[];
   attributes?: Record<string, string>;
-  inventoryPolicy?: 'SINGLE' | 'MULTI';
-  inventoryInitialQuantity?: number;
-  inventoryQuantity?: number;
   reservedQuantity?: number;
   listingStatus?: 'DRAFT' | 'ACTIVE' | 'HELD' | 'RESERVED' | 'SOLD' | 'ARCHIVED';
   moderationStatus?: ModerationStatus;
@@ -121,16 +111,16 @@ export interface MercariItem {
   sourceChecksum?: string;
   createdAt?: string;
   updatedAt?: string;
-  soldAt?: string;
-  viewedAt?: string;
-  sellerId?: string;
+  auctionEndsAt?: string;
+  inventoryUpdatedAt?: string;
+  qualityTier?: string;
   isCouponEligible?: boolean;
   discountRate?: number;
   isTimeSale?: boolean;
   isGuaranteeEligible?: boolean;
-  qualityTier?: 'gold' | 'synthetic';
-  auctionEndsAt?: string;
-}
+  soldAt?: string;
+  inventoryInitialQuantity?: number;
+};
 
 export type InventoryMovementType = 'IN' | 'OUT' | 'ADJUSTMENT' | 'RESERVE' | 'RELEASE';
 
@@ -693,6 +683,7 @@ export interface MercariAgentAPI {
   resetScenario: (options?: AgentActionOptions & { scenarioId?: ScenarioId }) => ActionResult<undefined>;
   previewAction: (command: PreviewCommand, payload: unknown, options?: AgentActionOptions) => ActionResult<ActionPreview>;
   commitPreview: (previewId: string, options?: AgentActionOptions) => ActionResult<unknown>;
+  subscribe: (handler: (event: DomainEvent) => void) => () => void;
 }
 
 declare global {
