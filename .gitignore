@@ -61,3 +61,4 @@ yarn-error.log*
 # Keep only the curated set under pexels-selected in version control.
 /public/images/products/pexels-candidates/
 /public/images/products/pexels-candidates-1000/
+mcp-server/node_modules

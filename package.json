@@ -6,6 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "mcp": "node --experimental-strip-types scripts/mcp-server.ts",
     "dev": "vinext dev",
     "dev:edge": "wrangler dev --local --persist-to .wrangler/state",
     "build": "node scripts/clean-build.mjs && vinext build",
@@ -31,10 +32,14 @@
     "types:sync": "npx openapi-typescript docs/api/openapi.yaml -o app/types/openapi.d.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cross-fetch": "^4.1.0",
+    "dotenv": "^17.4.2",
     "drizzle-orm": "0.45.2",
     "lucide-react": "^1.31.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.52.0",
