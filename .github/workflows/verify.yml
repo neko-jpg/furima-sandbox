@@ -27,6 +27,8 @@ jobs:
       - run: python -m pip install --disable-pip-version-check --no-cache-dir semgrep==1.173.0
       - run: npm run build
       - run: npm run typecheck
+      - run: npm run types:sync
+      - run: git diff --quiet app/types/openapi.d.ts app/types/mercari.ts
       - run: npm run lint
       - run: npm run qa:static
       - run: npm run qa:matrix

@@ -203,6 +203,7 @@ export interface CloseAuctionResult {
 }
 
 export class SandboxEngine {
+  private eventSubscribers: Set<(event: DomainEvent) => void> = new Set();
   private initialItems: MercariItem[];
   private readonly initialNotifications: NotificationItem[];
   private readonly sandboxId: string;
@@ -375,6 +376,21 @@ export class SandboxEngine {
       correlationId,
     } satisfies DomainEvent));
     this.state.events = [...this.state.events.slice(-499), ...events];
+    if (events.length && this.eventSubscribers.size) {
+      const subscribers = [...this.eventSubscribers];
+      for (const event of events) {
+        const eventSnapshot = clone(event);
+        queueMicrotask(() => {
+          for (const subscriber of subscribers) {
+            try {
+              subscriber(clone(eventSnapshot));
+            } catch {
+              // A subscriber must never roll back or corrupt committed domain state.
+            }
+          }
+        });
+      }
+    }
     return events;
   }
 
@@ -565,6 +581,11 @@ export class SandboxEngine {
 
   public getTransactions(actorId?: string): TransactionRecord[] {
     return clone(this.state.transactions.filter((transaction) => !actorId || transaction.buyerId === actorId || transaction.sellerId === actorId));
+  }
+
+  public subscribe(handler: (event: DomainEvent) => void): () => void {
+    this.eventSubscribers.add(handler);
+    return () => this.eventSubscribers.delete(handler);
   }
 
   public getDomainEvents(): DomainEvent[] {
