@@ -24,6 +24,17 @@ npm test
 npm run assets:audit
 ```
 
+## APIドキュメント
+
+- 正本: [`docs/api/openapi.yaml`](docs/api/openapi.yaml)
+- Scalar API参照: [Cloudflare Pages](https://mercari-ui-kit-api-docs.pages.dev/)
+- チーム運用: [GitHub Wiki](https://github.com/neko-jpg/mercari-ui-kit/wiki)
+
+API関連の変更が`main`へ入ると、GitHub Actionsの
+[`docs-cloudflare-pages.yml`](.github/workflows/docs-cloudflare-pages.yml)が検証後にCloudflare Pagesへデプロイします。
+Cloudflare Accessの招待メールが必要です。運用手順は
+[`docs/runbooks/cloudflare-pages-docs.md`](docs/runbooks/cloudflare-pages-docs.md)と[`AGENTS.md`](AGENTS.md)を参照してください。
+
 ## Agent API
 
 ブラウザ上では `window.__SHOP_API__` から安定したAPIオブジェクトを取得できます。後方互換のため `window.__MERCARI_API__` も同じオブジェクトを指します。
