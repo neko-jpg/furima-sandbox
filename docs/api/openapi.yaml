@@ -1,0 +1,812 @@
+openapi: 3.1.0
+info:
+  title: Furima Sandbox API
+  version: 1.0.0
+  description: |
+    Furima Sandboxのカタログ、Sandbox状態、出品下書き・出品ライフサイクルAPI。
+    このファイルがAPI契約の正本です。GitHub Wikiはチーム向けの読み物として本ファイルへリンクします。
+    /api/catalog、/api/catalog/{itemId}、/api/sandbox/state、/api/sandbox/health、/api/sandbox/preview、/api/sandbox/commit、/api/sandbox/reset、/api/sandbox/seed、/api/sandbox/replayは現在のHTTP実装です。
+    /api/listings系はD1 adapter接続前のcontract-first定義で、現時点の実行経路はBrowser APIです。
+servers:
+  - url: /
+    description: Local or deployed application origin
+tags:
+  - name: Catalog
+  - name: Sandbox State
+  - name: Listings
+  - name: Wallet
+  - name: Profile
+  - name: Social
+paths:
+  /api/catalog:
+    get:
+      tags: [Catalog]
+      summary: 商品カタログをページ取得する
+      parameters:
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 200 }
+        - name: category
+          in: query
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: 商品ページ
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Catalog-Total: { schema: { type: integer } }
+            X-Catalog-Offset: { schema: { type: integer } }
+            X-Catalog-Limit: { schema: { type: integer } }
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 40
+                items: { $ref: '#/components/schemas/MercariItem' }
+        '304':
+          description: If-None-Matchに一致したため変更なし
+  /api/catalog/{itemId}:
+    get:
+      tags: [Catalog]
+      summary: 商品を1件取得する
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: 商品
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MercariItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/sandbox/state:
+    get:
+      tags: [Sandbox State]
+      summary: Sandbox状態を取得する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: query
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sandbox状態
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxState' }
+        '304': { description: 変更なし }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      tags: [Sandbox State]
+      summary: Sandbox状態を楽観的に更新する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: query
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        - name: If-Match-State-Version
+          in: header
+          required: false
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxState' }
+      responses:
+        '200':
+          description: 保存済み状態
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id, stateVersion]
+                properties:
+                  ok: { const: true }
+                  id: { type: string }
+                  stateVersion: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { description: 状態が8MiBを超えた }
+  /api/sandbox/health:
+    get:
+      tags: [Sandbox State]
+      summary: Sandboxの永続化・実行境界を確認する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: sandboxId
+          in: query
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+      responses:
+        '200':
+          description: Sandbox health
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxHealth' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/sandbox/preview:
+    post:
+      tags: [Sandbox State]
+      summary: Sandboxコピー上でcommandをシミュレーションする
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxPreviewInput' }
+      responses:
+        '200':
+          description: preview結果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { description: payloadが8MiBを超えた }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/sandbox/commit:
+    post:
+      tags: [Sandbox State]
+      summary: 未使用・未期限切れのpreviewを確定する
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxCommitInput' }
+      responses:
+        '200':
+          description: commit結果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/sandbox/reset:
+    post:
+      tags: [Sandbox State]
+      summary: Sandboxをシナリオ初期状態へ戻す
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxSeedInput' }
+      responses:
+        '200':
+          description: リセット済みSandbox
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxOperationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/sandbox/seed:
+    post:
+      tags: [Sandbox State]
+      summary: 決定的なseedとシナリオでSandboxを作成する
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxSeedInput' }
+      responses:
+        '200':
+          description: seed済みSandbox
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxOperationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/sandbox/replay:
+    post:
+      tags: [Sandbox State]
+      summary: Sandbox command列を決定的に再生する
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxReplayInput' }
+      responses:
+        '200':
+          description: 再生後のSandbox
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxReplayResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { description: command列の途中で失敗した }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/listings:
+    get:
+      tags: [Listings]
+      summary: 自分の出品を取得する
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 出品一覧
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MercariItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/listings/{itemId}:
+    patch:
+      tags: [Listings]
+      summary: 出品を更新する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+        - $ref: '#/components/parameters/IfMatchStateVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ListingUpdate' }
+      responses:
+        '200':
+          description: 更新済み出品
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    post:
+      tags: [Listings]
+      summary: 出品操作（pause/resume/relist）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation]
+              properties:
+                operation: { type: string, enum: [pause, resume, relist] }
+      responses:
+        '200':
+          description: 操作結果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/wallet:
+    get:
+      tags: [Wallet]
+      summary: 自分のSandboxウォレットと台帳を取得する
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ウォレットスナップショット
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultWallet' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/wallet/deposit:
+    post:
+      tags: [Wallet]
+      summary: Sandbox残高へ入金する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IfMatchStateVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WalletAmountInput' }
+      responses:
+        '200':
+          description: 入金後のウォレット
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultWallet' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/wallet/withdraw:
+    post:
+      tags: [Wallet]
+      summary: 利用可能残高から出金する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IfMatchStateVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WalletAmountInput' }
+      responses:
+        '200':
+          description: 出金後のウォレット
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultWallet' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/profile:
+    get:
+      tags: [Profile]
+      summary: 自分の表示プロフィールを取得する
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 表示プロフィール
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActorProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Profile]
+      summary: 表示名・自己紹介・画像参照を更新する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IfMatchStateVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdate' }
+      responses:
+        '200':
+          description: 更新後プロフィール
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActorProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/follows:
+    get:
+      tags: [Social]
+      summary: 自分のフォロー中・フォロワー一覧を取得する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: direction
+          in: query
+          required: true
+          schema: { type: string, enum: [following, followers] }
+      responses:
+        '200':
+          description: フォロー一覧
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultFollowList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/follows/{actorId}:
+    parameters:
+      - name: actorId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 80 }
+    post:
+      tags: [Social]
+      summary: ユーザーをフォローする
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IfMatchStateVersion'
+      responses:
+        '200':
+          description: フォロー後の関係
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultFollowMutation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Social]
+      summary: ユーザーのフォローを解除する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IfMatchStateVersion'
+      responses:
+        '200':
+          description: フォロー解除後の関係
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultFollowMutation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/follows/{actorId}/summary:
+    get:
+      tags: [Social]
+      summary: 公開フォロー数と自分のフォロー状態を取得する
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: actorId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: フォロー概要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionResultFollowSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 200 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 40, default: 24 }
+    IfMatchStateVersion:
+      name: If-Match-State-Version
+      in: header
+      schema: { type: integer, minimum: 0 }
+  headers:
+    ETag:
+      description: リソースのバージョン
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: 入力が不正
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: 認証が必要
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: 権限不足
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: stateVersionまたはETagが競合
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: リソースが存在しない
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unavailable:
+      description: D1など依存サービスが利用できない
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    ListingMediaRef:
+      type: object
+      required: [id, source, status, mimeType, createdAt]
+      properties:
+        id: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' }
+        source: { type: string, enum: [camera, album, legacy] }
+        status: { type: string, enum: [processing, ready, error] }
+        mimeType: { type: string, enum: [image/jpeg, image/png, image/webp, image/avif, image/gif] }
+        width: { type: integer, minimum: 1, maximum: 1600 }
+        height: { type: integer, minimum: 1, maximum: 1600 }
+        byteSize: { type: integer, minimum: 0, maximum: 10485760 }
+        thumbnailRef: { type: string }
+        createdAt: { type: string, format: date-time }
+        errorCode: { type: string }
+    WalletLedgerEntry:
+      type: object
+      required: [id, type, amount, referenceId, at]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [DEPOSIT, WITHDRAWAL, HOLD, CAPTURE, REFUND, SALE, FEE] }
+        amount: { type: integer, minimum: 1, maximum: 1000000 }
+        referenceId: { type: string }
+        at: { type: string, format: date-time }
+    WalletSnapshot:
+      type: object
+      required: [actorId, openingBalance, availableBalance, heldBalance, points, ledger]
+      properties:
+        actorId: { type: string }
+        openingBalance: { type: integer, minimum: 0 }
+        availableBalance: { type: integer, minimum: 0 }
+        heldBalance: { type: integer, minimum: 0 }
+        points: { type: integer, minimum: 0 }
+        ledger: { type: array, items: { $ref: '#/components/schemas/WalletLedgerEntry' } }
+    WalletAmountInput:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: integer, minimum: 1, maximum: 1000000 }
+    ActorProfile:
+      type: object
+      required: [actorId, displayName, bio, avatar, rating, ratingsCount, completedSales, completedPurchases, isVerified, updatedAt]
+      properties:
+        actorId: { type: string }
+        displayName: { type: string, minLength: 1, maxLength: 60 }
+        bio: { type: string, maxLength: 500 }
+        avatar: { type: string }
+        avatarRef: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' }
+        rating: { type: number, minimum: 0, maximum: 5 }
+        ratingsCount: { type: integer, minimum: 0 }
+        completedSales: { type: integer, minimum: 0 }
+        completedPurchases: { type: integer, minimum: 0 }
+        isVerified: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+    ProfileUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 60 }
+        bio: { type: string, maxLength: 500 }
+        avatarRef: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' }
+    FollowRelation:
+      type: object
+      required: [id, followerId, followeeId, createdAt]
+      properties:
+        id: { type: string }
+        followerId: { type: string }
+        followeeId: { type: string }
+        createdAt: { type: string, format: date-time }
+    FollowSummary:
+      type: object
+      required: [actorId, followingCount, followerCount, isFollowing]
+      properties:
+        actorId: { type: string }
+        followingCount: { type: integer, minimum: 0 }
+        followerCount: { type: integer, minimum: 0 }
+        isFollowing: { type: boolean }
+    FollowListResult:
+      type: object
+      required: [actorId, direction, users, summary]
+      properties:
+        actorId: { type: string }
+        direction: { type: string, enum: [following, followers] }
+        users: { type: array, items: { $ref: '#/components/schemas/ActorProfile' } }
+        summary: { $ref: '#/components/schemas/FollowSummary' }
+    FollowMutationResult:
+      type: object
+      required: [actorId, targetActorId, following, summary]
+      properties:
+        actorId: { type: string }
+        targetActorId: { type: string }
+        following: { type: boolean }
+        relation: { $ref: '#/components/schemas/FollowRelation' }
+        summary: { $ref: '#/components/schemas/FollowSummary' }
+    ActionResultFollowList:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+    ActionResultFollowSummary:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+    ActionResultFollowMutation:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+    ActionResultWallet:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+    MercariItem:
+      type: object
+      required: [id, title, price, description, category, condition, shippingFee, shippingMethod, origin, shippingDays]
+      oneOf:
+        - required: [images]
+        - required: [imageRefs]
+      properties:
+        id: { type: string }
+        title: { type: string, minLength: 1, maxLength: 40 }
+        price: { type: integer, minimum: 300, maximum: 9999999 }
+        images:
+          type: array
+          maxItems: 20
+          deprecated: true
+          items: { type: string }
+        imageRefs:
+          type: array
+          maxItems: 20
+          items: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' }
+        description: { type: string, minLength: 1, maxLength: 1000 }
+        category: { type: array, minItems: 1, items: { type: string } }
+        condition: { type: string, enum: [新品・未使用, 未使用に近い, 目立った傷や汚れなし, やや傷や汚れあり, 傷や汚れあり, 全体的に状態が悪い] }
+        shippingFee: { type: string }
+        shippingMethod: { type: string, minLength: 1 }
+        origin: { type: string }
+        shippingDays: { type: string }
+        shippingSize: { type: string }
+        isAnonymousShipping: { type: boolean }
+        inventoryPolicy: { type: string, enum: [SINGLE, MULTI] }
+        inventoryQuantity: { type: integer, minimum: 1 }
+    ListingUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 40 }
+        description: { type: string, maxLength: 1000 }
+        price: { type: integer, minimum: 300, maximum: 9999999 }
+        category: { type: array, minItems: 1, items: { type: string } }
+        condition: { type: string, enum: [新品・未使用, 未使用に近い, 目立った傷や汚れなし, やや傷や汚れあり, 傷や汚れあり, 全体的に状態が悪い] }
+        imageRefs: { type: array, maxItems: 20, items: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' } }
+    SandboxState:
+      type: object
+      required: [version, sandboxId, scenarioId, seed, now, stateVersion, currentActorId, actors, items, purchaseIntents, transactions, payments, shipments, bids, reviews, inventoryMovements, events, notifications, wallets, follows, drafts, draftOwners, pendingFailures]
+      properties:
+        version: { const: '1' }
+        sandboxId: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        scenarioId: { type: string }
+        seed: { type: string }
+        now: { type: string, format: date-time }
+        stateVersion: { type: integer, minimum: 0 }
+        currentActorId: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/MercariItem' } }
+        follows: { type: array, items: { $ref: '#/components/schemas/FollowRelation' } }
+        drafts: { type: object, additionalProperties: { type: object } }
+        draftOwners: { type: object, additionalProperties: { type: string } }
+    ActionResult:
+      oneOf:
+        - type: object
+          required: [ok, data, stateVersion, meta]
+          properties:
+            ok: { const: true }
+            data: {}
+            stateVersion: { type: integer, minimum: 0 }
+            meta: { $ref: '#/components/schemas/ActionMetadata' }
+        - type: object
+          required: [ok, error, stateVersion, meta]
+          properties:
+            ok: { const: false }
+            error: { type: string }
+            message: { type: string }
+            stateVersion: { type: integer, minimum: 0 }
+            meta: { $ref: '#/components/schemas/ActionMetadata' }
+            details: {}
+    ActionMetadata:
+      type: object
+      required: [sandboxId, actorId, stateVersion, operationId, mode]
+      properties:
+        sandboxId: { type: string }
+        actorId: { type: string }
+        stateVersion: { type: integer, minimum: 0 }
+        operationId: { type: string }
+        commandId: { type: string }
+        requestId: { type: string }
+        idempotencyKey: { type: string }
+        mode: { type: string, enum: [preview, commit] }
+    SandboxPreviewInput:
+      type: object
+      required: [command, payload]
+      properties:
+        sandboxId: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        actorId: { type: string }
+        command: { type: string, enum: [purchase, listing.create, wallet.deposit, wallet.withdraw] }
+        payload: {}
+        stateVersion: { type: integer, minimum: 0 }
+        expectedStateVersion: { type: integer, minimum: 0 }
+        operationId: { type: string, maxLength: 200 }
+        commandId: { type: string, maxLength: 200 }
+        requestId: { type: string, maxLength: 200 }
+        idempotencyKey: { type: string, maxLength: 200 }
+    SandboxCommitInput:
+      type: object
+      required: [previewId, idempotencyKey]
+      properties:
+        sandboxId: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        actorId: { type: string }
+        previewId: { type: string, maxLength: 200 }
+        stateVersion: { type: integer, minimum: 0 }
+        expectedStateVersion: { type: integer, minimum: 0 }
+        operationId: { type: string, maxLength: 200 }
+        commandId: { type: string, maxLength: 200 }
+        requestId: { type: string, maxLength: 200 }
+        idempotencyKey: { type: string, maxLength: 200 }
+    ActionResultPreview:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+    SandboxHealth:
+      type: object
+      required: [ok, ready, sandboxId, stateVersion, storage, capabilities]
+      properties:
+        ok: { const: true }
+        ready: { type: boolean }
+        sandboxId: { type: string }
+        stateVersion: { type: integer, minimum: 0 }
+        storage: { type: string, enum: [memory, d1] }
+        capabilities: { type: object, additionalProperties: { type: boolean } }
+    SandboxSeedInput:
+      type: object
+      properties:
+        id: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        scenarioId: { type: string }
+        seed: { type: string, maxLength: 160 }
+        expectedStateVersion: { type: integer, minimum: 0 }
+    SandboxOperationResponse:
+      type: object
+      required: [ok, operation, sandboxId, stateVersion, state]
+      properties:
+        ok: { const: true }
+        operation: { type: string, enum: [reset, seed] }
+        sandboxId: { type: string }
+        scenarioId: { type: string }
+        seed: { type: string }
+        stateVersion: { type: integer, minimum: 0 }
+        state: { $ref: '#/components/schemas/SandboxState' }
+    SandboxReplayInput:
+      type: object
+      required: [actions]
+      properties:
+        id: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        scenarioId: { type: string }
+        seed: { type: string, maxLength: 160 }
+        baseState: { type: string, maxLength: 8388608 }
+        fromStored: { type: boolean }
+        expectedStateVersion: { type: integer, minimum: 0 }
+        actions:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            required: [command]
+            properties:
+              command: { type: string }
+              payload: {}
+              actorId: { type: string }
+              idempotencyKey: { type: string }
+    SandboxReplayResponse:
+      type: object
+      required: [ok, operation, sandboxId, stateVersion, results, trace, state]
+      properties:
+        ok: { const: true }
+        operation: { const: replay }
+        sandboxId: { type: string }
+        stateVersion: { type: integer, minimum: 0 }
+        results: { type: array }
+        trace: { type: array }
+        state: { $ref: '#/components/schemas/SandboxState' }
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok: { const: false }
+        error: { type: string }
+        details: {}

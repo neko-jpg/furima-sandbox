@@ -1,6 +1,7 @@
-import { CATALOG_ITEMS } from '../../data/catalogData';
+import { CATALOG_ITEMS } from '../../data/catalogData.ts';
 
-const PAGE_SIZE = 160;
+const DEFAULT_PAGE_SIZE = 24;
+const MAX_PAGE_SIZE = 40;
 
 const normalize = (value: string): string => value.normalize('NFKC').toLocaleLowerCase('ja-JP').trim();
 
@@ -10,9 +11,9 @@ const normalize = (value: string): string => value.normalize('NFKC').toLocaleLow
  */
 export function GET(request: Request): Response {
   const url = new URL(request.url);
-  const requestedLimit = Number(url.searchParams.get('limit') ?? PAGE_SIZE);
+  const requestedLimit = Number(url.searchParams.get('limit') ?? DEFAULT_PAGE_SIZE);
   const requestedOffset = Number(url.searchParams.get('offset') ?? 0);
-  const limit = Number.isInteger(requestedLimit) ? Math.min(PAGE_SIZE, Math.max(1, requestedLimit)) : PAGE_SIZE;
+  const limit = Number.isInteger(requestedLimit) ? Math.min(MAX_PAGE_SIZE, Math.max(1, requestedLimit)) : DEFAULT_PAGE_SIZE;
   const offset = Number.isInteger(requestedOffset) ? Math.max(0, requestedOffset) : 0;
   const query = normalize(url.searchParams.get('q') ?? '');
   const category = normalize(url.searchParams.get('category') ?? '');

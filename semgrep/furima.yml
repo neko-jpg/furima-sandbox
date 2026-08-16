@@ -1,0 +1,30 @@
+rules:
+  - id: furima-no-dangerous-html-in-app
+    languages: [typescript]
+    message: Avoid raw HTML injection in the sandbox UI; render escaped React values instead.
+    severity: ERROR
+    pattern: dangerouslySetInnerHTML
+    paths:
+      include:
+        - /app/**/*.tsx
+        - /app/**/*.ts
+
+  - id: furima-no-history-back-outside-route-controller
+    languages: [typescript]
+    message: Browser history mutations belong in the route controller so panel origins can be restored.
+    severity: WARNING
+    pattern: window.history.back(...)
+    paths:
+      include:
+        - /app/components/**/*.tsx
+        - /app/domain/**/*.ts
+        - /app/api/**/*.ts
+
+  - id: furima-no-d1-binding-in-components
+    languages: [typescript]
+    message: Components must use the domain/store boundary instead of reading D1 bindings directly.
+    severity: ERROR
+    pattern: env.DB
+    paths:
+      include:
+        - /app/components/**/*.tsx

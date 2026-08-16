@@ -2,21 +2,39 @@ name: verify
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
       - run: npm ci
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir semgrep==1.173.0
+      - run: npm run build
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm run qa:static
+      - run: npm run qa:matrix
+      - run: npm run docs:check
       - run: npm run db:migrate:local
       - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - run: npm run load:smoke
       - run: npm audit --omit=dev
       - run: npm run assets:audit

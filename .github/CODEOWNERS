@@ -1,0 +1,6 @@
+# Keep domain, API contract, and listing UX reviews explicit.
+* @neko-jpg
+/app/domain/ @neko-jpg
+/app/types/ @neko-jpg
+/docs/api/ @neko-jpg
+/app/components/views/ListingView.tsx @neko-jpg

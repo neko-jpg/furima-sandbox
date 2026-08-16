@@ -3,10 +3,11 @@
 /* eslint-disable @next/next/no-img-element */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Bookmark, CheckCircle2, ChevronLeft, Flag, Heart, MessageCircle, Send, Share2, ShieldCheck, Star, Truck, X } from 'lucide-react';
+import { Bookmark, CheckCircle2, ChevronLeft, Flag, Heart, MessageCircle, Send, Share2, ShieldCheck, Star, Truck, UserPlus, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
 import { Footer } from '../Footer';
+import { AvatarImage } from '../ui/AvatarImage';
 
 interface ItemDetailViewProps {
   item: MercariItem;
@@ -14,7 +15,7 @@ interface ItemDetailViewProps {
 }
 
 export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose }) => {
-  const { isAuthenticated, requestLogin, setLiked, setSaved, savedItemIds, addComment, startPurchase, items, openItem, isDeviceFrame, isSearchOpen, searchQuery } = useMercari();
+  const { isAuthenticated, requestLogin, setLiked, setSaved, savedItemIds, addComment, startPurchase, items, openItem, isDeviceFrame, isSearchOpen, searchQuery, activeActor, getFollowSummary, followUser, unfollowUser } = useMercari();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const [commentInput, setCommentInput] = useState('');
@@ -28,9 +29,14 @@ export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose })
   const attributeEntries = Object.entries(item.attributes ?? {});
   const inventoryPolicyLabel = item.inventoryPolicy === 'MULTI' ? '複数在庫（在庫数を減算）' : '一点在庫（購入でSOLD）';
   const relatedItems = items.filter((candidate) => candidate.id !== item.id && !candidate.isAuction).slice(0, 6);
+  const sellerId = item.sellerId ?? 'seller_01';
+  const followSummaryResult = getFollowSummary(sellerId);
+  const isFollowingSeller = followSummaryResult.ok && followSummaryResult.data.isFollowing;
 
   useEffect(() => {
     const previousActiveElement = document.activeElement as HTMLElement | null;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const focusableSelector = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const focusFirstControl = () => dialogRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -47,7 +53,8 @@ export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose })
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      if (previousActiveElement?.isConnected) previousActiveElement.focus();
+      document.body.style.overflow = previousBodyOverflow;
+      if (previousActiveElement?.isConnected) previousActiveElement.focus({ preventScroll: true });
     };
   }, [onClose]);
 
@@ -67,6 +74,12 @@ export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose })
     if (isUnavailable) return;
     const result = startPurchase(item.id);
     if (!result.ok) showFeedback(result.message || '購入確認を開始できませんでした');
+  };
+  const handleFollow = () => {
+    if (sellerId === activeActor.id) return;
+    if (!isAuthenticated) { requestLogin('フォローするにはログインが必要です。'); return; }
+    const result = isFollowingSeller ? unfollowUser(sellerId) : followUser(sellerId);
+    showFeedback(result.ok ? (isFollowingSeller ? 'フォローを解除しました' : 'フォローしました') : (result.message || 'フォロー操作に失敗しました'));
   };
   const handleShare = async () => {
     const shareUrl = `${window.location.origin}${window.location.pathname}#item=${encodeURIComponent(item.id)}`;
@@ -91,7 +104,7 @@ export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose })
   };
 
   return (
-    <div ref={dialogRef} className="absolute inset-0 z-50 flex flex-col overflow-y-auto bg-[var(--shop-bg)] animate-fade-in" role="dialog" aria-modal="true" aria-labelledby="item-detail-title" data-testid="item-detail-view">
+    <div ref={dialogRef} className={`${isDeviceFrame ? 'absolute' : 'fixed'} inset-0 z-50 flex flex-col overflow-y-auto bg-[var(--shop-bg)] animate-fade-in`} role="dialog" aria-modal="true" aria-labelledby="item-detail-title" data-testid="item-detail-view">
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-[var(--shop-border)] bg-[rgba(31,31,33,.94)] px-3 py-2.5 backdrop-blur-xl">
         <button type="button" onClick={onClose} className="rounded-full p-1.5 text-white hover:bg-[var(--shop-surface-raised)]" aria-label={isSearchOpen && searchQuery ? '商品詳細を閉じて検索結果へ戻る' : '商品詳細を閉じる'} data-testid="back-button"><ChevronLeft className="h-6 w-6" /></button>
         <div className="flex items-center gap-1 text-white"><button type="button" onClick={() => void handleShare()} aria-label="商品をシェア" className="rounded-full p-1.5 hover:bg-[var(--shop-surface-raised)]"><Share2 className="h-5 w-5" /></button><button type="button" onClick={handleLike} aria-label={liked ? 'いいねを外す' : 'いいねする'} className={`rounded-full p-1.5 hover:bg-[var(--shop-surface-raised)] ${liked ? 'text-[var(--shop-accent)]' : 'text-white'}`} data-testid="detail-like-btn"><Heart className={`h-5 w-5 ${liked ? 'fill-current' : ''}`} /></button></div>
@@ -112,7 +125,7 @@ export const ItemDetailView: React.FC<ItemDetailViewProps> = ({ item, onClose })
             <div className="mt-4 flex items-end justify-between gap-3"><div><div className="text-3xl font-black tracking-tight text-white md:text-4xl">¥{(item.currentBid ?? item.price).toLocaleString()}</div>{item.isAuction && <p className="mt-1 text-xs text-[var(--shop-muted)]">現在の最高入札 {item.bidsCount ?? 0}件 ・ {item.timeLeft || '残り1日'}</p>}<p className="mt-1 text-xs text-[var(--shop-muted)]">税込・送料込み</p></div><div className="text-right text-xs text-[var(--shop-muted)]"><Heart className="mr-1 inline h-4 w-4" />{item.likesCount}<span className="ml-3"><MessageCircle className="mr-1 inline h-4 w-4" />{item.comments.length}</span></div></div>
             <div className="my-5 grid grid-cols-2 divide-x divide-[var(--shop-border)] rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] py-3 text-center text-xs"><div><div className="text-[var(--shop-muted)]">配送料の負担</div><div className="mt-1 font-bold text-white">{item.shippingFee}</div></div><div><div className="text-[var(--shop-muted)]">発送まで</div><div className="mt-1 font-bold text-white">{item.shippingDays}</div></div></div>
             <div className="space-y-2.5"><button type="button" onClick={handlePurchase} disabled={isUnavailable} className="w-full rounded-xl bg-[var(--shop-accent)] py-3.5 text-sm font-black text-white shadow-[0_8px_18px_rgba(255,59,74,.18)] transition-colors hover:bg-[var(--shop-accent-strong)] disabled:cursor-not-allowed disabled:bg-[#55555a]" data-testid="detail-purchase-btn">{isUnavailable ? 'SOLD' : item.isAuction ? '入札する' : '購入手続きへ'}</button><button type="button" onClick={handleLike} className={`w-full rounded-xl border py-3 text-sm font-bold transition-colors ${liked ? 'border-[var(--shop-accent)] text-[var(--shop-accent)]' : 'border-[var(--shop-border)] text-white hover:bg-[var(--shop-surface)]'}`}><Heart className={`mr-2 inline h-4 w-4 ${liked ? 'fill-current' : ''}`} />{liked ? 'いいね済み' : 'いいねする'}</button></div>
-            <div className="mt-6 border-t border-[var(--shop-border)] pt-5"><h2 className="mb-3 text-sm font-bold text-white">出品者</h2><div className="flex items-center gap-3"><img src={item.seller.avatar} alt="" className="h-12 w-12 rounded-full object-cover" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5 text-sm font-bold text-white">{item.seller.name}{item.seller.isVerified && <span className="inline-flex items-center gap-1 rounded-full bg-[#16394d] px-2 py-0.5 text-[10px] font-bold text-[var(--shop-blue)]"><CheckCircle2 className="h-3 w-3" />本人確認済み</span>}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-muted)]"><RatingStars rating={item.seller.rating} /><span className="ml-1">{item.seller.rating.toFixed(1)}（{item.seller.ratingsCount}件）</span></div></div><button type="button" onClick={() => setSheet('profile')} className="rounded-lg border border-[var(--shop-border)] px-3 py-2 text-xs font-bold text-white hover:bg-[var(--shop-surface)]">信頼情報</button></div><div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px]"><div className="rounded-lg bg-[var(--shop-surface)] p-2"><span className="block text-[var(--shop-muted)]">取引実績</span><strong className="mt-0.5 block text-white">{(item.seller.completedSales ?? item.seller.ratingsCount * 2).toLocaleString()}件</strong></div><div className="rounded-lg bg-[var(--shop-surface)] p-2"><span className="block text-[var(--shop-muted)]">返信率</span><strong className="mt-0.5 block text-white">{item.seller.responseRate ?? 98}%</strong></div><div className="rounded-lg bg-[var(--shop-surface)] p-2"><span className="block text-[var(--shop-muted)]">発送目安</span><strong className="mt-0.5 block text-white">{item.shippingDays}</strong></div></div></div>
+            <div className="mt-6 border-t border-[var(--shop-border)] pt-5"><h2 className="mb-3 text-sm font-bold text-white">出品者</h2><div className="flex items-center gap-3"><AvatarImage src={item.seller.avatar} mediaRef={item.seller.avatarRef} alt="" className="h-12 w-12 rounded-full object-cover" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-1.5 text-sm font-bold text-white">{item.seller.name}{item.seller.isVerified && <span className="inline-flex items-center gap-1 rounded-full bg-[#16394d] px-2 py-0.5 text-[10px] font-bold text-[var(--shop-blue)]"><CheckCircle2 className="h-3 w-3" />本人確認済み</span>}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-muted)]"><RatingStars rating={item.seller.rating} /><span className="ml-1">{item.seller.rating.toFixed(1)}（{item.seller.ratingsCount}件）</span></div></div><div className="flex shrink-0 items-center gap-2"><button type="button" onClick={handleFollow} disabled={sellerId === activeActor.id} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs font-bold ${isFollowingSeller ? 'border-[var(--shop-blue)] text-[var(--shop-blue)]' : 'border-[var(--shop-border)] text-white'} disabled:cursor-default disabled:opacity-60`} aria-label={sellerId === activeActor.id ? '自分の出品' : isFollowingSeller ? '出品者のフォローを解除' : '出品者をフォロー'}><UserPlus className="h-3.5 w-3.5" />{sellerId === activeActor.id ? '自分の出品' : isFollowingSeller ? 'フォロー中' : 'フォロー'}</button><button type="button" onClick={() => setSheet('profile')} className="rounded-lg border border-[var(--shop-border)] px-3 py-2 text-xs font-bold text-white hover:bg-[var(--shop-surface)]">信頼情報</button></div></div><div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px]"><div className="rounded-lg bg-[var(--shop-surface)] p-2"><span className="block text-[var(--shop-muted)]">取引実績</span><strong className="mt-0.5 block text-white">{(item.seller.completedSales ?? item.seller.ratingsCount * 2).toLocaleString()}件</strong></div><div className="rounded-lg bg-[var(--shop-surface)] p-2"><span className="block text-[var(--shop-muted)]">フォロワー</span><strong className="mt-0.5 block text-white">{followSummaryResult.ok ? followSummaryResult.data.followerCount.toLocaleString() : 0}人</strong></div><div className="rounded-lg bg-[var(--shop-surface)] p-2"><span className="block text-[var(--shop-muted)]">発送目安</span><strong className="mt-0.5 block text-white">{item.shippingDays}</strong></div></div></div>
           </section>
         </div>
 

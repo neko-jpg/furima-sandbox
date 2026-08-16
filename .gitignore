@@ -45,7 +45,9 @@ yarn-error.log*
 
 # local browser / QA artifacts
 /.playwright-cli/
+/output/
 /output/playwright/
+/test-results/
 
 # local Python environments and caches
 **/__pycache__/

@@ -108,7 +108,7 @@ export const SearchView: React.FC = () => {
         </div>
       </div>}
 
-      <div className={`${isResultPage ? 'mx-auto w-full max-w-[1280px] flex-1 px-4 py-10 md:px-9' : 'mx-auto w-full max-w-[1100px] flex-1 px-4 py-6 md:px-7'}`}>
+      <div className={`${isResultPage ? 'mx-auto w-full max-w-[1280px] flex-1 px-4 py-10 pb-24 md:px-9' : 'mx-auto w-full max-w-[1100px] flex-1 px-4 py-6 pb-24 md:px-7'}`}>
         {!isResultPage && <div className="mb-7 grid grid-cols-2 gap-4 md:max-w-[625px]">
           <button type="button" onClick={() => openBrowseDirectory('category')} className="flex min-h-[57px] items-center justify-center gap-2 rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] px-3 py-3 text-sm font-bold text-white hover:border-[var(--shop-blue)]">カテゴリから探す</button>
           <button type="button" onClick={() => openBrowseDirectory('brand')} className="flex min-h-[57px] items-center justify-center gap-2 rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] px-3 py-3 text-sm font-bold text-white hover:border-[var(--shop-blue)]">ブランドから探す</button>

@@ -656,3 +656,82 @@ test("seller ledger records gross sale and explicit fee while preserving net bal
   assert.equal(wallet?.availableBalance, 1080);
   assert.deepEqual(engine.assertInvariants(), []);
 });
+
+test("sandbox wallet supports deposits, withdrawals, held balance protection, and state replay", () => {
+  const engine = createEngine();
+  const initial = engine.getWallet({ actorId: "buyer_01" });
+  assert.equal(initial.ok, true);
+  if (!initial.ok) return;
+  assert.equal(initial.data.openingBalance, 200000);
+  assert.equal(initial.data.availableBalance, 200000);
+
+  const deposited = engine.depositWallet(5000, { actorId: "buyer_01" });
+  assert.equal(deposited.ok, true);
+  const withdrawn = engine.withdrawWallet(1000, { actorId: "buyer_01" });
+  assert.equal(withdrawn.ok, true);
+  if (!withdrawn.ok) return;
+  assert.equal(withdrawn.data.availableBalance, 204000);
+  assert.equal(withdrawn.data.ledger.at(-2)?.type, "DEPOSIT");
+  assert.equal(withdrawn.data.ledger.at(-1)?.type, "WITHDRAWAL");
+
+  const started = engine.startPurchase("item-basic", { actorId: "buyer_01" });
+  assert.equal(started.ok, true);
+  const held = engine.getWallet({ actorId: "buyer_01" });
+  assert.equal(held.ok, true);
+  if (!held.ok) return;
+  assert.equal(held.data.heldBalance, 1200);
+  const overdrawn = engine.withdrawWallet(held.data.availableBalance + 1, { actorId: "buyer_01" });
+  assert.equal(overdrawn.ok, false);
+  assert.equal(overdrawn.error, "INSUFFICIENT_FUNDS");
+
+  const restored = createEngine();
+  const imported = restored.importState(engine.exportState(), controlOptions);
+  assert.equal(imported.ok, true);
+  const restoredWallet = restored.getWallet({ actorId: "buyer_01" });
+  assert.deepEqual(restoredWallet, held);
+});
+
+test("profile update keeps media as a reference and updates seller display metadata", () => {
+  const engine = createEngine();
+  const updated = engine.updateProfile({ displayName: "新しい表示名", bio: "Sandboxプロフィール", avatarRef: "media_avatar_01" }, { actorId: "seller_01" });
+  assert.equal(updated.ok, true);
+  assert.equal(engine.getProfile("seller_01")?.avatarRef, "media_avatar_01");
+  assert.equal(engine.getItem("item-basic")?.seller.name, "新しい表示名");
+  assert.doesNotMatch(engine.exportState(), /data:image\//);
+});
+
+test("follow relations are persistent, idempotent by domain rule, and actor-scoped", () => {
+  const engine = createEngine();
+  const initial = engine.getFollowList("following", { actorId: "buyer_01" });
+  assert.equal(initial.ok, true);
+  if (!initial.ok) return;
+  assert.equal(initial.data.users.length, 0);
+
+  const followed = engine.followUser("seller_01", { actorId: "buyer_01" });
+  assert.equal(followed.ok, true);
+  if (!followed.ok) return;
+  assert.equal(followed.data.following, true);
+  assert.equal(followed.data.summary.followerCount, 1);
+  assert.equal(engine.followUser("seller_01", { actorId: "buyer_01" }).error, "ALREADY_FOLLOWING");
+  assert.equal(engine.followUser("buyer_01", { actorId: "buyer_01" }).error, "CANNOT_FOLLOW_SELF");
+
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  const sellerFollowers = engine.getFollowList("followers");
+  assert.equal(sellerFollowers.ok, true);
+  if (sellerFollowers.ok) assert.deepEqual(sellerFollowers.data.users.map((profile) => profile.actorId), ["buyer_01"]);
+
+  const sellerFollowing = engine.getFollowList("following");
+  assert.equal(sellerFollowing.ok, true);
+  if (sellerFollowing.ok) assert.equal(sellerFollowing.data.users.length, 0);
+
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+  const serialized = engine.exportState();
+  const restored = createEngine();
+  assert.equal(restored.importState(serialized, controlOptions).ok, true);
+  const restoredFollowing = restored.getFollowList("following", { actorId: "buyer_01" });
+  assert.equal(restoredFollowing.ok, true);
+  if (restoredFollowing.ok) assert.deepEqual(restoredFollowing.data.users.map((profile) => profile.actorId), ["seller_01"]);
+  assert.equal(restored.unfollowUser("seller_01", { actorId: "buyer_01" }).ok, true);
+  assert.equal(restored.unfollowUser("seller_01", { actorId: "buyer_01" }).error, "NOT_FOLLOWING");
+  assert.deepEqual(restored.assertInvariants(), []);
+});

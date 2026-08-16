@@ -9,5 +9,5 @@ declare interface Fetcher {
 }
 
 declare module 'cloudflare:workers' {
-  export const env: { DB?: D1Database };
+  export const env: { DB?: D1Database; FURIMA_D1_API_TOKEN?: string };
 }

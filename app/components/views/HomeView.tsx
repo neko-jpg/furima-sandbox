@@ -9,6 +9,7 @@ import { MercariItem } from '../../types/mercari';
 import { Footer } from '../Footer';
 import { ProductCard, SectionHeader } from '../ui/ShopPrimitives';
 import { MyListView } from './MyListView';
+import { HOME_TABS } from '../homeTabs';
 
 export const HomeView: React.FC = () => {
   const { homeTab, setHomeTab, items, openItem, setLiked, setIsSearchOpen, setSearchQuery, openCategory, isDeviceFrame } = useMercari();
@@ -28,20 +29,17 @@ export const HomeView: React.FC = () => {
   };
 
   return (
-    <div className="shop-scrollbar flex-1 overflow-y-auto bg-[var(--shop-bg)]" data-testid="home-view">
-      <div className="mx-auto w-full max-w-[1280px] px-4 pb-12 md:px-7 lg:px-9">
+    <div className="shop-scrollbar flex-1 overflow-y-auto bg-[var(--shop-bg)]" data-testid="home-view" data-scroll-owner="active">
+      <div className="mx-auto w-full max-w-[1280px] px-4 pb-24 md:px-7 lg:px-9">
         <div className={`${isDeviceFrame ? '' : 'md:hidden'} sticky top-0 z-20 -mx-4 border-b border-[var(--shop-border)] bg-[rgba(31,31,33,.93)] px-4 backdrop-blur-xl md:-mx-7 md:px-7 lg:-mx-9 lg:px-9`}>
           <div className="flex h-12 items-center gap-1 overflow-x-auto no-scrollbar md:h-14" role="tablist" aria-label="商品カテゴリ">
-            {([
-              ['recommend', 'おすすめ'],
-              ['mylist', 'マイリスト'],
-              ['auction', 'オークション'],
-            ] as const).map(([tab, label]) => (
+            {HOME_TABS.map(({ tab, label }) => (
               <button
                 key={tab}
                 type="button"
                 role="tab"
                 aria-selected={homeTab === tab}
+                aria-current={homeTab === tab ? 'page' : undefined}
                 onClick={() => setHomeTab(tab)}
                 className={`relative h-full shrink-0 px-5 text-sm transition-colors md:px-7 ${homeTab === tab ? 'font-bold text-[var(--shop-accent)]' : 'text-[var(--shop-muted)] hover:text-white'}`}
                 data-testid={`subtab-${tab}`}
