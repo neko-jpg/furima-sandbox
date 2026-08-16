@@ -22,14 +22,14 @@ export const Footer: React.FC = () => {
               {section.label}<ChevronDown className={`h-4 w-4 transition-transform ${isDeviceFrame ? '' : 'md:hidden'} ${openSection === section.key ? 'rotate-180' : ''}`} />
             </button>
             <div className={`pb-3 text-xs leading-7 ${isDeviceFrame ? '' : 'md:block'} ${openSection === section.key ? 'block' : 'hidden'}`}>
-              {section.links.map((link) => <button type="button" key={link} className="block text-left text-[var(--shop-muted)] hover:text-white">{link}</button>)}
+              {section.links.map((link) => <button type="button" key={link} disabled aria-disabled="true" data-feature-status="sandbox-out-of-scope" className="block cursor-not-allowed text-left text-[var(--shop-muted)] opacity-60">{link}（対象外）</button>)}
             </div>
           </div>
         ))}
       </div>
       <div className="mx-auto mt-5 flex max-w-[1280px] items-center justify-between border-t border-[var(--shop-border)] pt-5">
         <div className="flex items-center gap-3"><span className="text-lg font-black text-white">𝕏</span><span className="text-xl font-bold text-white">f</span><span className="text-[11px] text-[var(--shop-subtle)]">© Furima Sandbox</span></div>
-        <button type="button" className="flex items-center gap-1.5 rounded-md border border-[var(--shop-border)] px-2.5 py-1.5 text-[11px] text-white"><Globe className="h-3.5 w-3.5" />日本語</button>
+        <button type="button" disabled aria-disabled="true" data-feature-status="sandbox-out-of-scope" className="flex cursor-not-allowed items-center gap-1.5 rounded-md border border-[var(--shop-border)] px-2.5 py-1.5 text-[11px] text-[var(--shop-muted)]"><Globe className="h-3.5 w-3.5" />日本語（固定）</button>
       </div>
     </footer>
   );

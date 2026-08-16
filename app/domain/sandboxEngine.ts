@@ -5,6 +5,11 @@ import type {
   AuctionBidRecord,
   DomainEvent,
   ActorProfile,
+  FollowDirection,
+  FollowListResult,
+  FollowMutationResult,
+  FollowRelation,
+  FollowSummary,
   InventoryMovement,
   MercariItem,
   NotificationItem,
@@ -25,7 +30,7 @@ import type {
   TransactionRecord,
   TransactionStatus,
   WalletSnapshot,
-} from '../types/mercari';
+} from '../types/mercari.ts';
 
 const BASE_NOW = '2026-01-01T00:00:00.000Z';
 const PURCHASE_INTENT_TTL_MS = 15 * 60 * 1000;
@@ -79,6 +84,30 @@ const MAX_IMPORTED_STATE_BYTES = 8 * 1024 * 1024;
 const MAX_LISTING_IMAGES = 20;
 const MAX_SINGLE_IMAGE_BYTES = 2_000_000;
 const MAX_TOTAL_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_LISTING_PRICE = 9_999_999;
+const MIN_WALLET_AMOUNT = 1;
+const MAX_WALLET_AMOUNT = 1_000_000;
+const LISTING_CONDITIONS = new Set([
+  '新品・未使用',
+  '未使用に近い',
+  '目立った傷や汚れなし',
+  'やや傷や汚れあり',
+  '傷や汚れあり',
+  '全体的に状態が悪い',
+]);
+const LEGACY_LISTING_CONDITION_ALIASES = new Map([
+  ['新品', '新品・未使用'],
+  ['New', '新品・未使用'],
+  ['Used - Like New', '未使用に近い'],
+  ['Used - Good', '目立った傷や汚れなし'],
+  ['Used - Fair', 'やや傷や汚れあり'],
+]);
+
+const canonicalListingCondition = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return LEGACY_LISTING_CONDITION_ALIASES.get(normalized) ?? normalized;
+};
 
 const unsafeContactText = (value: string): boolean => /https?:\/\/|www\.|(?:\d{2,4}-\d{2,4}-\d{3,4})|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/u.test(value);
 
@@ -95,6 +124,14 @@ const imagePayloadError = (images: unknown): string | null => {
   return null;
 };
 
+const imageReferenceError = (imageRefs: unknown): string | null => {
+  if (imageRefs === undefined) return null;
+  if (!Array.isArray(imageRefs)) return 'imageRefs must be an array';
+  if (imageRefs.length > MAX_LISTING_IMAGES) return `imageRefs must contain at most ${MAX_LISTING_IMAGES} entries`;
+  if (imageRefs.some((ref) => typeof ref !== 'string' || !/^media_[A-Za-z0-9_-]+$/u.test(ref))) return 'imageRefs must contain local media references';
+  return null;
+};
+
 interface EventSpec {
   type: string;
   aggregateType: DomainEvent['aggregateType'];
@@ -105,6 +142,7 @@ interface EventSpec {
 
 export interface SandboxEngineState {
   version: '1';
+  sandboxId: string;
   scenarioId: ScenarioId;
   seed: string;
   now: string;
@@ -127,12 +165,14 @@ export interface SandboxEngineState {
   events: DomainEvent[];
   notifications: NotificationItem[];
   wallets: WalletSnapshot[];
+  follows: FollowRelation[];
   drafts: Record<string, Partial<MercariItem>>;
   draftOwners: Record<string, string>;
   pendingFailures: string[];
 }
 
 export interface SandboxEngineOptions {
+  sandboxId?: string;
   now?: string;
   seed?: string;
   notifications?: NotificationItem[];
@@ -165,11 +205,13 @@ export interface CloseAuctionResult {
 export class SandboxEngine {
   private initialItems: MercariItem[];
   private readonly initialNotifications: NotificationItem[];
+  private readonly sandboxId: string;
   private state: SandboxEngineState;
 
   public constructor(items: MercariItem[], options: SandboxEngineOptions = {}) {
     this.initialItems = clone(items);
     this.initialNotifications = clone(options.notifications ?? []);
+    this.sandboxId = options.sandboxId ?? 'furima-demo';
     this.state = this.createState(this.initialItems, 'catalog_default', options.seed ?? 'catalog-seed-v1', options.now ?? BASE_NOW);
   }
 
@@ -206,6 +248,7 @@ export class SandboxEngine {
     ];
     const wallets = actors.filter((actor) => actor.authenticated).map<WalletSnapshot>((actor) => ({
       actorId: actor.id,
+      openingBalance: actor.role === 'buyer' ? 200000 : 0,
       availableBalance: actor.role === 'buyer' ? 200000 : 0,
       heldBalance: 0,
       points: actor.role === 'buyer' ? 1000 : 0,
@@ -225,6 +268,7 @@ export class SandboxEngine {
     }));
     return {
       version: '1',
+      sandboxId: this.sandboxId,
       scenarioId,
       seed,
       now,
@@ -247,6 +291,7 @@ export class SandboxEngine {
       events: [],
       notifications: clone(this.initialNotifications),
       wallets,
+      follows: [],
       drafts: {},
       draftOwners: {},
       pendingFailures: scenarioId === 'payment_timeout' ? ['payment'] : scenarioId === 'delivery_delay' ? ['delivery'] : [],
@@ -383,7 +428,11 @@ export class SandboxEngine {
     const wallet = this.wallet(actorId);
     if (!wallet) return;
     wallet.ledger = [...wallet.ledger, { id: this.nextId('ledger'), type, amount, referenceId, at: this.state.now }];
-    if (type === 'HOLD') {
+    if (type === 'DEPOSIT') {
+      wallet.availableBalance += amount;
+    } else if (type === 'WITHDRAWAL') {
+      wallet.availableBalance -= amount;
+    } else if (type === 'HOLD') {
       wallet.availableBalance -= amount;
       wallet.heldBalance += amount;
     } else if (type === 'CAPTURE') {
@@ -534,6 +583,10 @@ export class SandboxEngine {
     return this.state.stateVersion;
   }
 
+  public getSandboxId(): string {
+    return this.state.sandboxId;
+  }
+
   public getCurrentActor(): SandboxActor {
     return clone(this.currentActor() ?? this.state.actors[0]);
   }
@@ -542,6 +595,7 @@ export class SandboxEngine {
     const violations = this.assertInvariants();
     return {
       version: '1',
+      sandboxId: this.state.sandboxId,
       scenarioId: this.state.scenarioId,
       seed: this.state.seed,
       now: this.state.now,
@@ -561,6 +615,7 @@ export class SandboxEngine {
       events: clone(this.state.events),
       notifications: clone(this.state.notifications),
       wallets: clone(this.state.wallets),
+      follows: clone(this.state.follows),
       invariantViolations: violations,
       pendingFailures: [...this.state.pendingFailures],
     };
@@ -594,6 +649,7 @@ export class SandboxEngine {
       events: snapshot.events.filter((event) => event.actorId === actor.id || visibleTransactionIds.has(event.aggregateId)),
       notifications: snapshot.notifications.filter((notification) => !notification.actorId || notification.actorId === actor.id),
       wallets: snapshot.wallets.filter((wallet) => wallet.actorId === actor.id),
+      follows: snapshot.follows.filter((follow) => follow.followerId === actor.id || follow.followeeId === actor.id),
       pendingFailures: [],
     };
   }
@@ -617,6 +673,124 @@ export class SandboxEngine {
     return profile ? clone(profile) : undefined;
   }
 
+  private followSummaryFor(targetActorId: string, viewerActorId = this.state.currentActorId): FollowSummary {
+    return {
+      actorId: targetActorId,
+      followingCount: this.state.follows.filter((follow) => follow.followerId === targetActorId).length,
+      followerCount: this.state.follows.filter((follow) => follow.followeeId === targetActorId).length,
+      isFollowing: this.state.follows.some((follow) => follow.followerId === viewerActorId && follow.followeeId === targetActorId),
+    };
+  }
+
+  private followActor(options?: AgentActionOptions): { actor: SandboxActor } | ActionResult<never> {
+    const invalid = this.validateOptions(options);
+    if (invalid) return invalid as ActionResult<never>;
+    const actor = this.actorFor(options);
+    if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion, 'フォロー機能を利用するにはログインが必要です');
+    const current = this.getCurrentActor();
+    if (actor.id !== current.id && current.role !== 'admin' && current.role !== 'platform' && options?.scope !== 'sandbox-control') {
+      return resultError('FORBIDDEN', this.state.stateVersion, '現在のactor以外のフォロー情報は変更できません');
+    }
+    return { actor };
+  }
+
+  public getFollowSummary(actorId = this.state.currentActorId, options?: AgentActionOptions): ActionResult<FollowSummary> {
+    const invalid = this.validateOptions(options);
+    if (invalid) return invalid as ActionResult<FollowSummary>;
+    const target = this.currentActor(actorId);
+    if (!target?.authenticated) return resultError('FOLLOW_TARGET_NOT_FOUND', this.state.stateVersion, 'フォロー対象のユーザーが見つかりません');
+    const viewer = this.actorFor(options) ?? this.getCurrentActor();
+    return resultOk(this.followSummaryFor(target.id, viewer.authenticated ? viewer.id : 'guest'), this.state.stateVersion);
+  }
+
+  public getFollowList(direction: FollowDirection, options?: AgentActionOptions): ActionResult<FollowListResult> {
+    const actorResult = this.followActor(options);
+    if ('ok' in actorResult) return actorResult as ActionResult<FollowListResult>;
+    if (direction !== 'following' && direction !== 'followers') return resultError('INVALID_INPUT', this.state.stateVersion, 'フォロー一覧の方向はfollowingまたはfollowersで指定してください');
+    const actor = actorResult.actor;
+    const relations = this.state.follows
+      .filter((follow) => direction === 'following' ? follow.followerId === actor.id : follow.followeeId === actor.id)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const targetIds = relations.map((follow) => direction === 'following' ? follow.followeeId : follow.followerId);
+    const users = targetIds
+      .map((targetId) => this.getProfile(targetId))
+      .filter((profile): profile is ActorProfile => Boolean(profile));
+    return resultOk({ actorId: actor.id, direction, users, summary: this.followSummaryFor(actor.id, actor.id) }, this.state.stateVersion);
+  }
+
+  public followUser(targetActorId: string, options?: AgentActionOptions): ActionResult<FollowMutationResult> {
+    const actorResult = this.followActor(options);
+    if ('ok' in actorResult) return actorResult as ActionResult<FollowMutationResult>;
+    const actor = actorResult.actor;
+    const target = this.currentActor(targetActorId);
+    if (!target?.authenticated) return resultError('FOLLOW_TARGET_NOT_FOUND', this.state.stateVersion, 'フォロー対象のユーザーが見つかりません');
+    if (target.id === actor.id) return resultError('CANNOT_FOLLOW_SELF', this.state.stateVersion, '自分自身はフォローできません');
+    if (this.state.follows.some((follow) => follow.followerId === actor.id && follow.followeeId === target.id)) {
+      return resultError('ALREADY_FOLLOWING', this.state.stateVersion, 'このユーザーはすでにフォローしています');
+    }
+    const relation: FollowRelation = { id: this.nextId('follow'), followerId: actor.id, followeeId: target.id, createdAt: this.state.now };
+    this.state.follows.push(relation);
+    const events = this.commit([{ type: 'FOLLOW_CREATED', aggregateType: 'system', aggregateId: target.id, actorId: actor.id, payload: { relationId: relation.id, followerId: actor.id, followeeId: target.id } }]);
+    return resultOk({ actorId: actor.id, targetActorId: target.id, following: true, relation: clone(relation), summary: this.followSummaryFor(target.id, actor.id) }, this.state.stateVersion, events);
+  }
+
+  public unfollowUser(targetActorId: string, options?: AgentActionOptions): ActionResult<FollowMutationResult> {
+    const actorResult = this.followActor(options);
+    if ('ok' in actorResult) return actorResult as ActionResult<FollowMutationResult>;
+    const actor = actorResult.actor;
+    const target = this.currentActor(targetActorId);
+    if (!target?.authenticated) return resultError('FOLLOW_TARGET_NOT_FOUND', this.state.stateVersion, 'フォロー対象のユーザーが見つかりません');
+    const relation = this.state.follows.find((follow) => follow.followerId === actor.id && follow.followeeId === target.id);
+    if (!relation) return resultError('NOT_FOLLOWING', this.state.stateVersion, 'このユーザーはフォローしていません');
+    this.state.follows = this.state.follows.filter((follow) => follow.id !== relation.id);
+    const events = this.commit([{ type: 'FOLLOW_REMOVED', aggregateType: 'system', aggregateId: target.id, actorId: actor.id, payload: { relationId: relation.id, followerId: actor.id, followeeId: target.id } }]);
+    return resultOk({ actorId: actor.id, targetActorId: target.id, following: false, summary: this.followSummaryFor(target.id, actor.id) }, this.state.stateVersion, events);
+  }
+
+  private validateWalletAmount(amount: number): ActionResult<undefined> | null {
+    if (!isInteger(amount) || amount < MIN_WALLET_AMOUNT || amount > MAX_WALLET_AMOUNT) {
+      return resultError('INVALID_AMOUNT', this.state.stateVersion, `金額は${MIN_WALLET_AMOUNT.toLocaleString()}〜${MAX_WALLET_AMOUNT.toLocaleString()}円の整数で指定してください`);
+    }
+    return null;
+  }
+
+  private walletForAuthenticatedActor(options?: AgentActionOptions): { actor: SandboxActor; wallet: WalletSnapshot } | ActionResult<never> {
+    const invalid = this.validateOptions(options);
+    if (invalid) return invalid as ActionResult<never>;
+    const actor = this.actorFor(options);
+    if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion, 'ウォレットを利用するにはログインが必要です');
+    const wallet = this.wallet(actor.id);
+    if (!wallet) return resultError('WALLET_NOT_FOUND', this.state.stateVersion, 'このactorのウォレットが見つかりません');
+    return { actor, wallet };
+  }
+
+  public getWallet(options?: AgentActionOptions): ActionResult<WalletSnapshot> {
+    const result = this.walletForAuthenticatedActor(options);
+    if ('ok' in result) return result as ActionResult<WalletSnapshot>;
+    return resultOk(clone(result.wallet), this.state.stateVersion);
+  }
+
+  public depositWallet(amount: number, options?: AgentActionOptions): ActionResult<WalletSnapshot> {
+    const result = this.walletForAuthenticatedActor(options);
+    if ('ok' in result) return result as ActionResult<WalletSnapshot>;
+    const invalidAmount = this.validateWalletAmount(amount);
+    if (invalidAmount) return invalidAmount as ActionResult<WalletSnapshot>;
+    this.addLedger(result.actor.id, 'DEPOSIT', amount, this.nextId('wallet-deposit'));
+    const events = this.commit([{ type: 'WALLET_DEPOSITED', aggregateType: 'system', aggregateId: `wallet:${result.actor.id}`, actorId: result.actor.id, payload: { amount } }]);
+    return resultOk(clone(result.wallet), this.state.stateVersion, events);
+  }
+
+  public withdrawWallet(amount: number, options?: AgentActionOptions): ActionResult<WalletSnapshot> {
+    const result = this.walletForAuthenticatedActor(options);
+    if ('ok' in result) return result as ActionResult<WalletSnapshot>;
+    const invalidAmount = this.validateWalletAmount(amount);
+    if (invalidAmount) return invalidAmount as ActionResult<WalletSnapshot>;
+    if (result.wallet.availableBalance < amount) return resultError('INSUFFICIENT_FUNDS', this.state.stateVersion, '利用可能残高が不足しています', { availableBalance: result.wallet.availableBalance, requestedAmount: amount });
+    this.addLedger(result.actor.id, 'WITHDRAWAL', amount, this.nextId('wallet-withdrawal'));
+    const events = this.commit([{ type: 'WALLET_WITHDRAWN', aggregateType: 'system', aggregateId: `wallet:${result.actor.id}`, actorId: result.actor.id, payload: { amount } }]);
+    return resultOk(clone(result.wallet), this.state.stateVersion, events);
+  }
+
   public updateProfile(input: Partial<ActorProfile>, options?: AgentActionOptions): ActionResult<ActorProfile> {
     const invalid = this.validateOptions(options);
     if (invalid) return invalid as ActionResult<ActorProfile>;
@@ -628,8 +802,10 @@ export class SandboxEngine {
     if (!profile) return resultError('INVALID_ACTOR', this.state.stateVersion);
     const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : profile.displayName;
     const bio = typeof input.bio === 'string' ? input.bio.trim() : profile.bio;
-    if (!displayName || displayName.length > 60 || bio.length > 500 || unsafeContactText(`${displayName} ${bio}`)) return resultError('INVALID_INPUT', this.state.stateVersion, 'プロフィールは連絡先を含まない文字数制限内で指定してください');
-    Object.assign(profile, { displayName, bio, updatedAt: this.state.now });
+    const avatarRef = input.avatarRef === undefined ? profile.avatarRef : input.avatarRef;
+    if (!displayName || displayName.length > 60 || bio.length > 500 || unsafeContactText(`${displayName} ${bio}`) || (avatarRef !== undefined && avatarRef !== '' && !/^media_[A-Za-z0-9_-]+$/u.test(avatarRef))) return resultError('INVALID_INPUT', this.state.stateVersion, 'プロフィールは連絡先を含まない文字数制限内で指定してください');
+    Object.assign(profile, { displayName, bio, avatarRef: avatarRef || undefined, avatar: '/favicon.svg', updatedAt: this.state.now });
+    this.state.items = this.state.items.map((item) => item.sellerId === targetId ? { ...item, seller: { ...item.seller, name: displayName, avatar: '/favicon.svg', avatarRef: avatarRef || undefined }, updatedAt: this.state.now } : item);
     const events = this.commit([{ type: 'PROFILE_UPDATED', aggregateType: 'system', aggregateId: targetId, actorId: actor.id, payload: { targetId } }]);
     return resultOk(clone(profile), this.state.stateVersion, events);
   }
@@ -641,16 +817,16 @@ export class SandboxEngine {
       actors: clone(this.state.actors),
       commands: [
         'navigateTab', 'navigateHomeSubTab', 'navigateCategory', 'search', 'openItem', 'setLiked', 'setSaved', 'addComment',
-        'createListingDraft', 'updateListingDraft', 'submitListing', 'listItem', 'startPurchase', 'confirmPurchase', 'shipOrder',
+        'createListingDraft', 'updateListingDraft', 'getListingDrafts', 'deleteListingDraft', 'submitListing', 'listItem', 'startPurchase', 'confirmPurchase', 'shipOrder',
         'markDelivered', 'reviewOrder', 'cancelOrder', 'resolveCancellation', 'reviewListing', 'requestReturn', 'confirmReturnReceived', 'sendTransactionMessage', 'createSupportTicket', 'reportTransaction', 'updateListing', 'pauseListing', 'resumeListing', 'relistItem', 'placeBid', 'closeAuction', 'switchActor', 'loadScenario',
-        'advanceClock', 'injectFailure', 'resetScenario', 'exportState', 'importState',
+        'advanceClock', 'injectFailure', 'resetScenario', 'previewAction', 'commitPreview', 'exportState', 'importState', 'getWallet', 'depositWallet', 'withdrawWallet', 'getProfile', 'updateProfile', 'getFollowList', 'getFollowSummary', 'followUser', 'unfollowUser',
       ],
       errorCodes: [
         'ITEM_NOT_FOUND', 'ALREADY_SOLD', 'BID_TOO_LOW', 'NOT_AUCTION', 'INVALID_INPUT', 'DRAFT_NOT_FOUND',
         'INVALID_TAB', 'CONFIRMATION_REQUIRED', 'AUTH_REQUIRED', 'POLICY_REVIEW_REQUIRED', 'POLICY_BLOCKED',
-        'INVALID_ACTOR', 'FORBIDDEN', 'STATE_CONFLICT', 'PURCHASE_INTENT_EXPIRED', 'PAYMENT_FAILED',
+        'INVALID_ACTOR', 'FORBIDDEN', 'STATE_CONFLICT', 'PURCHASE_INTENT_EXPIRED', 'PAYMENT_FAILED', 'PREVIEW_NOT_FOUND', 'PREVIEW_EXPIRED',
         'TRANSACTION_NOT_FOUND', 'INVALID_TRANSITION', 'IDEMPOTENCY_CONFLICT', 'UNKNOWN_SCENARIO', 'AUCTION_ENDED',
-        'INVALID_AMOUNT', 'NO_RESULTS', 'UNSUPPORTED_CATEGORY',
+        'INVALID_AMOUNT', 'INSUFFICIENT_FUNDS', 'WALLET_NOT_FOUND', 'FOLLOW_TARGET_NOT_FOUND', 'ALREADY_FOLLOWING', 'NOT_FOLLOWING', 'CANNOT_FOLLOW_SELF', 'NO_RESULTS', 'UNSUPPORTED_CATEGORY',
       ] satisfies AgentErrorCode[],
     };
   }
@@ -1275,12 +1451,13 @@ export class SandboxEngine {
     const description = input.description?.trim() ?? '';
     const text = normalize(`${title} ${description} ${(input.category ?? []).join(' ')} ${input.brand ?? ''}`);
     const signals: PolicySignal[] = [];
+    const condition = canonicalListingCondition(input.condition);
     const required: Array<[string, boolean, string]> = [
       ['TITLE_REQUIRED', title.length > 0 && title.length <= 40, '商品名は1〜40文字で入力してください'],
       ['DESCRIPTION_REQUIRED', description.length > 0 && description.length <= 1000, '商品説明は1〜1,000文字で入力してください'],
-      ['PRICE_VALID', isInteger(input.price) && (input.price ?? 0) >= 300, '価格は300円以上の整数で入力してください'],
+      ['PRICE_VALID', isInteger(input.price) && (input.price ?? 0) >= 300 && (input.price ?? 0) <= MAX_LISTING_PRICE, '価格は300〜9,999,999円の整数で入力してください'],
       ['CATEGORY_REQUIRED', Boolean(input.category?.length), 'カテゴリを指定してください'],
-      ['CONDITION_REQUIRED', Boolean(input.condition?.trim()), '商品の状態を指定してください'],
+      ['CONDITION_REQUIRED', LISTING_CONDITIONS.has(condition), '公式の6段階から商品の状態を指定してください'],
       ['SHIPPING_REQUIRED', Boolean(input.shippingMethod?.trim()), '配送方法を指定してください'],
     ];
     required.forEach(([code, valid, detail]) => signals.push({ code, label: code, status: valid ? 'pass' : 'blocked', detail: valid ? '入力されています' : detail }));
@@ -1293,10 +1470,10 @@ export class SandboxEngine {
     signals.push({ code: 'PII_DETECTION', label: '個人情報', status: hasPii ? 'blocked' : 'pass', detail: hasPii ? '電話番号・メールアドレスらしき情報を検出しました' : '個人情報らしき文字列は検出されませんでした' });
     const duplicateSku = input.sku ? this.state.items.some((item) => item.sku && item.sku === input.sku && item.id !== input.id) : false;
     signals.push({ code: 'DUPLICATE_SKU', label: 'SKU重複', status: duplicateSku ? 'blocked' : 'pass', detail: duplicateSku ? '既存出品とSKUが重複しています' : 'SKU重複は検出されませんでした' });
-    const missingImage = !input.images?.length;
+    const missingImage = !input.images?.length && !input.imageRefs?.length;
     signals.push({ code: 'IMAGE_EVIDENCE', label: '画像証跡', status: missingImage ? 'warning' : 'pass', detail: missingImage ? '画像がないため購入者向けの確認情報が不足しています' : '画像が登録されています' });
     const images = Array.isArray(input.images) ? input.images : [];
-    const imageSizeError = imagePayloadError(input.images);
+    const imageSizeError = imagePayloadError(input.images) ?? imageReferenceError(input.imageRefs);
     signals.push({ code: 'IMAGE_INPUT_SIZE', label: '画像入力サイズ', status: imageSizeError ? 'blocked' : 'pass', detail: imageSizeError ?? '画像入力サイズは許容範囲です' });
     const hasExternalImage = images.some((image) => typeof image === 'string' && /^https?:\/\//u.test(image));
     signals.push({ code: 'EXTERNAL_IMAGE_SOURCE', label: '外部画像ソース', status: hasExternalImage ? 'blocked' : 'pass', detail: hasExternalImage ? '外部URL画像はSandbox出品に使用できません' : '外部URL画像は検出されませんでした' });
@@ -1322,6 +1499,7 @@ export class SandboxEngine {
       title,
       price: input.price ?? 0,
       images: input.images?.length ? [...input.images] : ['/images/products/knit.jpg'],
+      imageRefs: input.imageRefs?.length ? [...input.imageRefs] : undefined,
       isSold: false,
       inventoryPolicy: input.inventoryPolicy ?? 'SINGLE',
       inventoryInitialQuantity: quantity,
@@ -1337,7 +1515,7 @@ export class SandboxEngine {
       auctionEndsAt: input.auctionEndsAt,
       description: input.description?.trim() ?? '',
       category: input.category?.length ? [...input.category] : [],
-      condition: input.condition?.trim() ?? '',
+      condition: canonicalListingCondition(input.condition),
       shippingFee: input.shippingFee ?? '送料込み（出品者負担）',
       shippingMethod: input.shippingMethod ?? '',
       origin: input.origin ?? '東京都',
@@ -1370,7 +1548,7 @@ export class SandboxEngine {
       sourcePhotographer: input.sourcePhotographer,
       sourceAttribution: input.sourceAttribution,
       sourceChecksum: input.sourceChecksum,
-      seller: { name: actor.role === 'seller' ? actor.name : 'Sandbox Seller', avatar: '/favicon.svg', rating: 5, ratingsCount: 0, isVerified: true },
+      seller: { name: this.state.profiles.find((profile) => profile.actorId === sellerId)?.displayName ?? (actor.role === 'seller' ? actor.name : 'Sandbox Seller'), avatar: '/favicon.svg', avatarRef: this.state.profiles.find((profile) => profile.actorId === sellerId)?.avatarRef, rating: 5, ratingsCount: 0, isVerified: true },
       comments: [],
     };
   }
@@ -1397,7 +1575,7 @@ export class SandboxEngine {
     const invalid = this.validateOptions(options);
     if (invalid) return invalid as ActionResult<CreateDraftResult>;
     if (!input || typeof input !== 'object' || Array.isArray(input)) return resultError('INVALID_INPUT', this.state.stateVersion, '出品下書きの形式が不正です');
-    const imageError = imagePayloadError(input.images);
+    const imageError = imagePayloadError(input.images) ?? imageReferenceError(input.imageRefs);
     if (imageError) return resultError('INVALID_INPUT', this.state.stateVersion, imageError);
     const actor = this.actorFor(options);
     if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion);
@@ -1416,13 +1594,35 @@ export class SandboxEngine {
     if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion);
     if (actor.role !== 'seller') return resultError('FORBIDDEN', this.state.stateVersion, '出品下書きを編集できるのはseller actorだけです');
     if (typeof draftId !== 'string' || !draftId.trim() || !input || typeof input !== 'object' || Array.isArray(input)) return resultError('INVALID_INPUT', this.state.stateVersion, '出品下書きの形式が不正です');
-    const imageError = imagePayloadError(input.images);
+    const imageError = imagePayloadError(input.images) ?? imageReferenceError(input.imageRefs);
     if (imageError) return resultError('INVALID_INPUT', this.state.stateVersion, imageError);
     if (!this.state.drafts[draftId]) return resultError('DRAFT_NOT_FOUND', this.state.stateVersion);
     if (this.state.draftOwners[draftId] !== actor.id) return resultError('FORBIDDEN', this.state.stateVersion, 'この出品下書きを編集できるactorではありません');
     this.state.drafts[draftId] = clone(input);
     const events = this.commit([{ type: 'LISTING_DRAFT_UPDATED', aggregateType: 'listing', aggregateId: draftId, actorId: actor.id, payload: { fields: Object.keys(input) } }]);
     return resultOk({ draftId }, this.state.stateVersion, events, ['SubmitListing']);
+  }
+
+  public getListingDrafts(actorId = this.state.currentActorId): Array<{ draftId: string; fields: Partial<MercariItem>; updatedAt: string }> {
+    const actor = this.state.actors.find((candidate) => candidate.id === actorId);
+    if (!actor?.authenticated) return [];
+    return Object.entries(this.state.drafts)
+      .filter(([draftId]) => actor.role === 'admin' || actor.role === 'platform' || this.state.draftOwners[draftId] === actor.id)
+      .map(([draftId, fields]) => ({ draftId, fields: clone(fields), updatedAt: this.state.now }));
+  }
+
+  public deleteListingDraft(draftId: string, options?: AgentActionOptions): ActionResult<{ draftId: string }> {
+    const invalid = this.validateOptions(options);
+    if (invalid) return invalid as ActionResult<{ draftId: string }>;
+    const actor = this.actorFor(options);
+    if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion);
+    if (typeof draftId !== 'string' || !draftId.trim()) return resultError('INVALID_INPUT', this.state.stateVersion, '出品下書きIDを指定してください');
+    if (!this.state.drafts[draftId]) return resultError('DRAFT_NOT_FOUND', this.state.stateVersion);
+    if (actor.role !== 'admin' && actor.role !== 'platform' && this.state.draftOwners[draftId] !== actor.id) return resultError('FORBIDDEN', this.state.stateVersion, 'この出品下書きを削除できるactorではありません');
+    delete this.state.drafts[draftId];
+    delete this.state.draftOwners[draftId];
+    const events = this.commit([{ type: 'LISTING_DRAFT_DELETED', aggregateType: 'listing', aggregateId: draftId, actorId: actor.id, payload: { draftId } }]);
+    return resultOk({ draftId }, this.state.stateVersion, events, ['CreateListingDraft']);
   }
 
   public submitListing(draftId: string, options?: AgentActionOptions): ActionResult<{ itemId: string }> {
@@ -1467,11 +1667,12 @@ export class SandboxEngine {
     if (!actor?.authenticated || (actor.role !== 'admin' && actor.role !== 'platform' && actor.id !== item.sellerId)) return resultError('FORBIDDEN', this.state.stateVersion, '出品を編集できるのは所有sellerまたは運営だけです');
     if (!['ACTIVE', 'HELD', 'ARCHIVED'].includes(String(item.listingStatus))) return resultError('INVALID_TRANSITION', this.state.stateVersion, '購入予約・売却済みの出品は編集できません');
     if (!input || typeof input !== 'object' || Array.isArray(input)) return resultError('INVALID_INPUT', this.state.stateVersion);
-    const editableKeys = ['title', 'description', 'price', 'category', 'condition', 'shippingFee', 'shippingMethod', 'origin', 'shippingDays', 'shippingSize', 'images', 'brand', 'size', 'color', 'inventoryPolicy', 'inventoryInitialQuantity', 'inventoryQuantity', 'isAnonymousShipping'] as const;
+    const editableKeys = ['title', 'description', 'price', 'category', 'condition', 'shippingFee', 'shippingMethod', 'origin', 'shippingDays', 'shippingSize', 'images', 'imageRefs', 'brand', 'size', 'color', 'inventoryPolicy', 'inventoryInitialQuantity', 'inventoryQuantity', 'isAnonymousShipping'] as const;
     const editable = Object.fromEntries(editableKeys.filter((key) => key in input).map((key) => [key, input[key]])) as Partial<MercariItem>;
-    const decision = this.evaluateListingPolicy({ ...item, ...editable });
+    const normalizedEditable = editable.condition === undefined ? editable : { ...editable, condition: canonicalListingCondition(editable.condition) };
+    const decision = this.evaluateListingPolicy({ ...item, ...normalizedEditable });
     if (!decision.allowed) return resultError('POLICY_BLOCKED', this.state.stateVersion, '出品ポリシーによりブロックされました', decision);
-    const next = this.updateItem(itemId, { ...editable, listingStatus: decision.status === 'HELD' ? 'HELD' : 'ACTIVE', moderationStatus: decision.status === 'HELD' ? 'HELD' : 'APPROVED' });
+    const next = this.updateItem(itemId, { ...normalizedEditable, listingStatus: decision.status === 'HELD' ? 'HELD' : 'ACTIVE', moderationStatus: decision.status === 'HELD' ? 'HELD' : 'APPROVED' });
     if (!next) return resultError('STATE_CONFLICT', this.state.stateVersion);
     const events = this.commit([{ type: 'LISTING_UPDATED', aggregateType: 'listing', aggregateId: itemId, actorId: actor.id, payload: { fields: Object.keys(editable), policy: decision } }]);
     return resultOk(clone(next), this.state.stateVersion, events, decision.status === 'HELD' ? ['ReviewListing'] : ['OpenListing']);
@@ -1527,7 +1728,12 @@ export class SandboxEngine {
     if (invalid) return invalid as ActionResult<{ scenarioId: ScenarioId; seed: string; now: string }>;
     if (!SCENARIOS.includes(scenarioId)) return resultError('UNKNOWN_SCENARIO', this.state.stateVersion, '未対応のシナリオです');
     const seed = options.seed ?? `${scenarioId}-seed-v1`;
+    const previousStateVersion = this.state.stateVersion;
     const baseState = this.createState(this.initialItems, scenarioId, seed, BASE_NOW);
+    // Scenario changes are commands, not a time-travel operation. Keep the
+    // version monotonic so a stale preview or CAS writer cannot become valid
+    // merely because an operator loaded another deterministic fixture.
+    baseState.stateVersion = previousStateVersion + 1;
     this.state = baseState;
     const pickAvailable = () => this.state.items.find((item) => !item.isAuction && (item.inventoryQuantity ?? 0) > 0);
     if (scenarioId === 'already_sold') {
@@ -1595,6 +1801,17 @@ export class SandboxEngine {
     this.state.notifications = this.state.notifications.map((notification) => notification.id === notificationId ? { ...notification, isRead: true } : notification);
   }
 
+  /**
+   * Advance the aggregate version for deterministic client-side view/domain
+   * state changes that do not produce a business event (navigation, likes,
+   * view counters, and read markers). Keeping this on the engine means the
+   * persisted snapshot and ActionResult metadata cannot drift apart.
+   */
+  public advanceViewState(): number {
+    this.state.stateVersion += 1;
+    return this.state.stateVersion;
+  }
+
   public replaceItems(items: MercariItem[]): void {
     const incoming = new Map(clone(items).map((item) => [item.id, item]));
     this.state.items = this.state.items.map((current) => {
@@ -1638,13 +1855,16 @@ export class SandboxEngine {
       const candidate = JSON.parse(serialized) as Partial<SandboxEngineState>;
       const migrated = {
         ...candidate,
+        sandboxId: candidate.sandboxId ?? this.sandboxId,
         returns: candidate.returns ?? [],
         messages: candidate.messages ?? [],
         supportTickets: candidate.supportTickets ?? [],
         profiles: candidate.profiles ?? [],
+        follows: candidate.follows ?? [],
       };
-      const requiredArrays = [migrated.actors, migrated.items, migrated.purchaseIntents, migrated.transactions, migrated.payments, migrated.shipments, migrated.bids, migrated.reviews, migrated.inventoryMovements, migrated.events, migrated.notifications, migrated.wallets, migrated.returns, migrated.messages, migrated.supportTickets, migrated.profiles];
+      const requiredArrays = [migrated.actors, migrated.items, migrated.purchaseIntents, migrated.transactions, migrated.payments, migrated.shipments, migrated.bids, migrated.reviews, migrated.inventoryMovements, migrated.events, migrated.notifications, migrated.wallets, migrated.returns, migrated.messages, migrated.supportTickets, migrated.profiles, migrated.follows];
       const valid = migrated.version === '1'
+        && migrated.sandboxId === this.sandboxId
         && SCENARIOS.includes(migrated.scenarioId as ScenarioId)
         && typeof migrated.seed === 'string'
         && typeof migrated.now === 'string' && Number.isFinite(Date.parse(migrated.now))
@@ -1657,8 +1877,23 @@ export class SandboxEngine {
         && isRecord(migrated.draftOwners ?? {})
         && (migrated.items ?? []).every((item) => item && typeof item.id === 'string' && Number.isFinite(item.price) && item.price >= 0 && Number.isInteger(item.inventoryQuantity ?? 0) && Number.isInteger(item.reservedQuantity ?? 0));
       if (!valid) return resultError('INVALID_INPUT', this.state.stateVersion, 'Sandbox stateの形式が不正です');
+      const normalizedItems = (migrated.items ?? []).map((item) => ({
+        ...item,
+        images: Array.isArray(item.images) && item.images.length ? item.images : ['/images/products/knit.jpg'],
+      }));
+      const normalizedDrafts = Object.fromEntries(Object.entries(migrated.drafts ?? {}).map(([draftId, fields]) => [draftId, {
+        ...fields,
+        images: Array.isArray(fields.images) ? fields.images : [],
+      }])) as Record<string, Partial<MercariItem>>;
+      const normalizedWallets = (migrated.wallets ?? []).map((wallet) => {
+        const actor = (migrated.actors ?? []).find((candidate) => candidate?.id === wallet?.actorId);
+        const openingBalance = Number.isInteger(wallet?.openingBalance) && (wallet?.openingBalance ?? 0) >= 0
+          ? wallet.openingBalance
+          : actor?.role === 'buyer' ? 200000 : 0;
+        return { ...wallet, openingBalance, ledger: Array.isArray(wallet?.ledger) ? wallet.ledger : [] };
+      });
       const previous = this.state;
-      this.state = { ...clone(migrated as SandboxEngineState), drafts: migrated.drafts ?? {}, draftOwners: migrated.draftOwners ?? {}, pendingFailures: migrated.pendingFailures ?? [] };
+      this.state = { ...clone({ ...migrated, sandboxId: this.sandboxId, items: normalizedItems, wallets: normalizedWallets, drafts: normalizedDrafts, follows: migrated.follows ?? [] } as SandboxEngineState), wallets: normalizedWallets, drafts: normalizedDrafts, draftOwners: migrated.draftOwners ?? {}, follows: migrated.follows ?? [], pendingFailures: migrated.pendingFailures ?? [] };
       const violations = this.assertInvariants();
       if (violations.length) {
         this.state = previous;
@@ -1678,7 +1913,7 @@ export class SandboxEngine {
       ['transactions', state.transactions], ['payments', state.payments], ['shipments', state.shipments],
       ['bids', state.bids], ['reviews', state.reviews], ['inventory-movements', state.inventoryMovements],
       ['events', state.events], ['notifications', state.notifications], ['wallets', state.wallets],
-      ['returns', state.returns], ['messages', state.messages], ['support-tickets', state.supportTickets], ['profiles', state.profiles],
+      ['returns', state.returns], ['messages', state.messages], ['support-tickets', state.supportTickets], ['profiles', state.profiles], ['follows', state.follows],
     ];
     arrays.forEach(([label, value]) => {
       if (!Array.isArray(value)) violations.push(`${label}-not-array`);
@@ -1828,7 +2063,20 @@ export class SandboxEngine {
     const profiles = records(state.profiles);
     profiles.forEach((profile) => {
       const id = String(profile.actorId);
-      if (!actorIds.has(id) || typeof profile.displayName !== 'string' || typeof profile.bio !== 'string' || typeof profile.avatar !== 'string' || !isInteger(profile.rating) || Number(profile.rating) < 0 || Number(profile.rating) > 5 || !isInteger(profile.ratingsCount) || Number(profile.ratingsCount) < 0 || !isInteger(profile.completedSales) || Number(profile.completedSales) < 0 || !isInteger(profile.completedPurchases) || Number(profile.completedPurchases) < 0 || typeof profile.isVerified !== 'boolean' || !isIsoDate(profile.updatedAt)) violations.push(`profile-invalid:${id}`);
+      if (!actorIds.has(id) || typeof profile.displayName !== 'string' || typeof profile.bio !== 'string' || typeof profile.avatar !== 'string' || (profile.avatarRef !== undefined && (typeof profile.avatarRef !== 'string' || !/^media_[A-Za-z0-9_-]+$/u.test(profile.avatarRef))) || !isInteger(profile.rating) || Number(profile.rating) < 0 || Number(profile.rating) > 5 || !isInteger(profile.ratingsCount) || Number(profile.ratingsCount) < 0 || !isInteger(profile.completedSales) || Number(profile.completedSales) < 0 || !isInteger(profile.completedPurchases) || Number(profile.completedPurchases) < 0 || typeof profile.isVerified !== 'boolean' || !isIsoDate(profile.updatedAt)) violations.push(`profile-invalid:${id}`);
+    });
+    const follows = records(state.follows);
+    const followPairs = new Set<string>();
+    follows.forEach((follow) => {
+      const id = String(follow.id);
+      const followerId = String(follow.followerId);
+      const followeeId = String(follow.followeeId);
+      const pair = `${followerId}:${followeeId}`;
+      if (!actorIds.has(followerId) || actorRoles.get(followerId) === 'guest' || !actorIds.has(followeeId) || actorRoles.get(followeeId) === 'guest') violations.push(`follow-actor-invalid:${id}`);
+      if (followerId === followeeId) violations.push(`follow-self:${id}`);
+      if (followPairs.has(pair)) violations.push(`follow-duplicate-pair:${pair}`);
+      followPairs.add(pair);
+      if (!isIsoDate(follow.createdAt)) violations.push(`follow-date-invalid:${id}`);
     });
     records(state.inventoryMovements).forEach((movement) => {
       const id = String(movement.id);
@@ -1842,10 +2090,11 @@ export class SandboxEngine {
       if (walletActorIds.has(actorId)) violations.push(`wallet-duplicate:${actorId}`);
       walletActorIds.add(actorId);
       if (!actorIds.has(actorId) || actorRoles.get(actorId) === 'guest') violations.push(`wallet-actor-invalid:${actorId}`);
+      if (!isInteger(wallet.openingBalance) || Number(wallet.openingBalance) < 0) violations.push(`wallet-opening-negative:${actorId}`);
       if (!isInteger(wallet.availableBalance) || Number(wallet.availableBalance) < 0) violations.push(`wallet-available-negative:${actorId}`);
       if (!isInteger(wallet.heldBalance) || Number(wallet.heldBalance) < 0) violations.push(`wallet-held-negative:${actorId}`);
       if (!isInteger(wallet.points) || Number(wallet.points) < 0 || !Array.isArray(wallet.ledger)) violations.push(`wallet-shape-invalid:${actorId}`);
-      let derivedAvailable = actorRoles.get(actorId) === 'buyer' ? 200000 : 0;
+      let derivedAvailable = Number(wallet.openingBalance);
       let derivedHeld = 0;
       const ledgerIds = new Set<string>();
       (Array.isArray(wallet.ledger) ? wallet.ledger : []).forEach((entry) => {
@@ -1853,11 +2102,13 @@ export class SandboxEngine {
         const entryId = typeof ledger.id === 'string' ? ledger.id : '';
         const entryType = String(ledger.type);
         const amount = ledger.amount;
-        if (!entryId || ledgerIds.has(entryId) || !['HOLD', 'CAPTURE', 'REFUND', 'SALE', 'FEE'].includes(entryType) || !isInteger(amount) || Number(amount) <= 0 || typeof ledger.referenceId !== 'string' || !isIsoDate(ledger.at)) {
+        if (!entryId || ledgerIds.has(entryId) || !['DEPOSIT', 'WITHDRAWAL', 'HOLD', 'CAPTURE', 'REFUND', 'SALE', 'FEE'].includes(entryType) || !isInteger(amount) || Number(amount) <= 0 || typeof ledger.referenceId !== 'string' || !isIsoDate(ledger.at)) {
           violations.push(`wallet-ledger-invalid:${actorId}`);
           return;
         }
         ledgerIds.add(entryId);
+        if (entryType === 'DEPOSIT') derivedAvailable += Number(amount);
+        if (entryType === 'WITHDRAWAL') derivedAvailable -= Number(amount);
         if (entryType === 'HOLD') { derivedAvailable -= Number(amount); derivedHeld += Number(amount); }
         if (entryType === 'CAPTURE') derivedHeld -= Number(amount);
         if (entryType === 'REFUND') { derivedHeld -= Number(amount); derivedAvailable += Number(amount); }

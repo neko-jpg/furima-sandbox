@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, Layers3, Monitor, Search, ScanLine, Tag, UserRound, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Heart, Layers3, LogOut, Monitor, Search, ScanLine, ShoppingBag, Tag, UserRound, Users, X } from 'lucide-react';
 import { useMercari } from '../context/MercariContext';
 import { joinSearchTokens, tokenizeSearchQuery } from './searchUtils';
-import type { HomeTab, MainTab } from '../types/mercari';
+import type { HomeTab, MainTab, MyPagePanel } from '../types/mercari';
 import { isBrowseDirectoryRoute } from './views/BrowseDirectoryView';
+import { HOME_TABS } from './homeTabs';
+import { AvatarImage } from './ui/AvatarImage';
 
 const desktopCategories = [
   ['My Shops', 'ショップ'],
@@ -153,14 +155,110 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
   </div>;
 };
 
+const accountMenuItems = [
+  { label: 'マイページ', panel: null, icon: UserRound },
+  { label: 'プロフィール', panel: 'profile', icon: UserRound },
+  { label: 'フォローリスト', panel: 'followers', icon: Users },
+  { label: '購入した商品', panel: 'purchases', icon: ShoppingBag },
+] as const;
+
 const GuestActions: React.FC = () => {
-  const { requestLogin, navigateToTab, activeActor } = useMercari();
+  const { requestLogin, navigateToTab, activeActor, user, profile, openMyPagePanel, switchActor } = useMercari();
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const accountButtonRef = useRef<HTMLButtonElement>(null);
+
+  const closeAccountMenu = () => setIsAccountMenuOpen(false);
+  const focusFirstMenuItem = () => {
+    window.requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus());
+  };
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) closeAccountMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAccountMenu();
+        accountButtonRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp'].includes(event.key) || !menuRef.current) return;
+      const menuItems = Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+      const currentIndex = menuItems.indexOf(document.activeElement as HTMLButtonElement);
+      if (currentIndex < 0 || menuItems.length === 0) return;
+      event.preventDefault();
+      const nextIndex = event.key === 'ArrowDown'
+        ? (currentIndex + 1) % menuItems.length
+        : (currentIndex - 1 + menuItems.length) % menuItems.length;
+      menuItems[nextIndex]?.focus({ preventScroll: true });
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isAccountMenuOpen]);
+
+  const openMenuItem = (panel: MyPagePanel | null) => {
+    closeAccountMenu();
+    if (!activeActor.authenticated) {
+      requestLogin('マイページの機能を利用するにはログインが必要です。');
+      return;
+    }
+    openMyPagePanel(panel);
+  };
+
+  const logout = () => {
+    const result = switchActor('guest');
+    closeAccountMenu();
+    if (result.ok) navigateToTab('home');
+  };
+
   return <div className="flex shrink-0 items-center gap-1.5">
-    <span className="hidden items-center gap-1 rounded-md border border-[var(--shop-border)] px-2.5 py-2 text-xs font-bold text-[var(--shop-muted)] lg:flex" title={`現在のactor: ${activeActor.id}`}><UserRound className="h-3.5 w-3.5" />{activeActor.id} ({activeActor.role})</span>
+    <div ref={menuRef} className="relative hidden md:block">
+      <button
+        ref={accountButtonRef}
+        type="button"
+        onClick={() => setIsAccountMenuOpen((open) => !open)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            setIsAccountMenuOpen(true);
+            focusFirstMenuItem();
+          }
+        }}
+        aria-haspopup="menu"
+        aria-expanded={isAccountMenuOpen}
+        aria-controls="desktop-account-menu"
+        className="inline-flex items-center gap-2 rounded-md border border-transparent px-2.5 py-2 text-sm font-bold text-white hover:border-[var(--shop-border)] hover:bg-[var(--shop-surface)]"
+        data-testid="account-menu-trigger"
+        title={`現在のactor: ${activeActor.id}`}
+      >
+        <AvatarImage src={user.avatar} mediaRef={profile?.avatarRef} alt="" className="h-8 w-8 rounded-full object-cover" />
+        <span className="max-w-[130px] truncate">{user.name}</span>
+        <ChevronDown className={`h-4 w-4 text-[var(--shop-muted)] transition-transform ${isAccountMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {isAccountMenuOpen && <div id="desktop-account-menu" role="menu" aria-label="アカウントメニュー" className="absolute right-0 top-full z-[90] mt-2 w-[272px] overflow-hidden rounded-lg border border-[var(--shop-border)] bg-[#262628] p-2 shadow-[0_18px_44px_rgba(0,0,0,.45)]">
+        {accountMenuItems.map(({ label, panel, icon: Icon }) => <button key={label} type="button" role="menuitem" onClick={() => openMenuItem(panel)} className="flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)] focus:bg-[var(--shop-surface-raised)] focus:outline-none">
+          <Icon className="h-4 w-4 shrink-0 text-[var(--shop-muted)]" aria-hidden="true" />
+          <span className="flex-1">{label}</span>
+          <ChevronRight className="h-4 w-4 text-[var(--shop-muted)]" aria-hidden="true" />
+        </button>)}
+        <div className="my-2 border-t border-[var(--shop-border)]" />
+        <button type="button" role="menuitem" onClick={logout} className="flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm font-bold text-[var(--shop-blue)] hover:bg-[var(--shop-surface-raised)] focus:bg-[var(--shop-surface-raised)] focus:outline-none">
+          <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span className="flex-1">ログアウト</span>
+        </button>
+      </div>}
+    </div>
     {!activeActor.authenticated && <><button type="button" onClick={() => requestLogin('ログインすると、いいね・保存・購入などの機能を利用できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">ログイン</button><button type="button" onClick={() => requestLogin('会員登録すると、商品を購入・出品できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">会員登録</button></>}
     <button type="button" onClick={() => navigateToTab('notifications')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">お知らせ</button>
     <button type="button" onClick={() => navigateToTab('sell')} className="rounded-md bg-[var(--shop-accent)] px-4 py-2.5 text-sm font-bold text-white shadow-[0_4px_12px_rgba(255,59,74,.2)] hover:bg-[var(--shop-accent-strong)]">出品</button>
-    <button type="button" className="rounded-md px-2 py-2 text-xs font-bold text-[var(--shop-muted)] hover:text-white">日本語</button>
+    <button type="button" disabled aria-disabled="true" data-feature-status="sandbox-out-of-scope" className="cursor-not-allowed rounded-md px-2 py-2 text-xs font-bold text-[var(--shop-muted)]">日本語（固定）</button>
   </div>;
 };
 
@@ -169,7 +267,7 @@ const NavCategoryLabel: React.FC<{ label: string }> = ({ label }) => <span class
 const DesktopCategoryNav: React.FC<{ mainTab: MainTab; categoryName: string | null; homeTab: HomeTab; onHomeTab: (tab: HomeTab) => void; onCategory: (query: string) => void }> = ({ mainTab, categoryName, homeTab, onHomeTab, onCategory }) => (
   <div className="hidden border-t border-[var(--shop-border)] bg-[rgba(17,17,18,.96)] md:block">
     <nav className="shop-category-font no-scrollbar mx-auto flex h-[64px] w-full max-w-[1280px] items-stretch justify-between overflow-x-auto px-9" aria-label="商品カテゴリナビゲーション">
-      {([['recommend', 'おすすめ'], ['mylist', 'マイリスト'], ['auction', 'オークション']] as const).map(([tab, label]) => { const active = mainTab === 'home' && homeTab === tab; return <button type="button" key={tab} onClick={() => onHomeTab(tab)} aria-current={active ? 'page' : undefined} className={`relative flex h-full shrink-0 items-center justify-center whitespace-nowrap px-6 text-base font-medium tracking-[.01em] transition-colors ${active ? 'text-[var(--shop-accent)]' : 'text-[var(--shop-muted)] hover:text-white'}`}>{label}{active && <span className="absolute inset-x-0 bottom-0 h-[3px] rounded-t-full bg-[var(--shop-accent)]" />}</button>; })}
+      {HOME_TABS.map(({ tab, label }) => { const active = mainTab === 'home' && homeTab === tab; return <button type="button" key={tab} onClick={() => onHomeTab(tab)} aria-current={active ? 'page' : undefined} className={`relative flex h-full shrink-0 items-center justify-center whitespace-nowrap px-6 text-base font-medium tracking-[.01em] transition-colors ${active ? 'text-[var(--shop-accent)]' : 'text-[var(--shop-muted)] hover:text-white'}`}>{label}{active && <span className="absolute inset-x-0 bottom-0 h-[3px] rounded-t-full bg-[var(--shop-accent)]" />}</button>; })}
       {desktopCategories.map(([label, query]) => { const active = mainTab === 'category' && categoryName === query; return <button type="button" key={label} onClick={() => onCategory(query)} aria-current={active ? 'page' : undefined} className={`relative flex h-full shrink-0 items-center justify-center whitespace-nowrap px-6 text-base font-medium tracking-[.01em] transition-colors ${active ? 'text-[var(--shop-accent)]' : 'text-[var(--shop-muted)] hover:text-white'}`}><NavCategoryLabel label={label} />{active && <span className="absolute inset-x-0 bottom-0 h-[3px] rounded-t-full bg-[var(--shop-accent)]" />}</button>; })}
     </nav>
   </div>

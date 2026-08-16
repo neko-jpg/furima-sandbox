@@ -1,0 +1,46 @@
+import type { PreviewCommand } from '../../../types/mercari.ts';
+import { SandboxCommandExecutor, previewOperationFor } from '../../../domain/commandExecutor.ts';
+import {
+  actionOptionsFor,
+  actionFailure,
+  authorizationFailure,
+  engineFromRecord,
+  MAX_SANDBOX_REQUEST_BYTES,
+  readJson,
+  sandboxIdFrom,
+  storeForRequest,
+} from '../runtime.ts';
+
+const statusFor = (error: string): number => {
+  if (error === 'AUTH_REQUIRED') return 401;
+  if (error === 'FORBIDDEN') return 403;
+  if (error === 'PREVIEW_NOT_FOUND' || error === 'STATE_NOT_FOUND') return 404;
+  if (error === 'STATE_CONFLICT' || error === 'IDEMPOTENCY_CONFLICT' || error === 'PREVIEW_EXPIRED') return 409;
+  if (error === 'PAYLOAD_TOO_LARGE') return 413;
+  if (error === 'D1_UNAVAILABLE') return 503;
+  return 400;
+};
+
+export async function POST(request: Request): Promise<Response> {
+  const authError = await authorizationFailure(request);
+  if (authError) return authError;
+  const contentLength = Number(request.headers.get('content-length') ?? 0);
+  if (contentLength > MAX_SANDBOX_REQUEST_BYTES) return actionFailure(request, undefined, 'commit', 'PAYLOAD_TOO_LARGE', 413, 0, { maxBytes: MAX_SANDBOX_REQUEST_BYTES });
+  const body = await readJson(request);
+  if (!body || typeof body.previewId !== 'string' || !body.previewId.trim()) return actionFailure(request, body ?? undefined, 'commit', 'INVALID_INPUT', 400, 0, { message: 'previewIdが必要です' });
+  const id = sandboxIdFrom(request, body);
+  if (!id) return actionFailure(request, body, 'commit', 'INVALID_STATE_ID', 400);
+  const store = await storeForRequest();
+  try {
+    const record = await store.get(id);
+    if (!record) return actionFailure(request, body, 'commit', 'STATE_NOT_FOUND', 404, 0, { sandboxId: id });
+    const engine = engineFromRecord(id, record);
+    const options = actionOptionsFor(body, engine.getCurrentActor().id);
+    const actorId = options.actorId ?? engine.getCurrentActor().id;
+    const executor = new SandboxCommandExecutor({ engine, store });
+    const result = await executor.commitPreview(body.previewId.trim(), options, (workingEngine, command, payload) => previewOperationFor(command as PreviewCommand, payload, actorId, workingEngine));
+    return Response.json(result, { status: result.ok ? 200 : statusFor(result.error), headers: { 'cache-control': 'no-store' } });
+  } catch {
+    return actionFailure(request, body, 'commit', 'D1_UNAVAILABLE', 503, 0, { retryable: true });
+  }
+}

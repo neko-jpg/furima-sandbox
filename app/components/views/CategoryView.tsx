@@ -56,7 +56,7 @@ export const CategoryView: React.FC = () => {
 
   return (
     <div className="shop-scrollbar flex-1 overflow-y-auto bg-[var(--shop-bg)]" data-testid="category-view">
-      <div className="mx-auto max-w-[1280px] px-4 pb-14 pt-5 md:px-7 lg:px-9">
+      <div className="mx-auto max-w-[1280px] px-4 pb-24 pt-5 md:px-7 lg:px-9">
         <div className="mb-5 flex items-center gap-2 text-xs text-[var(--shop-blue)]">
           <button type="button" onClick={() => navigateToTab('home')} className="hover:text-white">ホーム</button>
           <ChevronRight className="h-3.5 w-3.5 text-[var(--shop-subtle)]" aria-hidden="true" />

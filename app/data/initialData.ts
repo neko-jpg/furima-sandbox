@@ -1,4 +1,4 @@
-import type { MercariItem, NotificationItem, UserProfile } from '../types/mercari';
+import type { MercariItem, NotificationItem, UserProfile } from '../types/mercari.ts';
 
 const localProductImages: Record<string, string> = {
   'photo-1544716278-ca5e3f4abd8c': 'book-intro.jpg',

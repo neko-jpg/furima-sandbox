@@ -18,7 +18,7 @@ const scenarioLabels: Record<ScenarioId, string> = {
 };
 
 export const SandboxInspector: React.FC = () => {
-  const { activeActor, sandboxSnapshot, switchActor, loadScenario, advanceClock, selectedItemId, buyingItemId } = useMercari();
+  const { activeActor, sandboxSnapshot, switchActor, loadScenario, advanceClock, selectedItemId, buyingItemId, isDeviceFrame } = useMercari();
   const [isOpen, setIsOpen] = useState(false);
   const [scenario, setScenario] = useState<ScenarioId>(sandboxSnapshot.scenarioId);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -29,6 +29,7 @@ export const SandboxInspector: React.FC = () => {
     setFeedback(result.ok ? '操作を適用しました' : result.message ?? '操作に失敗しました');
   };
   const isBlockedByModal = Boolean(selectedItemId || buyingItemId);
+  const bottomOffset = isDeviceFrame ? 'bottom-[calc(58px+env(safe-area-inset-bottom)+0.75rem)]' : 'bottom-[calc(58px+env(safe-area-inset-bottom)+0.75rem)] md:bottom-3';
   const handleLoad = () => run(() => {
     const result = loadScenario(scenario);
     if (result.ok) setScenario(result.data.scenarioId);
@@ -36,7 +37,7 @@ export const SandboxInspector: React.FC = () => {
   });
 
   return (
-    <aside className="fixed bottom-3 right-3 z-[90] w-[min(380px,calc(100vw-24px))] text-sm" aria-label="Sandbox Inspector">
+    <aside className={`${isDeviceFrame ? 'absolute' : 'fixed'} ${bottomOffset} right-3 z-[90] w-[min(380px,calc(100vw-24px))] text-sm`} aria-label="Sandbox Inspector">
       {!isOpen || isBlockedByModal ? (
         <button type="button" onClick={() => setIsOpen(true)} className="flex items-center gap-2 rounded-full border border-[#2b5367] bg-[#122b3a]/95 px-4 py-2.5 font-bold text-[#c5eaff] shadow-xl backdrop-blur" aria-expanded="false">
           <Activity className="h-4 w-4" /> Sandbox Inspector <span className="text-xs text-[#7bb9d5]">{sandboxSnapshot.scenarioId} / v{sandboxSnapshot.stateVersion}</span>

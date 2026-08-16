@@ -1,6 +1,7 @@
 export interface Seller {
   name: string;
   avatar: string;
+  avatarRef?: string;
   rating: number;
   ratingsCount: number;
   isVerified: boolean;
@@ -33,11 +34,48 @@ export interface ProductVariant {
   searchTags: string[];
 }
 
+export type ListingMediaStatus = 'processing' | 'ready' | 'error';
+
+/**
+ * Metadata kept in listing/domain state. The binary image is stored by the
+ * local media adapter (IndexedDB) or by the future R2 adapter, never in the
+ * sandbox state payload.
+ */
+export interface ListingMediaRef {
+  id: string;
+  source: 'camera' | 'album' | 'legacy';
+  status: ListingMediaStatus;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/avif' | 'image/gif';
+  width?: number;
+  height?: number;
+  byteSize?: number;
+  thumbnailRef?: string;
+  createdAt: string;
+  errorCode?: string;
+}
+
+export interface ListingImageOrder {
+  mediaId: string;
+  order: number;
+  isCover: boolean;
+}
+
+export interface ListingDraft {
+  draftId: string;
+  name?: string;
+  fields: Partial<MercariItem>;
+  media: ListingMediaRef[];
+  imageOrder: ListingImageOrder[];
+  updatedAt: string;
+}
+
 export interface MercariItem {
   id: string;
   title: string;
   price: number;
   images: string[];
+  /** @deprecated Use imageRefs for new listing/media flows. */
+  imageRefs?: string[];
   isSold?: boolean;
   isAuction?: boolean;
   currentBid?: number;
@@ -121,6 +159,7 @@ export interface NotificationItem {
 export interface UserProfile {
   name: string;
   avatar: string;
+  avatarRef?: string;
   rating: number;
   ratingsCount: number;
   isVerified: boolean;
@@ -131,6 +170,7 @@ export interface UserProfile {
 
 export type MainTab = 'home' | 'category' | 'notifications' | 'sell' | 'mypage';
 export type HomeTab = 'recommend' | 'mylist' | 'auction';
+export type MyPagePanel = 'listings' | 'purchases' | 'drafts' | 'followers' | 'settings' | 'help' | 'wallet' | 'profile';
 
 export type ActorRole = 'guest' | 'buyer' | 'seller' | 'admin' | 'platform';
 
@@ -146,12 +186,45 @@ export interface ActorProfile {
   displayName: string;
   bio: string;
   avatar: string;
+  /** IndexedDB/R2 media reference. Binary data never belongs in Sandbox state. */
+  avatarRef?: string;
   rating: number;
   ratingsCount: number;
   completedSales: number;
   completedPurchases: number;
   isVerified: boolean;
   updatedAt: string;
+}
+
+export type FollowDirection = 'following' | 'followers';
+
+export interface FollowRelation {
+  id: string;
+  followerId: string;
+  followeeId: string;
+  createdAt: string;
+}
+
+export interface FollowSummary {
+  actorId: string;
+  followingCount: number;
+  followerCount: number;
+  isFollowing: boolean;
+}
+
+export interface FollowListResult {
+  actorId: string;
+  direction: FollowDirection;
+  users: ActorProfile[];
+  summary: FollowSummary;
+}
+
+export interface FollowMutationResult {
+  actorId: string;
+  targetActorId: string;
+  following: boolean;
+  relation?: FollowRelation;
+  summary: FollowSummary;
 }
 
 export type ScenarioId =
@@ -333,14 +406,19 @@ export interface DomainEvent {
 
 export interface WalletSnapshot {
   actorId: string;
+  /** Starting balance used when replaying the ledger, including migrated state. */
+  openingBalance: number;
   availableBalance: number;
   heldBalance: number;
   points: number;
-  ledger: Array<{ id: string; type: 'HOLD' | 'CAPTURE' | 'REFUND' | 'SALE' | 'FEE'; amount: number; referenceId: string; at: string }>;
+  ledger: Array<{ id: string; type: WalletLedgerType; amount: number; referenceId: string; at: string }>;
 }
+
+export type WalletLedgerType = 'DEPOSIT' | 'WITHDRAWAL' | 'HOLD' | 'CAPTURE' | 'REFUND' | 'SALE' | 'FEE';
 
 export interface SandboxSnapshot {
   version: '1';
+  sandboxId: string;
   scenarioId: ScenarioId;
   seed: string;
   now: string;
@@ -360,6 +438,7 @@ export interface SandboxSnapshot {
   events: DomainEvent[];
   notifications: NotificationItem[];
   wallets: WalletSnapshot[];
+  follows: FollowRelation[];
   invariantViolations: string[];
   pendingFailures: string[];
 }
@@ -385,28 +464,60 @@ export type AgentErrorCode =
   | 'INVALID_TRANSITION'
   | 'IDEMPOTENCY_CONFLICT'
   | 'UNKNOWN_SCENARIO'
+  | 'PREVIEW_NOT_FOUND'
+  | 'PREVIEW_EXPIRED'
   | 'AUCTION_ENDED'
   | 'INVALID_AMOUNT'
+  | 'INSUFFICIENT_FUNDS'
+  | 'WALLET_NOT_FOUND'
+  | 'FOLLOW_TARGET_NOT_FOUND'
+  | 'ALREADY_FOLLOWING'
+  | 'NOT_FOLLOWING'
+  | 'CANNOT_FOLLOW_SELF'
   | 'NO_RESULTS'
-  | 'UNSUPPORTED_CATEGORY';
+  | 'UNSUPPORTED_CATEGORY'
+  | 'SANDBOX_NOT_READY'
+  | 'D1_UNAVAILABLE'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'INVALID_STATE'
+  | 'REPLAY_FAILED'
+  | 'STATE_NOT_FOUND'
+  | 'INVALID_STATE_ID'
+  | 'AUTH_NOT_CONFIGURED'
+  | 'FEATURE_NOT_AVAILABLE';
 
 export type ActionResult<T = undefined> =
-  | { ok: true; data: T; stateVersion: number; events?: DomainEvent[]; nextActions?: string[] }
+  | { ok: true; data: T; stateVersion: number; meta?: ActionMetadata; events?: DomainEvent[]; nextActions?: string[] }
   | {
       ok: false;
       error: AgentErrorCode;
       message?: string;
       stateVersion: number;
+      meta?: ActionMetadata;
       details?: unknown;
     };
+
+export interface ActionMetadata {
+  sandboxId: string;
+  actorId: string;
+  stateVersion: number;
+  operationId: string;
+  commandId?: string;
+  requestId?: string;
+  idempotencyKey?: string;
+  mode: 'preview' | 'commit';
+}
 
 export interface AgentActionOptions {
   requestId?: string;
   idempotencyKey?: string;
   actorId?: string;
+  sandboxId?: string;
+  operationId?: string;
   expectedStateVersion?: number;
   commandId?: string;
   seed?: string;
+  mode?: 'preview' | 'commit';
   /** Explicitly separates operator controls from ordinary user commands. */
   scope?: 'user' | 'operator' | 'sandbox-control';
 }
@@ -418,6 +529,7 @@ export interface PurchasePricing {
 
 export interface MercariAgentSnapshot {
   version: '1';
+  sandboxId: string;
   stateVersion: number;
   currentMainTab: MainTab;
   currentHomeTab: HomeTab;
@@ -444,7 +556,45 @@ export interface ActionTraceEntry {
   at: string;
 }
 
+export type PreviewCommand = 'purchase' | 'listing.create' | 'wallet.deposit' | 'wallet.withdraw';
+
+export interface ActionPreview {
+  previewId: string;
+  command: PreviewCommand;
+  payload: unknown;
+  createdAt: string;
+  expiresAt: string;
+  stateVersion: number;
+  sandboxId: string;
+  actorId: string;
+  summary: Record<string, unknown>;
+}
+
+export interface ListingDraftSummary {
+  draftId: string;
+  fields: Partial<MercariItem>;
+  updatedAt: string;
+}
+
+export interface CatalogListInput {
+  offset?: number;
+  limit?: number;
+  query?: string;
+  category?: string;
+}
+
+export interface CatalogListResult {
+  items: MercariItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  stateVersion: number;
+}
+
+export type SaveListingDraftInput = Partial<MercariItem> & { draftId?: string };
+
 export interface MercariAgentAPI {
+  waitForReady: () => Promise<ActionResult<{ sandboxId: string; stateVersion: number }>>;
   navigateTab: (tab: MainTab, options?: AgentActionOptions) => ActionResult<undefined>;
   navigateHomeSubTab: (tab: HomeTab, options?: AgentActionOptions) => ActionResult<undefined>;
   navigateCategory: (category: string, options?: AgentActionOptions) => ActionResult<undefined>;
@@ -472,6 +622,9 @@ export interface MercariAgentAPI {
     item: Partial<MercariItem>,
     options?: AgentActionOptions,
   ) => ActionResult<{ draftId: string }>;
+  getListingDrafts: (options?: AgentActionOptions) => ActionResult<ListingDraftSummary[]>;
+  saveListingDraft: (item: SaveListingDraftInput, options?: AgentActionOptions) => ActionResult<{ draftId: string }>;
+  deleteListingDraft: (draftId: string, options?: AgentActionOptions) => ActionResult<{ draftId: string }>;
   submitListing: (
     draftId: string,
     options?: AgentActionOptions,
@@ -506,6 +659,11 @@ export interface MercariAgentAPI {
   pauseListing: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
   resumeListing: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
   relistItem: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
+  listOwnListings: (options?: AgentActionOptions) => ActionResult<MercariItem[]>;
+  catalog: {
+    list: (input?: CatalogListInput, options?: AgentActionOptions) => ActionResult<CatalogListResult>;
+    get: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
+  };
   switchActor: (actorId: string, options?: AgentActionOptions) => ActionResult<SandboxActor>;
   loadScenario: (scenarioId: ScenarioId, options?: AgentActionOptions) => ActionResult<{ scenarioId: ScenarioId; seed: string; now: string }>;
   advanceClock: (milliseconds: number, options?: AgentActionOptions) => ActionResult<{ now: string; expiredPurchaseIntentIds: string[] }>;
@@ -525,12 +683,27 @@ export interface MercariAgentAPI {
   getInventoryMovements: (itemId?: string, options?: AgentActionOptions) => InventoryMovement[];
   getProfile: (actorId?: string) => ActorProfile | undefined;
   updateProfile: (input: Partial<ActorProfile>, options?: AgentActionOptions) => ActionResult<ActorProfile>;
+  getFollowList: (direction: FollowDirection, options?: AgentActionOptions) => ActionResult<FollowListResult>;
+  getFollowSummary: (actorId?: string, options?: AgentActionOptions) => ActionResult<FollowSummary>;
+  followUser: (actorId: string, options?: AgentActionOptions) => ActionResult<FollowMutationResult>;
+  unfollowUser: (actorId: string, options?: AgentActionOptions) => ActionResult<FollowMutationResult>;
+  getWallet: (options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
+  depositWallet: (amount: number, options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
+  withdrawWallet: (amount: number, options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
   resetScenario: (options?: AgentActionOptions & { scenarioId?: ScenarioId }) => ActionResult<undefined>;
+  previewAction: (command: PreviewCommand, payload: unknown, options?: AgentActionOptions) => ActionResult<ActionPreview>;
+  commitPreview: (previewId: string, options?: AgentActionOptions) => ActionResult<unknown>;
 }
 
 declare global {
   interface Window {
     __MERCARI_API__?: MercariAgentAPI;
     __SHOP_API__?: MercariAgentAPI;
+    __FURIMA_SANDBOX_DIAGNOSTICS__?: {
+      backend: 'indexeddb' | 'memory';
+      ready: boolean;
+      fallbackReason?: 'UNAVAILABLE' | 'QUOTA_EXCEEDED' | 'CORRUPTED' | 'VERSION_MISMATCH';
+      migratedLegacyLocalStorage: boolean;
+    };
   }
 }

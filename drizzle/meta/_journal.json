@@ -22,6 +22,13 @@
       "when": 1786625235070,
       "tag": "0002_unique_tana_nile",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786800891080,
+      "tag": "0003_nifty_madrox",
+      "breakpoints": true
     }
   ]
 }

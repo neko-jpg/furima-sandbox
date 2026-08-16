@@ -65,6 +65,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   height: 42px;
   flex-shrink: 0;
   background-image: url('/images/branding/furima-sandbox-logo-sheet.png');
+  background-image: image-set(
+    url('/images/branding/furima-sandbox-logo-sheet.webp') type('image/webp'),
+    url('/images/branding/furima-sandbox-logo-sheet.png') type('image/png')
+  );
   background-repeat: no-repeat;
   background-size: 307px 307px;
   background-position: -33px -82px;

@@ -50,7 +50,9 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
   assert.match(context, /addComment: \(itemId, text, options\)/);
   assert.match(context, /IDEMPOTENCY_CONFLICT/);
   assert.match(context, /REMOTE_STATE_ENABLED/);
-  assert.match(context, /window\.localStorage\.setItem\(SANDBOX_STATE_STORAGE_KEY, serialized\)/);
+  assert.doesNotMatch(context, /window\.localStorage\.setItem\(SANDBOX_STATE_STORAGE_KEY, serialized\)/);
+  assert.match(context, /new IndexedDbSandboxStateStore/);
+  assert.match(context, /browserSandboxStore\.put/);
   assert.match(context, /if \(!REMOTE_STATE_ENABLED\) return;/);
   assert.match(context, /sandboxEngine\.importState\(serialized, SANDBOX_CONTROL_OPTIONS\)/);
   assert.match(context, /catalogLoadRef\.current/);
@@ -77,9 +79,7 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
   assert.match(detail, /const isUnavailable = Boolean\(item\.isSold\)/);
   assert.match(detail, /navigator\.clipboard\.writeText/);
   assert.doesNotMatch(detail, /className="fixed inset-0/);
-  const formEnd = listing.lastIndexOf("</form>");
-  const footerAfterForm = listing.indexOf("<Footer />", formEnd);
-  assert.ok(formEnd >= 0 && footerAfterForm > formEnd, "Listing footer must not be inside the submit form");
+  assert.doesNotMatch(listing, /<Footer\s*\/>/, "Listing flow must not render the site footer");
   assert.match(listing, /id="listing-images" type="file"/);
   assert.match(listing, /setCategory\(''\)/);
   assert.match(globals, /var\(--font-noto-sans-jp\)/);

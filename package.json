@@ -7,15 +7,26 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "build": "vinext build",
+    "dev:edge": "wrangler dev --local --persist-to .wrangler/state",
+    "build": "node scripts/clean-build.mjs && vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/domain-engine.test.mjs",
+    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/domain-engine.test.mjs tests/listing-contract.test.mjs tests/command-bus.test.mjs tests/sandbox-command-executor.test.mjs tests/sandbox-faults.test.mjs tests/sandbox-model.test.mjs tests/media-store.test.mjs tests/worker-contract.test.mjs tests/sandbox-runtime.test.mjs tests/sandbox-properties.test.mjs tests/api-contract.test.mjs tests/semgrep-contract.test.mjs",
     "typecheck": "tsc --noEmit --pretty false",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern output --ignore-pattern test-results",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply site-creator-d1 --local",
     "db:migrate:remote": "wrangler d1 migrations apply site-creator-d1 --remote",
-    "assets:audit": "node scripts/audit-runtime-assets.mjs"
+    "assets:audit": "node scripts/audit-runtime-assets.mjs",
+    "docs:check": "node scripts/validate-api-docs.mjs",
+    "docs:validate-public": "node scripts/validate-docs-public.mjs",
+    "docs:site": "node scripts/build-docs-site.mjs",
+    "docs:wiki:check": "node scripts/publish-wiki.mjs --check",
+    "qa:matrix": "node scripts/validate-test-matrix.mjs",
+    "qa:static": "node scripts/run-semgrep.mjs",
+    "load:smoke": "node scripts/load-sandbox.mjs --duration=30 --actors=20 --rps=100",
+    "load:full": "node scripts/load-sandbox.mjs --duration=600 --actors=20 --rps=100",
+    "e2e": "npm run build && playwright test",
+    "e2e:report": "playwright show-report output/playwright/report"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
@@ -27,6 +38,7 @@
     "@cloudflare/vite-plugin": "1.52.0",
     "@eslint/js": "9.39.4",
     "@next/eslint-plugin-next": "16.2.6",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -38,6 +50,7 @@
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
+    "fast-check": "^4.9.0",
     "globals": "16.4.0",
     "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
@@ -45,7 +58,8 @@
     "typescript-eslint": "8.59.3",
     "vinext": "1.0.0-beta.5",
     "vite": "8.2.1",
-    "wrangler": "4.122.0"
+    "wrangler": "4.122.0",
+    "yaml": "^2.9.0"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {

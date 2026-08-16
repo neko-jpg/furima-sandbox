@@ -24,14 +24,29 @@ export const MercariApp: React.FC = () => {
   const {
     mainTab,
     selectedItem,
-    setSelectedItemId,
+    closeItem,
     buyingItemId,
     categoryName,
     isSearchOpen,
     searchQuery,
     isDeviceFrame,
+    isListingModalOpen,
+    isSandboxReady,
   } = useMercari();
   const isBlockingModalOpen = Boolean(selectedItem || buyingItemId);
+  const isListingFlowOpen = mainTab === 'sell' && isListingModalOpen;
+
+  React.useLayoutEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    const resetScrollOwner = () => {
+      document.querySelector<HTMLElement>('main .shop-scrollbar')?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      document.querySelector<HTMLElement>('[data-testid="listing-flow-scroll"]')?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    };
+    resetScrollOwner();
+    const frame = window.requestAnimationFrame(resetScrollOwner);
+    return () => window.cancelAnimationFrame(frame);
+  }, [categoryName, isListingModalOpen, isSearchOpen, mainTab, searchQuery, selectedItem?.id]);
 
   const renderCurrentView = () => {
     if (isSearchOpen && searchQuery.trim()) return <SearchView />;
@@ -59,32 +74,38 @@ export const MercariApp: React.FC = () => {
         className={`mx-auto flex w-full flex-col bg-[var(--shop-bg)] transition-all duration-300 ${
           isDeviceFrame
             ? 'relative max-w-[430px] h-[100dvh] overflow-hidden sm:my-4 sm:h-[900px] sm:rounded-[34px] sm:border-[8px] sm:border-[#343438] sm:shadow-2xl'
-            : 'min-h-screen max-w-none'
+          : 'relative h-[100dvh] max-w-none overflow-hidden'
         }`}
         data-testid="shop-app-container"
       >
-        <div aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined}>
-          <DemoNoticeBar />
-          <DemoGuide />
+        {!isListingFlowOpen && (
+          <div aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined}>
+            <DemoNoticeBar />
+            <DemoGuide />
 
-          {/* Header */}
-          <Header />
+            {/* Header */}
+            <Header />
+          </div>
+        )}
 
-          {/* Main Content Area */}
-          <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden md:pt-10">
-            {renderCurrentView()}
-          </main>
+        {/* Main content becomes the full-screen listing route while the flow is open. */}
+        <main aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined} className={`relative flex min-h-0 flex-1 flex-col overflow-hidden ${isListingFlowOpen ? 'pt-0' : 'md:pt-10'}`}>
+          {renderCurrentView()}
+        </main>
 
-          {/* Bottom Navigation */}
-          <BottomNav />
-        </div>
+        {!isListingFlowOpen && (
+          <div aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined}>
+            {/* Bottom Navigation */}
+            <BottomNav />
+          </div>
+        )}
 
         {/* Overlays & Modals */}
         {selectedItem && (
           <ItemDetailView
             key={selectedItem.id}
             item={selectedItem}
-            onClose={() => setSelectedItemId(null)}
+            onClose={closeItem}
           />
         )}
 
@@ -92,7 +113,12 @@ export const MercariApp: React.FC = () => {
 
         <BuyModal />
         <LoginPromptModal />
-        <SandboxInspector />
+        {!isListingFlowOpen && !isBlockingModalOpen && mainTab !== 'sell' && <SandboxInspector />}
+        {!isSandboxReady && (
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-[var(--shop-bg)]/90 px-6 text-center" role="status" aria-live="polite">
+            <p className="rounded-2xl border border-white/10 bg-black/30 px-5 py-4 text-sm text-white/80">Sandbox状態を復元しています…</p>
+          </div>
+        )}
       </div>
     </div>
   );

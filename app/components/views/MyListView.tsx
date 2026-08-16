@@ -5,9 +5,12 @@ import { ArrowRight, ChevronRight } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import type { MercariItem } from '../../types/mercari';
 import { ShopImage } from '../ui/ShopImage';
+import { AvatarImage } from '../ui/AvatarImage';
 
 export const MyListView: React.FC = () => {
-  const { items, recentlyViewedIds, openItem, setIsSearchOpen, setSearchQuery } = useMercari();
+  const { items, recentlyViewedIds, openItem, setIsSearchOpen, setSearchQuery, getFollowList } = useMercari();
+  const followingResult = getFollowList('following');
+  const followingUsers = followingResult.ok ? followingResult.data.users : [];
   const recentlyViewedItems = useMemo(() => {
     const viewed = recentlyViewedIds
       .map((id) => items.find((item) => item.id === id))
@@ -57,7 +60,7 @@ export const MyListView: React.FC = () => {
 
       <section>
         <MyListHeading title="フォロー中のユーザー" />
-        <p className="mb-4 text-[15px] leading-[21px] text-[var(--shop-muted)]">フォローしているアカウントはありません</p>
+        {followingUsers.length ? <div className="mb-4 grid gap-2 sm:grid-cols-2">{followingUsers.slice(0, 6).map((profile) => <div key={profile.actorId} className="flex items-center gap-3 rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] p-3"><AvatarImage src={profile.avatar} mediaRef={profile.avatarRef} alt="" className="h-10 w-10 rounded-full object-cover" /><div className="min-w-0"><p className="truncate text-sm font-bold text-white">{profile.displayName}</p><p className="mt-1 truncate text-xs text-[var(--shop-muted)]">{profile.bio || '自己紹介はありません'}</p></div></div>)}</div> : <p className="mb-4 text-[15px] leading-[21px] text-[var(--shop-muted)]">フォローしているアカウントはありません</p>}
         <hr className="mb-2 border-0 border-t border-[var(--shop-border)]" />
         <div className="mb-2 mt-4 flex min-h-9 items-center justify-end">
           <button type="button" onClick={() => setIsSearchOpen(true)} className="inline-flex items-center gap-1 text-[15px] leading-[21px] text-white hover:text-[var(--shop-blue)]">

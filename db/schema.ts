@@ -163,6 +163,46 @@ export const sandboxStates = sqliteTable('sandbox_states', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [index('sandbox_states_scenario_idx').on(table.scenarioId)]);
 
+export const sandboxCommandRecords = sqliteTable('sandbox_command_records', {
+  operationId: text('operation_id').primaryKey(),
+  sandboxId: text('sandbox_id').notNull(),
+  actorId: text('actor_id').notNull(),
+  command: text('command').notNull(),
+  mode: text('mode').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  requestId: text('request_id'),
+  commandId: text('command_id'),
+  payloadHash: text('payload_hash').notNull(),
+  stateVersionBefore: integer('state_version_before').notNull(),
+  stateVersionAfter: integer('state_version_after').notNull(),
+  status: text('status').notNull(),
+  result: text('result_json', { mode: 'json' }).notNull(),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+}, (table) => [
+  uniqueIndex('sandbox_command_records_idempotency_idx').on(table.sandboxId, table.idempotencyKey),
+  index('sandbox_command_records_sandbox_idx').on(table.sandboxId, table.createdAt),
+]);
+
+export const sandboxPreviewRecords = sqliteTable('sandbox_preview_records', {
+  previewId: text('preview_id').primaryKey(),
+  sandboxId: text('sandbox_id').notNull(),
+  actorId: text('actor_id').notNull(),
+  command: text('command').notNull(),
+  payload: text('payload_json', { mode: 'json' }).notNull(),
+  payloadHash: text('payload_hash').notNull(),
+  baseStateVersion: integer('base_state_version').notNull(),
+  summary: text('summary_json', { mode: 'json' }).notNull(),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  virtualExpiresAt: text('virtual_expires_at').notNull(),
+  retentionExpiresAt: text('retention_expires_at').notNull(),
+  committedOperationId: text('committed_operation_id'),
+}, (table) => [
+  index('sandbox_preview_records_sandbox_idx').on(table.sandboxId, table.status),
+  index('sandbox_preview_records_retention_idx').on(table.retentionExpiresAt),
+]);
+
 export const sandboxNotifications = sqliteTable('sandbox_notifications', {
   id: text('id').primaryKey(),
   actorId: text('actor_id').notNull(),
