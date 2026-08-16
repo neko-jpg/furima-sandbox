@@ -197,7 +197,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: `Start Purchase Error: ${startResult.error} - ${startResult.message}` }], isError: true };
         }
 
-        const intentId = startResult.data.purchaseIntentId;
         const confirmResult = engine.purchaseItemWithPricing(itemId, undefined, { actorId: 'buyer_01' });
 
         if (!confirmResult.ok) {
@@ -213,7 +212,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return {
-        content: [{ type: "text", text: `Validation error: ${error.errors.map(e => e.message).join(", ")}` }],
+        content: [{ type: "text", text: `Validation error: ${error.issues.map((issue) => issue.message).join(", ")}` }],
         isError: true,
       };
     }
