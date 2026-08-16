@@ -2,7 +2,9 @@ name: verify
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: verify-${{ github.event.pull_request.head.sha || github.sha }}
