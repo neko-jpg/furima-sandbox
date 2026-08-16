@@ -38,6 +38,9 @@ if (generatedExists) {
   const index = generatedText.get('index.html');
   const headers = generatedText.get('_headers');
   if (!index.includes('scalar-api-reference')) throw new Error('[docs:public] Scalar mount is missing from generated index');
+  for (const token of ['<body class="docs-page">', 'class="docs-main"', 'class="docs-shell"']) {
+    if (!index.includes(token)) throw new Error(`[docs:public] generated layout guard is missing ${token}`);
+  }
   if (index.includes('cdn.jsdelivr.net') || index.includes('proxy.scalar.com')) throw new Error('[docs:public] generated site references an external Scalar runtime');
   if (!headers.includes('Content-Security-Policy:') || !headers.includes("frame-ancestors 'none'")) throw new Error('[docs:public] security headers are incomplete');
   generatedChecked = true;
