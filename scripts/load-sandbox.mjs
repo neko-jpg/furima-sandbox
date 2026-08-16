@@ -154,29 +154,61 @@ const startLocalServer = async () => {
   child = spawn(command, commandArgs, {
     cwd: root,
     env: { ...process.env, NODE_ENV: 'test' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+    stdio: ['ignore', 'ignore', 'ignore'],
     windowsHide: true,
   });
-  child.stdout?.on('data', () => {});
-  child.stderr?.on('data', () => {});
   if (!(await waitForOrigin(120_000))) throw new Error(`local server did not become ready: ${baseUrl}`);
 };
 
+const waitForChildExit = (processHandle, timeoutMs) => new Promise((resolveExit) => {
+  if (processHandle.exitCode !== null || processHandle.signalCode !== null) {
+    resolveExit(true);
+    return;
+  }
+  let settled = false;
+  const finish = (exited) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    processHandle.off('close', onClose);
+    resolveExit(exited);
+  };
+  const onClose = () => finish(true);
+  const timer = setTimeout(() => finish(false), timeoutMs);
+  processHandle.once('close', onClose);
+});
+
 const stopLocalServer = async () => {
   if (!child) return;
-  if (process.platform === 'win32' && child.pid) {
+  const processHandle = child;
+  child = undefined;
+  if (!processHandle.pid) return;
+
+  const exited = waitForChildExit(processHandle, 5_000);
+  if (process.platform === 'win32') {
     await new Promise((resolveStop) => {
-      const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+      const killer = spawn('taskkill', ['/pid', String(processHandle.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
       killer.once('close', resolveStop);
       killer.once('error', resolveStop);
     });
-    child = undefined;
+    await exited;
     return;
   }
-  child.kill('SIGTERM');
-  await sleep(100);
-  if (!child.killed) child.kill('SIGKILL');
-  child = undefined;
+
+  try {
+    process.kill(-processHandle.pid, 'SIGTERM');
+  } catch {
+    try { processHandle.kill('SIGTERM'); } catch { /* already exited */ }
+  }
+  if (!(await exited)) {
+    try {
+      process.kill(-processHandle.pid, 'SIGKILL');
+    } catch {
+      try { processHandle.kill('SIGKILL'); } catch { /* already exited */ }
+    }
+    await waitForChildExit(processHandle, 2_000);
+  }
 };
 
 const makeActor = (index) => ({
@@ -184,6 +216,7 @@ const makeActor = (index) => ({
   sandboxId: `${runId}-${index}`,
   actorId: 'buyer_01',
   lastStateVersion: 0,
+  dispatchCount: 0,
   sequence: 0,
   etag: undefined,
   pendingPreview: null,
@@ -264,7 +297,7 @@ const runCommit = async (actor) => {
   actor.pendingPreview = null;
   // A small portion of mutations is deliberately replayed with the same key.
   // It must return the saved result and must not advance the state again.
-  if (actor.sequence % 25 === 0) actor.repeatCommit = { ...pending, expected: saved, stateVersion: actor.lastStateVersion };
+  if (actor.sequence % 5 === 0) actor.repeatCommit = { ...pending, expected: saved, stateVersion: actor.lastStateVersion };
   return result;
 };
 
@@ -293,7 +326,7 @@ const runRepeatedCommit = async (actor) => {
 const runJob = async (actor) => {
   if (actor.repeatCommit) return runRepeatedCommit(actor);
   if (actor.pendingPreview) return runCommit(actor);
-  const selector = (actor.sequence + actor.index) % 10;
+  const selector = (actor.dispatchCount++ + actor.index) % 10;
   if (selector < 5) return runCatalog(actor);
   if (selector < 7) return runHealth(actor);
   if (selector < 8) return runState(actor);
@@ -339,6 +372,7 @@ const main = async () => {
   }
   const elapsedSeconds = Math.max(0.001, (nowMs() - loadStarted) / 1000);
   const errorRate = stats.total ? stats.failed / stats.total : 1;
+  const requiresIdempotencyReplay = durationSeconds >= 5 && actorCount >= 2 && targetRps >= 10;
   const summary = {
     ...stats,
     finishedAt: new Date().toISOString(),
@@ -352,10 +386,11 @@ const main = async () => {
       p99: Number(percentile(stats.latenciesMs, 0.99).toFixed(2)),
       max: Number(maximum(stats.latenciesMs).toFixed(2)),
     },
-    limits: { maxErrorRate: 0.005, maxP95Ms: 750, maxP99Ms: 1500 },
+    limits: { maxErrorRate: 0.005, maxP95Ms: 750, maxP99Ms: 1500, minIdempotencyReplays: requiresIdempotencyReplay ? 1 : 0 },
     pass: errorRate < 0.005
       && percentile(stats.latenciesMs, 0.95) < 750
       && percentile(stats.latenciesMs, 0.99) < 1500
+      && (!requiresIdempotencyReplay || stats.idempotencyReplays > 0)
       && stats.invariantViolations.length === 0
       && stats.duplicateMutationViolations.length === 0
       && stats.lostUpdateViolations.length === 0,
