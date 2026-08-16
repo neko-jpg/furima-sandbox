@@ -10,7 +10,7 @@
     "dev:edge": "wrangler dev --local --persist-to .wrangler/state",
     "build": "node scripts/clean-build.mjs && vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/domain-engine.test.mjs tests/listing-contract.test.mjs tests/command-bus.test.mjs tests/sandbox-command-executor.test.mjs tests/sandbox-faults.test.mjs tests/sandbox-model.test.mjs tests/media-store.test.mjs tests/worker-contract.test.mjs tests/sandbox-runtime.test.mjs tests/sandbox-properties.test.mjs tests/api-contract.test.mjs tests/semgrep-contract.test.mjs",
+    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/domain-engine.test.mjs tests/domain-event-subscription.test.mjs tests/listing-contract.test.mjs tests/command-bus.test.mjs tests/sandbox-command-executor.test.mjs tests/sandbox-faults.test.mjs tests/sandbox-model.test.mjs tests/media-store.test.mjs tests/worker-contract.test.mjs tests/sandbox-runtime.test.mjs tests/sandbox-properties.test.mjs tests/api-contract.test.mjs tests/semgrep-contract.test.mjs",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern output --ignore-pattern test-results",
     "db:generate": "drizzle-kit generate",

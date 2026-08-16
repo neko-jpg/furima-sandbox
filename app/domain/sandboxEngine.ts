@@ -376,6 +376,21 @@ export class SandboxEngine {
       correlationId,
     } satisfies DomainEvent));
     this.state.events = [...this.state.events.slice(-499), ...events];
+    if (events.length && this.eventSubscribers.size) {
+      const subscribers = [...this.eventSubscribers];
+      for (const event of events) {
+        const eventSnapshot = clone(event);
+        queueMicrotask(() => {
+          for (const subscriber of subscribers) {
+            try {
+              subscriber(clone(eventSnapshot));
+            } catch {
+              // A subscriber must never roll back or corrupt committed domain state.
+            }
+          }
+        });
+      }
+    }
     return events;
   }
 
