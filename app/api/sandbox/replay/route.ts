@@ -63,9 +63,15 @@ export async function POST(request: Request): Promise<Response> {
       if (!result.ok) return failure('REPLAY_FAILED', 422, { actionIndex: index, command, result, results, state: statePayloadFor(engine) });
     }
     const commands = await replayStore.listCommands(id);
-    if (!existing || !commands.length) {
+    if (!existing) {
       const initialWrite = await store.put(baseRecord, undefined, true);
       if (!initialWrite.ok) return failure(initialWrite.error === 'CONFLICT' ? 'STATE_CONFLICT' : 'D1_UNAVAILABLE', initialWrite.error === 'CONFLICT' ? 409 : 503, { actualStateVersion: initialWrite.actualStateVersion, retryable: initialWrite.error === 'UNAVAILABLE' });
+    } else if (!commands.length) {
+      // An empty replay may still carry baseState. Persist it with CAS against
+      // the version observed above instead of force-writing over a concurrent
+      // command that landed while this request was preparing the replay.
+      const guardedWrite = await store.put(baseRecord, existing.stateVersion);
+      if (!guardedWrite.ok) return failure(guardedWrite.error === 'CONFLICT' ? 'STATE_CONFLICT' : 'D1_UNAVAILABLE', guardedWrite.error === 'CONFLICT' ? 409 : 503, { actualStateVersion: guardedWrite.actualStateVersion, retryable: guardedWrite.error === 'UNAVAILABLE' });
     }
     if (commands.length) {
       const committed = await store.commitReplay(commands, stateRecordFor(id, engine), baseRecord.stateVersion);
