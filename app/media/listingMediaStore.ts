@@ -2,6 +2,7 @@ import type { ListingMediaRef } from '../types/mercari';
 
 const DB_NAME = 'furima-listing-media-v1';
 const STORE_NAME = 'media';
+const DRAFT_STORAGE_KEY = 'furima-listing-drafts-v3';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 1600;
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif']);
@@ -33,6 +34,12 @@ const installPreviewCleanup = (): void => {
   window.addEventListener('pagehide', revokeAll, { once: true });
 };
 
+const resetDatabaseConnection = (): void => {
+  const pending = databasePromise;
+  databasePromise = null;
+  if (pending) void pending.then((database) => database?.close()).catch(() => undefined);
+};
+
 const openDatabase = (): Promise<IDBDatabase | null> => {
   if (!hasIndexedDb()) return Promise.resolve(null);
   if (databasePromise) return databasePromise;
@@ -49,6 +56,9 @@ const openDatabase = (): Promise<IDBDatabase | null> => {
       resolve(request.result);
     };
     request.onerror = () => reject(request.error ?? new Error('indexeddb-open-failed'));
+  });
+  void databasePromise.catch(() => {
+    databasePromise = null;
   });
   return databasePromise;
 };
@@ -74,6 +84,34 @@ const withStore = async <T>(mode: IDBTransactionMode, run: (store: IDBObjectStor
   });
 };
 
+const referencedDraftMediaIds = (): Set<string> => {
+  const referenced = new Set<string>();
+  if (typeof window === 'undefined' || !window.localStorage) return referenced;
+  try {
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || (key !== DRAFT_STORAGE_KEY && !key.startsWith(`${DRAFT_STORAGE_KEY}:`))) continue;
+      const raw = window.localStorage.getItem(key);
+      if (!raw) continue;
+      const drafts = JSON.parse(raw) as unknown;
+      if (!Array.isArray(drafts)) continue;
+      for (const draft of drafts) {
+        if (!draft || typeof draft !== 'object' || !Array.isArray((draft as { media?: unknown }).media)) continue;
+        for (const candidate of (draft as { media: unknown[] }).media) {
+          if (!candidate || typeof candidate !== 'object') continue;
+          const id = (candidate as { id?: unknown }).id;
+          if (typeof id === 'string' && id.startsWith('media_')) referenced.add(id);
+        }
+      }
+    }
+  } catch {
+    // Storage can be unavailable in privacy modes. The caller-provided keep
+    // set remains authoritative in that case, and the age threshold still
+    // prevents aggressive deletion of recent media.
+  }
+  return referenced;
+};
+
 export const createListingMediaId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === 'function') return `media_${globalThis.crypto.randomUUID()}`;
   return `media_${Date.now().toString(36)}_${++fallbackMediaSequence}`;
@@ -82,14 +120,25 @@ export const createListingMediaId = (): string => {
 export const putListingMedia = async (id: string, blob: Blob): Promise<void> => {
   const record: StoredListingMedia = { id, blob, updatedAt: new Date().toISOString() };
   memoryMedia.set(id, record);
-  await withStore('readwrite', (store) => store.put(record));
+  try {
+    await withStore('readwrite', (store) => store.put(record));
+  } catch {
+    // The in-memory copy is a deliberate fallback. Do not turn a successful
+    // local upload into a UI error merely because persistence is unavailable.
+    resetDatabaseConnection();
+  }
 };
 
 export const getListingMedia = async (id: string): Promise<string | null> => {
   installPreviewCleanup();
   const existingPreviewUrl = previewUrls.get(id);
   if (existingPreviewUrl) return existingPreviewUrl;
-  const record = await withStore<StoredListingMedia>('readonly', (store) => store.get(id)).catch(() => null);
+  let record: StoredListingMedia | null = null;
+  try {
+    record = await withStore<StoredListingMedia>('readonly', (store) => store.get(id));
+  } catch {
+    resetDatabaseConnection();
+  }
   const stored = record ?? memoryMedia.get(id);
   if (!stored) return null;
   if (stored.dataUrl) return stored.dataUrl;
@@ -112,9 +161,11 @@ export const deleteListingMediaMany = async (ids: string[]): Promise<void> => {
 };
 
 /**
- * Remove stale media that is no longer referenced by a draft. This is an
- * intentionally conservative sweep: recent records are retained so a draft
- * opened in another tab can still resolve its preview after a reload.
+ * Remove stale media that is no longer referenced by any persisted draft.
+ * The caller supplies its currently loaded references, and this module also
+ * scans every actor-scoped local draft bucket because media storage is global.
+ * Recent records are retained so a draft opened in another tab can still
+ * resolve its preview after a reload.
  */
 export const pruneListingMedia = async (
   keepIds: Iterable<string>,
@@ -122,11 +173,13 @@ export const pruneListingMedia = async (
   now = Date.now(),
 ): Promise<string[]> => {
   const keep = new Set(keepIds);
+  for (const id of referencedDraftMediaIds()) keep.add(id);
   const candidates = new Map<string, StoredListingMedia>(memoryMedia);
   try {
     const persisted = await withStore<StoredListingMedia[]>('readonly', (store) => store.getAll());
     for (const record of persisted ?? []) candidates.set(record.id, record);
   } catch {
+    resetDatabaseConnection();
     // The in-memory map is still safe to sweep when IndexedDB is unavailable.
   }
   const staleIds = [...candidates.values()]
