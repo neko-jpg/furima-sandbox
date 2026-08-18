@@ -22,7 +22,10 @@ let fallbackMediaSequence = 0;
 let previewCleanupInstalled = false;
 const MEDIA_GC_DEFAULT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-const hasIndexedDb = (): boolean => typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
+const hasIndexedDb = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try { return typeof window.indexedDB !== 'undefined'; } catch { return false; }
+};
 
 const installPreviewCleanup = (): void => {
   if (previewCleanupInstalled || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
@@ -86,12 +89,14 @@ const withStore = async <T>(mode: IDBTransactionMode, run: (store: IDBObjectStor
 
 const referencedDraftMediaIds = (): Set<string> => {
   const referenced = new Set<string>();
-  if (typeof window === 'undefined' || !window.localStorage) return referenced;
+  if (typeof window === 'undefined') return referenced;
   try {
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
+    const storage = window.localStorage;
+    if (!storage) return referenced;
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
       if (!key || (key !== DRAFT_STORAGE_KEY && !key.startsWith(`${DRAFT_STORAGE_KEY}:`))) continue;
-      const raw = window.localStorage.getItem(key);
+      const raw = storage.getItem(key);
       if (!raw) continue;
       const drafts = JSON.parse(raw) as unknown;
       if (!Array.isArray(drafts)) continue;
