@@ -39,7 +39,7 @@ export const ProductCard: React.FC<{
   onLike?: (liked: boolean) => void;
   compact?: boolean;
 }> = ({ item, onOpen, onLike, compact = false }) => (
-  <article className={`group relative min-w-0 overflow-hidden border border-[var(--shop-border)] bg-[var(--shop-surface)] transition-transform hover:-translate-y-0.5 hover:border-[#68686f] ${compact ? 'rounded-md' : 'rounded-lg'}`}>
+  <article style={{ contentVisibility: 'auto', containIntrinsicSize: '280px' }} className={`group relative min-w-0 overflow-hidden border border-[var(--shop-border)] bg-[var(--shop-surface)] transition-transform hover:-translate-y-0.5 hover:border-[#68686f] ${compact ? 'rounded-md' : 'rounded-lg'}`}>
     <button type="button" onClick={onOpen} className="block w-full text-left" data-testid={`item-card-${item.id}`}>
       <div className="relative aspect-square overflow-hidden bg-[#3b3b3e]">
         <ShopImage src={item.images[0]} alt={item.title} loading="lazy" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />

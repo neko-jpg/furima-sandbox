@@ -43,7 +43,7 @@ suites:
     tests: ["tests/api-contract.test.mjs", "tests/domain-engine.test.mjs"]
     priority: P0
   - id: interactive-control-audit
-    tests: ["tests/e2e/interactive-controls.spec.mjs"]
+    tests: ["tests/e2e/interactive-controls.spec.mjs", "tests/e2e/accessibility-interactions.spec.mjs"]
     priority: P1
   - id: persistence-boundaries
     tests: ["tests/media-store.test.mjs", "tests/command-bus.test.mjs", "tests/sandbox-command-executor.test.mjs", "tests/sandbox-faults.test.mjs", "tests/worker-contract.test.mjs"]

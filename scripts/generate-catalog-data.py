@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "public/images/products/pexels-selected/manifest.json"
+METADATA = ROOT / "public/images/products/pexels-selected/catalog-metadata.json"
 OUTPUT = ROOT / "app/data/catalogData.ts"
 
 LABELS = {
@@ -295,6 +296,19 @@ SHIPPING_METHODS = ["ゆうゆう配送", "らくらく配送", "ゆうパケッ
 ORIGINS = ["東京都", "大阪府", "神奈川県", "愛知県", "福岡県", "北海道"]
 SHIPPING_SIZES = ["60サイズ", "80サイズ", "100サイズ", "未定"]
 
+REQUIRED_METADATA_FIELDS = (
+    "title",
+    "categoryPath",
+    "productFamilyId",
+    "productFamilyName",
+    "variantId",
+    "variantName",
+    "productType",
+    "searchTags",
+    "attributes",
+    "condition",
+)
+
 
 def stable_value(number: int, minimum: int, maximum: int) -> int:
     return minimum + (number * 7919 % (maximum - minimum + 1))
@@ -316,50 +330,98 @@ def choose_variant(subcategory: str, index: int, pexels_id: int) -> tuple[dict, 
     return family, variant
 
 
+def load_catalog_metadata() -> dict[str, dict]:
+    metadata = json.loads(METADATA.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict):
+        raise SystemExit(f"Catalog metadata must be an object: {METADATA}")
+    for pexels_id, entry in metadata.items():
+        if not isinstance(entry, dict):
+            raise SystemExit(f"Catalog metadata entry {pexels_id} must be an object")
+        missing = [field for field in REQUIRED_METADATA_FIELDS if field not in entry]
+        if missing:
+            raise SystemExit(f"Catalog metadata entry {pexels_id} is missing: {', '.join(missing)}")
+        if not isinstance(entry["categoryPath"], list) or len(entry["categoryPath"]) < 3:
+            raise SystemExit(f"Catalog metadata entry {pexels_id} needs at least 3 category levels")
+        if not all(isinstance(value, str) and value.strip() for value in entry["categoryPath"]):
+            raise SystemExit(f"Catalog metadata entry {pexels_id} has an invalid categoryPath")
+        if not isinstance(entry["searchTags"], list) or not all(isinstance(tag, str) and tag.strip() for tag in entry["searchTags"]):
+            raise SystemExit(f"Catalog metadata entry {pexels_id} has invalid searchTags")
+        if not isinstance(entry["attributes"], dict) or not all(
+            isinstance(key, str) and isinstance(value, str) and key.strip() and value.strip()
+            for key, value in entry["attributes"].items()
+        ):
+            raise SystemExit(f"Catalog metadata entry {pexels_id} has invalid attributes")
+    return {str(pexels_id): entry for pexels_id, entry in metadata.items()}
+
+
 def build_rows() -> list[dict]:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    metadata = load_catalog_metadata()
+    manifest_ids = {str(int(item["pexelsId"])) for item in manifest}
+    missing_metadata = sorted(manifest_ids - set(metadata), key=int)
+    if missing_metadata:
+        raise SystemExit(f"Catalog metadata is missing manifest IDs: {', '.join(missing_metadata)}")
     rows: list[dict] = []
     for index, item in enumerate(manifest, start=1):
         subcategory = item["subcategory"]
-        label = LABELS.get(subcategory, subcategory)
-        minimum, maximum = PRICE_RANGES.get(subcategory, (800, 19800))
         pexels_id = int(item["pexelsId"])
+        manual = metadata[str(pexels_id)]
+        category_path = list(manual["categoryPath"])
+        if category_path[:2] != [item["category"], item["subcategory"]]:
+            raise SystemExit(
+                f"Catalog metadata category mismatch for {pexels_id}: "
+                f"manifest={item['category']}/{item['subcategory']} metadata={category_path[:2]}"
+            )
+        category = category_path[0]
+        subcategory = category_path[1]
+        label = manual["title"]
+        minimum, maximum = PRICE_RANGES.get(subcategory, (800, 19800))
         price = stable_value(pexels_id, minimum, maximum)
         price = max(300, round(price / 100) * 100)
         is_sold = index % 41 == 0
         is_auction = index % 37 == 0 and not is_sold
-        family, variant = choose_variant(subcategory, index, pexels_id)
+        family_id = manual["productFamilyId"]
+        family_name = manual["productFamilyName"]
+        variant_id = manual["variantId"]
+        variant_name = manual["variantName"]
+        product_type = manual["productType"]
         inventory_policy = "MULTI" if index % 11 == 0 and not is_auction else "SINGLE"
         inventory_initial_quantity = 2 + index % 4 if inventory_policy == "MULTI" else 1
         inventory_quantity = 0 if is_sold else inventory_initial_quantity
         seller_index = (index + pexels_id) % len(SELLERS)
         seller_name, seller_avatar, rating, ratings_count = SELLERS[seller_index]
         current_bid = price if is_auction else None
-        attributes = dict(variant["attributes"])
+        attributes = dict(manual["attributes"])
         search_tags = list(dict.fromkeys([
-            item["category"],
+            *category_path,
+            category,
             subcategory,
-            family["name"],
-            family["type"],
-            variant["name"],
-            *variant["tags"],
+            family_name,
+            product_type,
+            variant_name,
+            *manual["searchTags"],
         ]))
         rows.append({
             "id": f"demo-{index:06d}",
             "sku": f"FBS-{index:06d}",
             "image": item["localPath"],
-            "category": item["category"],
+            "category": category,
             "subcategory": subcategory,
-            "label": f"{family['name']}・{variant['name']}",
-            "productFamilyId": family["id"],
-            "productFamilyName": family["name"],
-            "variantId": f"{family['id']}-{variant['id']}",
-            "variantName": variant["name"],
-            "productType": family["type"],
+            "categoryPath": category_path,
+            "label": label,
+            "title": manual["title"],
+            "productFamilyId": family_id,
+            "productFamilyName": family_name,
+            "variantId": variant_id,
+            "variantName": variant_name,
+            "productType": product_type,
             "searchTags": search_tags,
             "attributes": attributes,
+            "brand": manual.get("brand"),
+            "size": manual.get("size"),
+            "color": manual.get("color") or manual["attributes"].get("カラー"),
             "price": price,
-            "condition": CONDITIONS[(index + pexels_id) % len(CONDITIONS)],
+            "condition": manual["condition"],
             "shippingMethod": SHIPPING_METHODS[index % len(SHIPPING_METHODS)],
             "origin": ORIGINS[index % len(ORIGINS)],
             "shippingDays": ["1〜2日で発送", "2〜3日で発送", "4〜7日で発送"][index % 3],
@@ -372,7 +434,9 @@ def build_rows() -> list[dict]:
             "likesCount": (index * 11 + pexels_id) % 96,
             "viewsCount": (index * 43 + pexels_id) % 900 + 40,
             "sellerName": seller_name,
-            "sellerAvatar": f"https://images.unsplash.com/{seller_avatar}?auto=format&fit=crop&w=160&q=80",
+            # Keep the runtime self-contained. Seller avatars are decorative;
+            # product photos are the curated local Pexels assets.
+            "sellerAvatar": "/favicon.svg",
             "rating": rating,
             "ratingsCount": ratings_count,
             "sellerType": "shop" if index % 5 == 0 else "individual",
@@ -390,7 +454,7 @@ def build_rows() -> list[dict]:
 def main() -> int:
     rows = build_rows()
     payload = json.dumps(rows, ensure_ascii=False, indent=2)
-    output = f'''/* Generated from public/images/products/pexels-selected/manifest.json. Do not edit by hand. */
+    output = f'''/* Generated from manifest.json and catalog-metadata.json. Do not edit by hand. */
 import type {{ MercariItem, ProductFamily, ProductVariant }} from '../types/mercari';
 
 interface CatalogSeed {{
@@ -399,7 +463,9 @@ interface CatalogSeed {{
   image: string;
   category: string;
   subcategory: string;
+  categoryPath: string[];
   label: string;
+  title: string;
   productFamilyId: string;
   productFamilyName: string;
   variantId: string;
@@ -407,6 +473,9 @@ interface CatalogSeed {{
   productType: string;
   searchTags: string[];
   attributes: Record<string, string>;
+  brand: string | null;
+  size: string | null;
+  color: string | null;
   price: number;
   condition: string;
   shippingMethod: string;
@@ -454,7 +523,7 @@ export const CATALOG_VARIANTS: ProductVariant[] = Array.from(new Map(CATALOG_SEE
 export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({{
   id: seed.id,
   sku: seed.sku,
-  title: `${{seed.label}} デモ出品 #${{seed.id.replace('demo-', '')}}`,
+  title: `${{seed.title}} デモ出品 #${{seed.id.replace('demo-', '')}}`,
   price: seed.price,
   images: [seed.image],
   isSold: seed.isSold,
@@ -462,8 +531,8 @@ export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({{
   currentBid: seed.currentBid ?? undefined,
   bidsCount: seed.bidsCount ?? undefined,
   timeLeft: seed.timeLeft ?? undefined,
-  description: `${{seed.label}}のデモ出品です。商品ファミリー「${{seed.productFamilyName}}」、バリエーション「${{seed.variantName}}」として検索・在庫操作を確認できます。属性は操作確認用の仮データで、画像から実物の仕様・ブランド・状態を保証するものではありません。決済・発送は発生しないサンドボックス商品です。`,
-  category: [seed.category, seed.subcategory],
+  description: `${{seed.title}}のデモ出品です。カテゴリー「${{seed.categoryPath.join(' / ')}}」、商品ファミリー「${{seed.productFamilyName}}」、バリエーション「${{seed.variantName}}」として検索・在庫操作を確認できます。属性は操作確認用の仮データで、画像から実物の仕様・ブランド・状態を保証するものではありません。決済・発送は発生しないサンドボックス商品です。`,
+  category: seed.categoryPath,
   productFamilyId: seed.productFamilyId,
   productFamilyName: seed.productFamilyName,
   variantId: seed.variantId,
@@ -471,6 +540,9 @@ export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({{
   productType: seed.productType,
   searchTags: seed.searchTags,
   attributes: seed.attributes,
+  brand: seed.brand ?? undefined,
+  size: seed.size ?? undefined,
+  color: seed.color ?? undefined,
   condition: seed.condition,
   shippingFee: '送料込み（出品者負担）',
   shippingMethod: seed.shippingMethod,
@@ -504,6 +576,7 @@ export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({{
   sourceChecksum: seed.sourceChecksum,
 }}));
 
+export const FEATURED_CATALOG_ITEM_ID = CATALOG_ITEMS.find((item) => item.searchTags?.includes('Intel Core i5'))?.id ?? CATALOG_ITEMS[0]?.id ?? '';
 export const CATALOG_ITEM_COUNT = CATALOG_ITEMS.length;
 '''
     OUTPUT.write_text(output, encoding="utf-8")

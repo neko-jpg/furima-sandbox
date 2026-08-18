@@ -22,7 +22,7 @@ test('Browser API preview is read-only and commit is idempotent', async ({ page 
   expect(result.ok, JSON.stringify(result)).toBe(true);
   expect(result.afterPreviewVersion).toBe(result.beforeVersion);
   expect(result.preview?.meta?.mode).toBe('preview');
-  expect(result.preview?.data?.sandboxId).toBe('furima-demo');
+  expect(result.preview?.data?.sandboxId).toBe(result.preview?.meta?.sandboxId);
   expect(result.committed?.ok).toBe(true);
   expect(result.committed?.meta?.mode).toBe('commit');
   expect(result.repeated).toEqual(result.committed);

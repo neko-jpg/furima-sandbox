@@ -10,10 +10,12 @@ import type {
 import { MemorySandboxStateStore } from './sandboxStore.ts';
 
 const DATABASE_NAME = 'furima-sandbox-state-v1';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STATES_STORE = 'states';
 const COMMANDS_STORE = 'commands';
 const PREVIEWS_STORE = 'previews';
+const COMMAND_SANDBOX_INDEX = 'sandbox_created_at';
+const PREVIEW_SANDBOX_INDEX = 'sandbox_created_at';
 
 type StoredCommand = SandboxCommandRecord & { key: string };
 type StoredPreview = SandboxPreviewRecord & { key: string };
@@ -115,9 +117,9 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
 
   public async put(record: SandboxStateRecord, expectedStateVersion?: number, force = false): Promise<SandboxStoreWriteResult> {
     const injected = this.consumeIndexedDbFailure('indexeddb-quota-exceeded', 'corrupted-state');
-    if (injected) return this.fallback.put(record, expectedStateVersion, force);
+    if (injected) return this.volatileStateResult(await this.fallback.put(record, expectedStateVersion, force));
     const database = await this.database();
-    if (!database) return this.fallback.put(record, expectedStateVersion, force);
+    if (!database) return this.volatileStateResult(await this.fallback.put(record, expectedStateVersion, force));
     try {
       const transaction = database.transaction(STATES_STORE, 'readwrite');
       const store = transaction.objectStore(STATES_STORE);
@@ -133,10 +135,10 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
       }
       store.put({ ...record });
       await transactionResult(transaction);
-      return { ok: true, record: { ...record } };
+      return { ok: true, record: { ...record }, durability: 'persistent' };
     } catch (error) {
       this.fallbackFrom(error);
-      return this.fallback.put(record, expectedStateVersion, force);
+      return this.volatileStateResult(await this.fallback.put(record, expectedStateVersion, force));
     }
   }
 
@@ -159,7 +161,11 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
     if (!database) return this.fallback.listCommands(sandboxId);
     try {
       const transaction = database.transaction(COMMANDS_STORE, 'readonly');
-      const rows = await requestResult(transaction.objectStore(COMMANDS_STORE).getAll()) as StoredCommand[];
+      const store = transaction.objectStore(COMMANDS_STORE);
+      const source = store.indexNames.contains(COMMAND_SANDBOX_INDEX)
+        ? store.index(COMMAND_SANDBOX_INDEX).getAll(IDBKeyRange.bound([sandboxId, ''], [sandboxId, '\uffff']))
+        : store.getAll();
+      const rows = await requestResult(source) as StoredCommand[];
       return rows.filter((row) => row.sandboxId === sandboxId).map(commandRecordFromStored);
     } catch (error) {
       this.fallbackFrom(error);
@@ -186,7 +192,11 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
     if (!database) return this.fallback.listPreviews(sandboxId);
     try {
       const transaction = database.transaction(PREVIEWS_STORE, 'readonly');
-      const rows = await requestResult(transaction.objectStore(PREVIEWS_STORE).getAll()) as StoredPreview[];
+      const store = transaction.objectStore(PREVIEWS_STORE);
+      const source = store.indexNames.contains(PREVIEW_SANDBOX_INDEX)
+        ? store.index(PREVIEW_SANDBOX_INDEX).getAll(IDBKeyRange.bound([sandboxId, ''], [sandboxId, '\uffff']))
+        : store.getAll();
+      const rows = await requestResult(source) as StoredPreview[];
       return rows.filter((row) => row.sandboxId === sandboxId).map(previewRecordFromStored);
     } catch (error) {
       this.fallbackFrom(error);
@@ -194,11 +204,11 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
     }
   }
 
-  public async putPreview(record: SandboxPreviewRecord): Promise<{ ok: true } | { ok: false; error: 'UNAVAILABLE' | 'CONFLICT' }> {
+  public async putPreview(record: SandboxPreviewRecord): Promise<{ ok: true; durability?: 'persistent' | 'volatile' } | { ok: false; error: 'UNAVAILABLE' | 'CONFLICT' }> {
     const injected = this.consumeIndexedDbFailure('indexeddb-quota-exceeded', 'corrupted-state');
-    if (injected) return this.fallback.putPreview(record);
+    if (injected) return this.volatilePreviewResult(await this.fallback.putPreview(record));
     const database = await this.database();
-    if (!database) return this.fallback.putPreview(record);
+    if (!database) return this.volatilePreviewResult(await this.fallback.putPreview(record));
     try {
       const transaction = database.transaction(PREVIEWS_STORE, 'readwrite');
       const store = transaction.objectStore(PREVIEWS_STORE);
@@ -208,21 +218,101 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
         transaction.abort();
         return { ok: false, error: 'CONFLICT' };
       }
-      store.put({ ...record, key });
+      if (!existing) store.add({ ...record, key });
       await transactionResult(transaction);
-      return { ok: true };
+      return { ok: true, durability: 'persistent' };
     } catch (error) {
       this.fallbackFrom(error);
       const fallbackResult = await this.fallback.putPreview(record);
-      return fallbackResult.ok ? { ok: true } : fallbackResult;
+      return this.volatilePreviewResult(fallbackResult);
+    }
+  }
+
+  public async putPreviewAndCommand(preview: SandboxPreviewRecord, command: SandboxCommandRecord, state: SandboxStateRecord, expectedStateVersion: number): Promise<SandboxCommandWriteResult> {
+    const injected = this.consumeIndexedDbFailure('indexeddb-quota-exceeded', 'corrupted-state');
+    if (injected) return this.volatileCommandResult(await this.fallback.putPreviewAndCommand(preview, command, state, expectedStateVersion));
+    const database = await this.database();
+    if (!database) return this.volatileCommandResult(await this.fallback.putPreviewAndCommand(preview, command, state, expectedStateVersion));
+    try {
+      const transaction = database.transaction([STATES_STORE, COMMANDS_STORE, PREVIEWS_STORE], 'readwrite');
+      const stateStore = transaction.objectStore(STATES_STORE);
+      const commandStore = transaction.objectStore(COMMANDS_STORE);
+      const previewStore = transaction.objectStore(PREVIEWS_STORE);
+      const idempotencyKey = command.idempotencyKey ?? command.operationId;
+      const commandKey = keyFor(command.sandboxId, idempotencyKey);
+      const previewKey = keyFor(preview.sandboxId, preview.previewId);
+      const [existingCommand, existingState, existingPreview] = await Promise.all([
+        requestResult(commandStore.get(commandKey)) as Promise<StoredCommand | undefined>,
+        requestResult(stateStore.get(state.id)) as Promise<SandboxStateRecord | undefined>,
+        requestResult(previewStore.get(previewKey)) as Promise<StoredPreview | undefined>,
+      ]);
+      if (existingCommand) {
+        const record = commandRecordFromStored(existingCommand);
+        if (record.payloadHash !== command.payloadHash || record.command !== command.command || record.mode !== command.mode) { transaction.abort(); return { ok: false, error: 'IDEMPOTENCY_CONFLICT', existing: record }; }
+        transaction.abort();
+        return { ok: true, record, duplicate: true, durability: 'persistent' };
+      }
+      if (existingPreview && existingPreview.payloadHash !== preview.payloadHash) { transaction.abort(); return { ok: false, error: 'IDEMPOTENCY_CONFLICT' }; }
+      const actualStateVersion = existingState?.stateVersion ?? 0;
+      if (actualStateVersion !== expectedStateVersion) { transaction.abort(); return { ok: false, error: 'CONFLICT', actualStateVersion }; }
+      if (!existingPreview) previewStore.add({ ...preview, key: previewKey });
+      stateStore.put({ ...state });
+      commandStore.put({ ...command, key: commandKey });
+      await transactionResult(transaction);
+      return { ok: true, record: { ...command }, durability: 'persistent' };
+    } catch (error) {
+      this.fallbackFrom(error);
+      return { ok: false, error: 'UNAVAILABLE' };
+    }
+  }
+
+  public async commitReplay(commands: SandboxCommandRecord[], state: SandboxStateRecord, expectedStateVersion: number): Promise<SandboxCommandWriteResult> {
+    if (!commands.length) return { ok: false, error: 'UNAVAILABLE' };
+    const injected = this.consumeIndexedDbFailure('indexeddb-quota-exceeded', 'corrupted-state');
+    if (injected) return { ok: false, error: 'UNAVAILABLE' };
+    const database = await this.database();
+    if (!database) return { ok: false, error: 'UNAVAILABLE' };
+    try {
+      const transaction = database.transaction([STATES_STORE, COMMANDS_STORE], 'readwrite');
+      const stateStore = transaction.objectStore(STATES_STORE);
+      const commandStore = transaction.objectStore(COMMANDS_STORE);
+      const [existingState, existingCommands] = await Promise.all([
+        requestResult(stateStore.get(state.id)) as Promise<SandboxStateRecord | undefined>,
+        Promise.all(commands.map((command) => requestResult(commandStore.get(keyFor(command.sandboxId, command.idempotencyKey ?? command.operationId))) as Promise<StoredCommand | undefined>)),
+      ]);
+      const actualStateVersion = existingState?.stateVersion ?? 0;
+      if (actualStateVersion !== expectedStateVersion) { transaction.abort(); return { ok: false, error: 'CONFLICT', actualStateVersion }; }
+      let existingCount = 0;
+      let firstExisting: SandboxCommandRecord | undefined;
+      for (let index = 0; index < existingCommands.length; index += 1) {
+        const stored = existingCommands[index];
+        if (!stored) continue;
+        const existing = commandRecordFromStored(stored);
+        existingCount += 1;
+        firstExisting ??= existing;
+        const command = commands[index];
+        if (existing.payloadHash !== command.payloadHash || existing.command !== command.command || existing.mode !== command.mode) {
+          transaction.abort();
+          return { ok: false, error: 'IDEMPOTENCY_CONFLICT', existing };
+        }
+      }
+      if (existingCount === commands.length) { transaction.abort(); return { ok: true, record: { ...commands.at(-1)! }, duplicate: true }; }
+      if (existingCount > 0) { transaction.abort(); return { ok: false, error: 'IDEMPOTENCY_CONFLICT', existing: firstExisting }; }
+      commands.forEach((command) => commandStore.add({ ...command, key: keyFor(command.sandboxId, command.idempotencyKey ?? command.operationId) }));
+      stateStore.put({ ...state });
+      await transactionResult(transaction);
+      return { ok: true, record: { ...commands.at(-1)! } };
+    } catch (error) {
+      this.fallbackFrom(error);
+      return { ok: false, error: 'UNAVAILABLE' };
     }
   }
 
   public async commitCommand(command: SandboxCommandRecord, state: SandboxStateRecord, expectedStateVersion: number, previewId?: string): Promise<SandboxCommandWriteResult> {
     const injected = this.consumeIndexedDbFailure('indexeddb-quota-exceeded', 'corrupted-state');
-    if (injected) return this.fallback.commitCommand(command, state, expectedStateVersion, previewId);
+    if (injected) return this.volatileCommandResult(await this.fallback.commitCommand(command, state, expectedStateVersion, previewId));
     const database = await this.database();
-    if (!database) return this.fallback.commitCommand(command, state, expectedStateVersion, previewId);
+    if (!database) return this.volatileCommandResult(await this.fallback.commitCommand(command, state, expectedStateVersion, previewId));
     try {
       const transaction = database.transaction([STATES_STORE, COMMANDS_STORE, PREVIEWS_STORE], 'readwrite');
       const stateStore = transaction.objectStore(STATES_STORE);
@@ -242,7 +332,7 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
           return { ok: false, error: 'IDEMPOTENCY_CONFLICT', existing: { ...record } };
         }
         transaction.abort();
-        return { ok: true, record: { ...record }, duplicate: true };
+        return { ok: true, record: { ...record }, duplicate: true, durability: 'persistent' };
       }
       const actualStateVersion = existingState?.stateVersion ?? 0;
       if (actualStateVersion !== expectedStateVersion) {
@@ -257,17 +347,40 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
       commandStore.put({ ...command, key: commandKey });
       if (existingPreview && previewId) previewStore.put({ ...existingPreview, status: 'COMMITTED', committedOperationId: command.operationId });
       await transactionResult(transaction);
-      return { ok: true, record: { ...command } };
+      return { ok: true, record: { ...command }, durability: 'persistent' };
     } catch (error) {
       this.fallbackFrom(error);
-      return this.fallback.commitCommand(command, state, expectedStateVersion, previewId);
+      return this.volatileCommandResult(await this.fallback.commitCommand(command, state, expectedStateVersion, previewId));
+    }
+  }
+
+  public async purgeExpired(now: string): Promise<void> {
+    const database = await this.database();
+    if (!database) {
+      await this.fallback.purgeExpired(now);
+      return;
+    }
+    try {
+      const transaction = database.transaction([COMMANDS_STORE, PREVIEWS_STORE], 'readwrite');
+      const commandStore = transaction.objectStore(COMMANDS_STORE);
+      const previewStore = transaction.objectStore(PREVIEWS_STORE);
+      const [commands, previews] = await Promise.all([
+        requestResult(commandStore.getAll()) as Promise<StoredCommand[]>,
+        requestResult(previewStore.getAll()) as Promise<StoredPreview[]>,
+      ]);
+      commands.filter((record) => record.expiresAt <= now).forEach((record) => commandStore.delete(record.key));
+      previews.filter((record) => record.retentionExpiresAt <= now).forEach((record) => previewStore.delete(record.key));
+      await transactionResult(transaction);
+    } catch (error) {
+      this.fallbackFrom(error);
+      await this.fallback.purgeExpired(now);
     }
   }
 
   public async clear(sandboxId?: string): Promise<void> {
     const database = await this.database();
     if (!database) {
-      this.fallback.clear();
+      this.fallback.clear(sandboxId);
       return;
     }
     try {
@@ -289,13 +402,14 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
       await transactionResult(transaction);
     } catch (error) {
       this.fallbackFrom(error);
-      this.fallback.clear();
+      this.fallback.clear(sandboxId);
     }
   }
 
   private async database(): Promise<IDBDatabase | null> {
     if (this.databasePromise) return this.databasePromise;
     this.databasePromise = new Promise((resolve) => {
+      let settled = false;
       if (this.faultPoint === 'indexeddb-unavailable') {
         this.faultPoint = null;
         this.recordFailure('UNAVAILABLE');
@@ -318,20 +432,31 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
       request.onupgradeneeded = () => {
         const database = request.result;
         if (!database.objectStoreNames.contains(STATES_STORE)) database.createObjectStore(STATES_STORE, { keyPath: 'id' });
-        if (!database.objectStoreNames.contains(COMMANDS_STORE)) database.createObjectStore(COMMANDS_STORE, { keyPath: 'key' });
-        if (!database.objectStoreNames.contains(PREVIEWS_STORE)) database.createObjectStore(PREVIEWS_STORE, { keyPath: 'key' });
+        const commands = database.objectStoreNames.contains(COMMANDS_STORE) ? request.transaction?.objectStore(COMMANDS_STORE) : database.createObjectStore(COMMANDS_STORE, { keyPath: 'key' });
+        const previews = database.objectStoreNames.contains(PREVIEWS_STORE) ? request.transaction?.objectStore(PREVIEWS_STORE) : database.createObjectStore(PREVIEWS_STORE, { keyPath: 'key' });
+        if (commands && !commands.indexNames.contains(COMMAND_SANDBOX_INDEX)) commands.createIndex(COMMAND_SANDBOX_INDEX, ['sandboxId', 'createdAt'], { unique: false });
+        if (previews && !previews.indexNames.contains(PREVIEW_SANDBOX_INDEX)) previews.createIndex(PREVIEW_SANDBOX_INDEX, ['sandboxId', 'createdAt'], { unique: false });
       };
       request.onsuccess = () => {
         const database = request.result;
+        if (settled) {
+          database.close();
+          return;
+        }
+        settled = true;
         database.onversionchange = () => database.close();
         this.diagnostic = { ...this.diagnostic, backend: 'indexeddb', ready: true, fallbackReason: undefined };
         resolve(database);
       };
       request.onerror = () => {
+        if (settled) return;
+        settled = true;
         this.fallbackFrom(request.error);
         resolve(null);
       };
       request.onblocked = () => {
+        if (settled) return;
+        settled = true;
         this.fallbackFrom(new Error('IndexedDB version change blocked'));
         resolve(null);
       };
@@ -355,6 +480,18 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
     const reason = point === 'indexeddb-quota-exceeded' ? 'QUOTA_EXCEEDED' : 'CORRUPTED';
     this.recordFailure(reason);
     return reason;
+  }
+
+  private volatileStateResult(result: SandboxStoreWriteResult): SandboxStoreWriteResult {
+    return result.ok ? { ...result, durability: 'volatile' } : result;
+  }
+
+  private volatileCommandResult(result: SandboxCommandWriteResult): SandboxCommandWriteResult {
+    return result.ok ? { ...result, durability: 'volatile' } : result;
+  }
+
+  private volatilePreviewResult(result: { ok: true; durability?: 'persistent' | 'volatile' } | { ok: false; error: 'UNAVAILABLE' | 'CONFLICT' }): typeof result {
+    return result.ok ? { ...result, durability: 'volatile' } : result;
   }
 }
 

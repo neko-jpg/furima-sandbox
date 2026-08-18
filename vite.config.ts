@@ -45,7 +45,7 @@ export default defineConfig(async () => {
 
   return {
     define: {
-      __FURIMA_D1_ENABLED__: JSON.stringify(Boolean(d1)),
+      __FURIMA_ENABLE_SANDBOX_INSPECTOR__: JSON.stringify(process.env.NODE_ENV !== "production" || process.env.VITE_ENABLE_SANDBOX_INSPECTOR === "true"),
     },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }

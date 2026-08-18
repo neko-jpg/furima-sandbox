@@ -3,6 +3,7 @@
 import React from 'react';
 import { ArrowRight, Camera, Search, ShoppingBag } from 'lucide-react';
 import { useMercari } from '../context/MercariContext';
+import { FEATURED_CATALOG_ITEM_ID } from '../data/catalogData';
 
 export const DemoGuide: React.FC = () => {
   const { setSearchQuery, setIsSearchOpen, openItem, navigateToTab } = useMercari();
@@ -19,7 +20,7 @@ export const DemoGuide: React.FC = () => {
         <button type="button" onClick={openSearch} className="inline-flex items-center gap-1 rounded-full border border-[#45454a] px-2.5 py-1.5 font-bold text-white transition-colors hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)]">
           <Search className="h-3.5 w-3.5" />検索
         </button>
-        <button type="button" onClick={() => openItem('pc-2')} className="inline-flex items-center gap-1 rounded-full border border-[#45454a] px-2.5 py-1.5 font-bold text-white transition-colors hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)]">
+        <button type="button" onClick={() => openItem(FEATURED_CATALOG_ITEM_ID)} className="inline-flex items-center gap-1 rounded-full border border-[#45454a] px-2.5 py-1.5 font-bold text-white transition-colors hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)]">
           <ShoppingBag className="h-3.5 w-3.5" />商品詳細・購入確認
         </button>
         <button type="button" onClick={() => navigateToTab('sell')} className="inline-flex items-center gap-1 rounded-full border border-[#45454a] px-2.5 py-1.5 font-bold text-white transition-colors hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)]">

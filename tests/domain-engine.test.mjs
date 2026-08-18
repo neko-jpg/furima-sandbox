@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SandboxEngine } from "../app/domain/sandboxEngine.ts";
+import { SandboxEngine, createTrustedPrincipal } from "../app/domain/sandboxEngine.ts";
 import { filterCatalogItems, searchCatalogItems } from "../app/components/searchUtils.ts";
 
 const seller = { name: "Sandbox Seller", avatar: "/images/favicon.svg", rating: 5, ratingsCount: 10, isVerified: true };
-const controlOptions = { actorId: "platform", scope: "sandbox-control" };
+const controlOptions = { principal: createTrustedPrincipal({ subjectId: "test-control", actorId: "platform", roles: ["platform"], scopes: ["sandbox-control", "operator"] }) };
 
 const makeItem = (overrides = {}) => ({
   id: "item-basic",
@@ -191,6 +191,7 @@ test("shipping cancellation is a request and never refunds in-transit stock imme
   if (!confirmed.ok) return;
   assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   assert.equal(engine.shipOrder(confirmed.data.transactionId).ok, true);
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
   const requested = engine.cancelOrder(confirmed.data.transactionId, "配送中のため問い合わせ", { actorId: "buyer_01" });
   assert.equal(requested.ok, true);
   assert.equal(engine.getSnapshot().transactions[0]?.status, "CANCEL_REQUESTED");
@@ -294,6 +295,7 @@ test("auction outbid notifications and expiry are deterministic", () => {
   assert.equal(auctionTransaction?.status, "AWAITING_SHIPMENT");
   assert.equal(engine.getItem(auctionItem.id)?.isSold, true);
   assert.equal(engine.getSnapshot().payments.some((payment) => payment.transactionId === auctionTransaction?.id && payment.status === "CAPTURED"), true);
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
   const afterEnd = engine.placeBid(auctionItem.id, firstAmount + 300, { actorId: "buyer_01" });
   assert.equal(afterEnd.ok, false);
   assert.equal(afterEnd.error, "AUCTION_ENDED");
@@ -357,6 +359,7 @@ test("presentation updates cannot overwrite reserved inventory state", () => {
 
 test("listing drafts are owned by their creating actor", () => {
   const engine = createEngine();
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   const draft = engine.createListingDraft({
     title: "Draft item",
     description: "A valid sandbox listing",
@@ -368,7 +371,9 @@ test("listing drafts are owned by their creating actor", () => {
   }, { actorId: "seller_01" });
   assert.equal(draft.ok, true);
   if (!draft.ok) return;
-   assert.equal(engine.submitListing(draft.data.draftId, { actorId: "buyer_01" }).error, "FORBIDDEN");
+   assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+   assert.equal(engine.submitListing(draft.data.draftId).error, "FORBIDDEN");
+   assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
    assert.equal(engine.submitListing(draft.data.draftId, { actorId: "seller_01" }).ok, true);
    assert.deepEqual(engine.assertInvariants(), []);
 });
@@ -486,6 +491,31 @@ test("sandbox control commands reject ordinary actors", () => {
   assert.equal(engine.loadScenario("multi_inventory", { actorId: "buyer_01" }).error, "FORBIDDEN");
 });
 
+test("actorId and sandbox-control scope fields cannot forge a trusted principal", () => {
+  const engine = createEngine();
+  const forged = { actorId: "platform", scope: "sandbox-control" };
+  assert.equal(engine.switchActor("seller_01", forged).error, "FORBIDDEN");
+  assert.equal(engine.advanceClock(1, forged).error, "FORBIDDEN");
+  assert.equal(engine.importState(engine.exportState(), forged).error, "FORBIDDEN");
+});
+
+test("state import is monotonic and invalid inventory edits are rejected without mutation", () => {
+  const engine = createEngine();
+  assert.equal(engine.advanceClock(1, controlOptions).ok, true);
+  const beforeVersion = engine.getStateVersion();
+  const stale = JSON.parse(engine.exportState());
+  stale.stateVersion = beforeVersion - 1;
+  assert.equal(engine.importState(JSON.stringify(stale), controlOptions).error, "STATE_CONFLICT");
+  assert.equal(engine.getStateVersion(), beforeVersion);
+
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  const beforeItem = engine.getItem("item-basic");
+  const invalid = engine.updateListing("item-basic", { inventoryQuantity: -1 }, { actorId: "seller_01" });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error, "INVALID_INPUT");
+  assert.deepEqual(engine.getItem("item-basic"), beforeItem);
+});
+
 test("a cancellation request cannot be converted into a second automatic refund", () => {
   const engine = createEngine();
   const started = engine.startPurchase("item-basic", { actorId: "buyer_01" });
@@ -494,9 +524,11 @@ test("a cancellation request cannot be converted into a second automatic refund"
   const confirmed = engine.confirmPurchase(started.data.purchaseIntentId, { actorId: "buyer_01" });
   assert.equal(confirmed.ok, true);
   if (!confirmed.ok) return;
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   assert.equal(engine.shipOrder(confirmed.data.transactionId, { actorId: "seller_01" }).ok, true);
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
   assert.equal(engine.cancelOrder(confirmed.data.transactionId, "配送後の返送相談", { actorId: "buyer_01" }).ok, true);
-  const repeated = engine.cancelOrder(confirmed.data.transactionId, "二重申請", { actorId: "buyer_01" });
+  const repeated = engine.cancelOrder(confirmed.data.transactionId, "二重申請");
   assert.equal(repeated.ok, false);
   assert.equal(repeated.error, "INVALID_TRANSITION");
   assert.equal(engine.getSnapshot().payments[0]?.status, "CAPTURED");
@@ -512,11 +544,15 @@ test("approved cancellation restores only its committed unit and preserves other
   assert.equal(first.ok, true);
   if (!first.ok) return;
   assert.equal(engine.confirmPurchase(first.data.purchaseIntentId, { actorId: "buyer_01" }).ok, true);
+  assert.equal(engine.switchActor("buyer_02", controlOptions).ok, true);
   const second = engine.startPurchase(itemId, { actorId: "buyer_02" });
   assert.equal(second.ok, true);
-  assert.equal(engine.shipOrder(first.data.transactionId, { actorId: "seller_01" }).ok, true);
-  assert.equal(engine.cancelOrder(first.data.transactionId, "返送相談", { actorId: "buyer_01" }).ok, true);
-  assert.equal(engine.resolveCancellation(first.data.transactionId, true, { actorId: "admin_01" }).ok, true);
+   assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+   assert.equal(engine.shipOrder(first.data.transactionId).ok, true);
+   assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+   assert.equal(engine.cancelOrder(first.data.transactionId, "返送相談").ok, true);
+   assert.equal(engine.switchActor("admin_01", controlOptions).ok, true);
+   assert.equal(engine.resolveCancellation(first.data.transactionId, true).ok, true);
   assert.equal(engine.getItem(itemId)?.inventoryQuantity, 5);
   assert.equal(engine.getItem(itemId)?.reservedQuantity, 1);
   assert.equal(second.ok && engine.getSnapshot().purchaseIntents.find((intent) => intent.id === second.data.purchaseIntentId)?.status, "ACTIVE");
@@ -565,13 +601,15 @@ test("state import rejects orphaned aggregate references", () => {
 
 test("held listings require operator moderation and buyers cannot publish as seller_01", () => {
   const engine = createEngine();
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   const buyerListing = engine.listItem({ title: "Buyer listing", description: "商品説明", price: 1000, category: ["その他"], condition: "新品", shippingMethod: "配送" }, { actorId: "buyer_01" });
   assert.equal(buyerListing.error, "FORBIDDEN");
   const held = engine.listItem({ title: "審査待ち", description: "商品説明", price: 1000, category: ["その他"], condition: "新品", shippingMethod: "配送" }, { actorId: "seller_01" });
   assert.equal(held.ok, true);
   if (!held.ok) return;
   assert.equal(held.data.listingStatus, "HELD");
-  const approved = engine.reviewListing(held.data.id, true, { actorId: "admin_01" });
+  assert.equal(engine.switchActor("admin_01", controlOptions).ok, true);
+  const approved = engine.reviewListing(held.data.id, true);
   assert.equal(approved.ok, true);
   assert.equal(approved.ok && approved.data.listingStatus, "ACTIVE");
   assert.deepEqual(engine.assertInvariants(), []);
@@ -604,35 +642,89 @@ test("returns, return receipt, messages, and support tickets follow actor permis
   const confirmed = engine.confirmPurchase(started.data.purchaseIntentId, { actorId: "buyer_01" });
   assert.equal(confirmed.ok, true);
   if (!confirmed.ok) return;
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   assert.equal(engine.shipOrder(confirmed.data.transactionId, { actorId: "seller_01" }).ok, true);
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
   assert.equal(engine.markDelivered(confirmed.data.transactionId, { actorId: "buyer_01" }).ok, true);
   const message = engine.sendTransactionMessage(confirmed.data.transactionId, "返品について相談したいです", { actorId: "buyer_01" });
   assert.equal(message.ok, true);
   const returned = engine.requestReturn(confirmed.data.transactionId, "商品説明と状態が異なりました", { actorId: "buyer_01" });
   assert.equal(returned.ok, true);
-  assert.equal(engine.resolveCancellation(confirmed.data.transactionId, true, { actorId: "admin_01" }).ok, true);
+   assert.equal(engine.switchActor("admin_01", controlOptions).ok, true);
+   assert.equal(engine.resolveCancellation(confirmed.data.transactionId, true).ok, true);
+   assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+   const received = engine.confirmReturnReceived(confirmed.data.transactionId, { actorId: "seller_01" });
+  assert.equal(received.ok, true);
+  if (!received.ok) return;
+   assert.equal(received.data.status, "REFUND_COMPLETED");
+   assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+   const ticket = engine.createSupportTicket({ transactionId: confirmed.data.transactionId, category: "TRANSACTION", subject: "返品の確認", body: "返品処理の確認をお願いします", evidence: [] }, { actorId: "buyer_01" });
+  assert.equal(ticket.ok, true);
+  assert.deepEqual(engine.assertInvariants(), []);
+});
+
+test("a completed transaction reverses settled seller accounting only after return receipt", () => {
+  const engine = createEngine();
+  const started = engine.startPurchase("item-basic", { actorId: "buyer_01" });
+  assert.equal(started.ok, true);
+  if (!started.ok) return;
+  const confirmed = engine.confirmPurchase(started.data.purchaseIntentId, { actorId: "buyer_01" });
+  assert.equal(confirmed.ok, true);
+  if (!confirmed.ok) return;
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  assert.equal(engine.shipOrder(confirmed.data.transactionId).ok, true);
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+  assert.equal(engine.markDelivered(confirmed.data.transactionId).ok, true);
+  assert.equal(engine.reviewOrder(confirmed.data.transactionId, 5, "受取評価").ok, true);
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  assert.equal(engine.reviewOrder(confirmed.data.transactionId, 5, "ありがとうございました").ok, true);
+  assert.equal(engine.getSnapshot().transactions[0]?.status, "COMPLETED");
+
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+  assert.equal(engine.requestReturn(confirmed.data.transactionId, "説明と状態が異なりました", { actorId: "buyer_01" }).ok, true);
+  assert.equal(engine.getSnapshot().payments[0]?.status, "CAPTURED");
+  assert.equal(engine.getSnapshot().wallets.find((wallet) => wallet.actorId === "seller_01")?.availableBalance, 1080);
+
+  assert.equal(engine.switchActor("admin_01", controlOptions).ok, true);
+  assert.equal(engine.resolveCancellation(confirmed.data.transactionId, true).ok, true);
+  assert.equal(engine.getSnapshot().returns[0]?.status, "IN_TRANSIT");
+  assert.equal(engine.getSnapshot().shipments[0]?.status, "RETURNING");
+
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   const received = engine.confirmReturnReceived(confirmed.data.transactionId, { actorId: "seller_01" });
   assert.equal(received.ok, true);
   if (!received.ok) return;
   assert.equal(received.data.status, "REFUND_COMPLETED");
-  const ticket = engine.createSupportTicket({ transactionId: confirmed.data.transactionId, category: "TRANSACTION", subject: "返品の確認", body: "返品処理の確認をお願いします", evidence: [] }, { actorId: "buyer_01" });
-  assert.equal(ticket.ok, true);
+  assert.equal(engine.getSnapshot().transactions[0]?.status, "REFUNDED");
+  assert.equal(engine.getSnapshot().payments[0]?.status, "REFUNDED");
+  assert.equal(engine.getSnapshot().shipments[0]?.status, "RETURNED");
+  assert.equal(engine.getItem("item-basic")?.inventoryQuantity, 1);
+  const buyerWallet = engine.getSnapshot().wallets.find((wallet) => wallet.actorId === "buyer_01");
+  const sellerWallet = engine.getSnapshot().wallets.find((wallet) => wallet.actorId === "seller_01");
+  assert.equal(buyerWallet?.availableBalance, 200000);
+  assert.equal(sellerWallet?.availableBalance, 0);
+  assert.equal(buyerWallet?.ledger.some((entry) => entry.type === "POST_CAPTURE_REFUND" && entry.amount === 1200), true);
+  assert.equal(sellerWallet?.ledger.some((entry) => entry.type === "SALE_REVERSAL" && entry.amount === 1200), true);
+  assert.equal(sellerWallet?.ledger.some((entry) => entry.type === "FEE_REVERSAL" && entry.amount === 120), true);
   assert.deepEqual(engine.assertInvariants(), []);
 });
 
 test("listing lifecycle supports edit, pause, resume, and relist without changing ownership", () => {
   const engine = createEngine();
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
   const listing = engine.listItem({ title: "Lifecycle listing", description: "Valid description", price: 1200, category: ["その他"], condition: "新品", shippingMethod: "配送", images: ["/images/products/knit.jpg"], sku: "LIFECYCLE-1" }, { actorId: "seller_01" });
   assert.equal(listing.ok, true);
   if (!listing.ok) return;
   assert.equal(engine.updateListing(listing.data.id, { title: "Lifecycle listing edited" }, { actorId: "seller_01" }).ok, true);
   assert.equal(engine.pauseListing(listing.data.id, { actorId: "seller_01" }).ok, true);
   assert.equal(engine.resumeListing(listing.data.id, { actorId: "seller_01" }).ok, true);
-  const started = engine.startPurchase(listing.data.id, { actorId: "buyer_01" });
+   assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+   const started = engine.startPurchase(listing.data.id);
   assert.equal(started.ok, true);
   if (!started.ok) return;
-  assert.equal(engine.confirmPurchase(started.data.purchaseIntentId, { actorId: "buyer_01" }).ok, true);
-  const relisted = engine.relistItem(listing.data.id, { actorId: "seller_01" });
+   assert.equal(engine.confirmPurchase(started.data.purchaseIntentId).ok, true);
+   assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+   const relisted = engine.relistItem(listing.data.id);
   assert.equal(relisted.ok, true);
   assert.equal(relisted.ok && relisted.data.sellerId, "seller_01");
   assert.deepEqual(engine.assertInvariants(), []);
@@ -646,10 +738,13 @@ test("seller ledger records gross sale and explicit fee while preserving net bal
   const confirmed = engine.confirmPurchase(started.data.purchaseIntentId, { actorId: "buyer_01" });
   assert.equal(confirmed.ok, true);
   if (!confirmed.ok) return;
-  assert.equal(engine.shipOrder(confirmed.data.transactionId, { actorId: "seller_01" }).ok, true);
-  assert.equal(engine.markDelivered(confirmed.data.transactionId, { actorId: "buyer_01" }).ok, true);
-  assert.equal(engine.reviewOrder(confirmed.data.transactionId, 5, "受取評価", { actorId: "buyer_01" }).ok, true);
-  assert.equal(engine.reviewOrder(confirmed.data.transactionId, 5, "ありがとうございました", { actorId: "seller_01" }).ok, true);
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  assert.equal(engine.shipOrder(confirmed.data.transactionId).ok, true);
+  assert.equal(engine.switchActor("buyer_01", controlOptions).ok, true);
+  assert.equal(engine.markDelivered(confirmed.data.transactionId).ok, true);
+  assert.equal(engine.reviewOrder(confirmed.data.transactionId, 5, "受取評価").ok, true);
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  assert.equal(engine.reviewOrder(confirmed.data.transactionId, 5, "ありがとうございました").ok, true);
   const wallet = engine.getSnapshot().wallets.find((candidate) => candidate.actorId === "seller_01");
   assert.equal(wallet?.ledger.some((entry) => entry.type === "SALE" && entry.amount === 1200), true);
   assert.equal(wallet?.ledger.some((entry) => entry.type === "FEE" && entry.amount === 120), true);
@@ -693,7 +788,8 @@ test("sandbox wallet supports deposits, withdrawals, held balance protection, an
 
 test("profile update keeps media as a reference and updates seller display metadata", () => {
   const engine = createEngine();
-  const updated = engine.updateProfile({ displayName: "新しい表示名", bio: "Sandboxプロフィール", avatarRef: "media_avatar_01" }, { actorId: "seller_01" });
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  const updated = engine.updateProfile({ displayName: "新しい表示名", bio: "Sandboxプロフィール", avatarRef: "media_avatar_01" });
   assert.equal(updated.ok, true);
   assert.equal(engine.getProfile("seller_01")?.avatarRef, "media_avatar_01");
   assert.equal(engine.getItem("item-basic")?.seller.name, "新しい表示名");

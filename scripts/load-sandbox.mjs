@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputPath = resolve(root, 'output/load/latest.json');
@@ -25,7 +26,10 @@ const targetRps = Math.max(1, Math.floor(numberArg('rps', 100, 1)));
 const requestTimeoutMs = Math.max(1000, Math.floor(numberArg('timeout-ms', 10_000, 1000)));
 const baseUrl = stringArg('base-url', process.env.SANDBOX_BASE_URL ?? process.env.BASE_URL ?? 'http://127.0.0.1:3001').replace(/\/$/u, '');
 const noStart = booleanArg('no-start') || process.env.LOAD_NO_START === '1';
-const runId = `load-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const localFixtureHostnames = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const baseHostname = new URL(baseUrl).hostname;
+const useLocalFixtureLoadSources = localFixtureHostnames.has(baseHostname);
+const runId = `load-${Date.now()}-${randomUUID()}`;
 
 const sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
@@ -93,7 +97,15 @@ const requestJson = async (method, path, body, kind, actor, includeInLoad = true
   let parsed;
   let raw = '';
   try {
-    const headers = { accept: 'application/json', ...extraHeaders };
+    // The local fixture's limiter is source-scoped, so model each actor as a
+    // separate client without sending a synthetic identity to remote origins.
+    const headers = {
+      accept: 'application/json',
+      ...(useLocalFixtureLoadSources && Number.isInteger(actor?.index)
+        ? { 'x-forwarded-for': `198.51.100.${(actor.index % 254) + 1}` }
+        : {}),
+      ...extraHeaders,
+    };
     const init = { method, headers, signal: AbortSignal.timeout(requestTimeoutMs) };
     if (body !== undefined) {
       headers['content-type'] = 'application/json';

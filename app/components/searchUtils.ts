@@ -10,6 +10,9 @@ const CONDITION_SEARCH_ALIASES: Record<string, string[]> = {
 
 const SEARCH_ALIAS_GROUPS = [
   ['pc', 'パソコン', 'ノートpc', 'ノートパソコン', 'デスクトップpc', 'デスクトップパソコン'],
+  ['intel', 'インテル', 'intel inside'],
+  ['amd', 'エーエムディー'],
+  ['ryzen', 'ライゼン'],
   ['スマホ', 'スマートフォン', '携帯電話'],
   ['バッグ', '鞄', 'かばん'],
   ['靴', 'シューズ', 'スニーカー'],
@@ -67,7 +70,10 @@ const expandAliases = (values: string[]): string[] => {
   const normalizedValues = values.map(normalizeSearchText);
   return SEARCH_ALIAS_GROUPS.flatMap((group) => {
     const normalizedGroup = group.map(normalizeSearchText);
-    return normalizedGroup.some((alias) => normalizedValues.some((value) => value.includes(alias) || alias.includes(value))) ? group : [];
+    // Expand only when a complete alias is present in the item text. The
+    // reverse comparison made short words such as "デスク" activate the
+    // longer "デスクトップPC" alias and caused unrelated false positives.
+    return normalizedGroup.some((alias) => normalizedValues.some((value) => value.includes(alias))) ? group : [];
   });
 };
 
@@ -188,9 +194,16 @@ export const categorySearchAliasesFor = (category: string): string[] => {
   const aliases: Record<string, string[]> = {
     ファッション: ['レディース', 'メンズ'],
     'ゲーム・おもちゃ・グッズ': ['ゲーム・おもちゃ', 'ゲーム', 'グッズ', 'ホビー', 'フィギュア', 'トレーディングカード'],
+    'ホビー・楽器・アート': ['ホビー', 'コレクション', 'ミニカー・模型', 'フィギュア', 'アート'],
     '本・雑誌・漫画': ['本・マンガ', '本', 'マンガ', '漫画', '雑誌'],
-    'スマホ・タブレット・パソコン': ['家電・スマホ', 'スマホ', 'タブレット', 'PC', 'パソコン'],
+    'スマホ・タブレット・パソコン': ['スマートフォン', 'スマートフォン本体', 'スマートデバイスセット', 'タブレット', 'PC・タブレット', 'ノートPC', 'デスクトップPC', 'PC周辺機器', 'PC', 'パソコン'],
     'ベビー・キッズ': ['ベビー', 'キッズ'],
+    'テレビ・オーディオ・カメラ': ['オーディオ', 'ヘッドホン', 'ワイヤレスヘッドホン', 'カメラ', 'ミラーレスカメラ', 'コンパクトデジタルカメラ'],
+    '生活家電・空調': ['生活家電', 'キッチン家電', 'コーヒーメーカー', 'トースター'],
+    スポーツ: ['スポーツ・レジャー', 'スポーツ用品', 'アメリカンフットボール', 'テニス用品'],
+    'アウトドア・釣り・旅行用品': ['スポーツ・レジャー', 'スポーツ用品', 'アメリカンフットボール', 'テニス用品'],
+    'キッチン・日用品・その他': ['キッチン用品', '調理器具', 'カトラリー', 'キッチンツール'],
+    '家具・インテリア': ['インテリア・住まい・小物', '家具', 'ソファ・ソファベッド', 'インテリア', 'アロマ・ディフューザー', '壁掛けアート・時計', '照明', '間接照明', 'デスクライト'],
   };
   return aliases[category] ?? [];
 };

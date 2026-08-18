@@ -36,14 +36,16 @@
 | PREVIEW_EXPIRED | previewの有効期限が切れている | Create preview again |
 | SANDBOX_NOT_READY | IndexedDB/D1からSandbox状態を復元中 | Wait for ready |
 | D1_UNAVAILABLE | 永続化用D1が利用できない | Retry after service recovery |
+| INTERNAL_ERROR | 予期しない内部処理エラー | Retry only when details.retryable is true |
 | PAYLOAD_TOO_LARGE | requestまたはstate payloadが上限超過 | Reduce payload |
 | INVALID_STATE | Sandbox state envelopeまたは保存済み結果が壊れている | Reset or repair state |
 | REPLAY_FAILED | replay command列の途中で失敗した | Fix action at reported index |
 | STATE_NOT_FOUND | 指定Sandboxの保存済みstateが存在しない | Seed or reset Sandbox |
 | INVALID_STATE_ID | Sandbox IDの形式が不正 | Use an allowed ID |
 | AUTH_NOT_CONFIGURED | デプロイ環境のAPI認証Secretが未設定 | Configure the secret |
+| RATE_LIMITED | APIの短時間呼び出し上限に達した | Retry after Retry-After |
 | FEATURE_NOT_AVAILABLE | Sandbox対象外機能を実行しようとした | Use a supported feature |
 
 HTTP APIでは、未認証は401、権限不足は403、状態競合は409、D1利用不能は503、状態payload上限超過は413です。エラーに details.retryable がある場合だけ自動再試行を許可します。
 
-`AUTH_NOT_CONFIGURED` は、D1環境で `FURIMA_D1_API_TOKEN` が設定されていないため安全側に停止した状態です。デプロイ環境ではトークンをSecretとして設定し、ローカルfixtureではlocalhostのみ認証を省略します。
+`AUTH_NOT_CONFIGURED` は、D1環境で通常APIまたはcontrol APIのSecretが設定されていないため安全側に停止した状態です。デプロイ環境では `FURIMA_D1_API_TOKEN` と `FURIMA_D1_CONTROL_TOKEN` を別Secretとして設定し、ローカルfixtureでは明示的に `FURIMA_LOCAL_FIXTURE_MODE=true` を設定した場合だけ認証を省略します。control APIは通常APIより低いレート制限を使い、`Retry-After`を返します。

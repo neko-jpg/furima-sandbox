@@ -17,7 +17,7 @@ interface ShopImageProps {
  * file previews remain plain images because data URLs cannot be optimized.
  */
 export const ShopImage: React.FC<ShopImageProps> = ({ src, alt, className, loading = 'lazy', width = 800, height = 800 }) => {
-  if (src.startsWith('data:')) {
+  if (src.startsWith('data:') || src.startsWith('blob:')) {
     // eslint-disable-next-line @next/next/no-img-element
     return <img src={src} alt={alt} className={className} loading={loading} />;
   }

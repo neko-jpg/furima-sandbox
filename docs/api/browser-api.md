@@ -32,7 +32,7 @@ expectedStateVersion、requestId、idempotencyKey、actorId、scopeは必要な�
 await api.waitForReady();
 ~~~
 
-IndexedDBが利用できない場合はMemory fallbackへ切り替え、理由を`window.__FURIMA_SANDBOX_DIAGNOSTICS__`へ公開します。`backend`、`fallbackReason`、`migratedLegacyLocalStorage`を確認でき、永続化に失敗した状態を無言で見逃さないための診断情報になります。
+IndexedDBが利用できない場合はMemory fallbackへ切り替え、結果の`durability: "volatile"`と理由を`window.__FURIMA_SANDBOX_DIAGNOSTICS__`へ公開します。`backend`、`fallbackReason`、`migratedLegacyLocalStorage`を確認でき、永続化に失敗した状態を無言で見逃さないための診断情報になります。
 
 ## カタログ
 
@@ -68,7 +68,7 @@ api.deleteListingDraft(created.data.draftId);
 
 ## 出品後操作
 
-現時点では`window.__SHOP_API__` / `window.__MERCARI_API__`が実装済みの実行経路です。`/api/listings*`のHTTP形式はOpenAPIで先に固定し、D1 adapter接続時に同じドメイン操作へ接続します。
+現時点では`window.__SHOP_API__` / `window.__MERCARI_API__`が実装済みの実行経路です。`/api/listings*`、`/api/wallet*`、`/api/profile`、`/api/follows*`のHTTP形式はOpenAPIで先に固定したplanned contractで、各pathに`x-implementation-status: planned`を付けています。実装済みHTTP endpointはカタログとsandbox operator APIです。
 
 ~~~ts
 api.listOwnListings();
@@ -139,8 +139,8 @@ api.unfollowUser('seller_01');
 
 ## 権限
 
-- ローカルfixture: 認証なしで参照できます。
+- ローカルfixture: 明示的なlocal fixture modeでは認証なしで参照できます。
 - seller: 下書き作成・自分の出品操作を実行できます。
 - buyer/guest: 出品操作は AUTH_REQUIRED または FORBIDDEN です。
 - admin/platform: sandbox-controlの状態バックアップ・審査操作を実行できます。
-- D1接続時: 未認証は401、権限不足は403を返します。
+- D1接続時: 通常APIは`FURIMA_D1_API_TOKEN`、seed/reset/replay/import等のcontrol APIは別の`FURIMA_D1_CONTROL_TOKEN`を要求します。未認証は401、権限不足は403、未設定は503を返します。ブラウザへtokenを埋め込む構成は使用しません。

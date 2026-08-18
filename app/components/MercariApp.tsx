@@ -31,10 +31,13 @@ export const MercariApp: React.FC = () => {
     searchQuery,
     isDeviceFrame,
     isListingModalOpen,
+    isLoginPromptOpen,
     isSandboxReady,
   } = useMercari();
-  const isBlockingModalOpen = Boolean(selectedItem || buyingItemId);
   const isListingFlowOpen = mainTab === 'sell' && isListingModalOpen;
+  const isSearchOverlayOpen = isSearchOpen && !searchQuery.trim();
+  const isBlockingModalOpen = Boolean(selectedItem || buyingItemId || isLoginPromptOpen || isSearchOverlayOpen);
+  const isBackgroundInert = isBlockingModalOpen && !isListingFlowOpen;
 
   React.useLayoutEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -46,7 +49,7 @@ export const MercariApp: React.FC = () => {
     resetScrollOwner();
     const frame = window.requestAnimationFrame(resetScrollOwner);
     return () => window.cancelAnimationFrame(frame);
-  }, [categoryName, isListingModalOpen, isSearchOpen, mainTab, searchQuery, selectedItem?.id]);
+  }, [categoryName, isListingModalOpen, isSearchOpen, mainTab, selectedItem?.id]);
 
   const renderCurrentView = () => {
     if (isSearchOpen && searchQuery.trim()) return <SearchView />;
@@ -79,7 +82,7 @@ export const MercariApp: React.FC = () => {
         data-testid="shop-app-container"
       >
         {!isListingFlowOpen && (
-          <div aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined}>
+          <div aria-hidden={isBackgroundInert ? true : undefined} inert={isBackgroundInert ? true : undefined}>
             <DemoNoticeBar />
             <DemoGuide />
 
@@ -89,12 +92,12 @@ export const MercariApp: React.FC = () => {
         )}
 
         {/* Main content becomes the full-screen listing route while the flow is open. */}
-        <main aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined} className={`relative flex min-h-0 flex-1 flex-col overflow-hidden ${isListingFlowOpen ? 'pt-0' : 'md:pt-10'}`}>
+        <main aria-hidden={isBackgroundInert ? true : undefined} inert={isBackgroundInert ? true : undefined} className={`relative flex min-h-0 flex-1 flex-col overflow-hidden ${isListingFlowOpen ? 'pt-0' : 'md:pt-10'}`}>
           {renderCurrentView()}
         </main>
 
         {!isListingFlowOpen && (
-          <div aria-hidden={isBlockingModalOpen ? true : undefined} inert={isBlockingModalOpen ? true : undefined}>
+          <div aria-hidden={isBackgroundInert ? true : undefined} inert={isBackgroundInert ? true : undefined}>
             {/* Bottom Navigation */}
             <BottomNav />
           </div>

@@ -1,0 +1,1 @@
+declare const __FURIMA_ENABLE_SANDBOX_INSPECTOR__: boolean;

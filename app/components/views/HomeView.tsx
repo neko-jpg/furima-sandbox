@@ -1,13 +1,13 @@
 'use client';
 
-/* eslint-disable @next/next/no-img-element */
-
 import React from 'react';
 import { ArrowRight, Camera, Clock3, Flame, Heart, Search, ShoppingBag } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
+import { FEATURED_CATALOG_ITEM_ID } from '../../data/catalogData';
 import { MercariItem } from '../../types/mercari';
 import { Footer } from '../Footer';
 import { ProductCard, SectionHeader } from '../ui/ShopPrimitives';
+import { ShopImage } from '../ui/ShopImage';
 import { MyListView } from './MyListView';
 import { HOME_TABS } from '../homeTabs';
 
@@ -92,7 +92,7 @@ const GuestHome: React.FC<{ items: MercariItem[]; onOpen: (id: string) => void; 
     <ProductSection title="人気の商品" items={guestItems.slice(0, 10)} onOpen={onOpen} onLike={onLike} onAction={() => openCategory('人気の商品')} />
     <section>
       <SectionHeader title="人気のブランド" actionLabel="すべて見る" onAction={() => openCategory('ブランド')} />
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">{brandItems.map((item) => <button type="button" key={item.id} onClick={() => openItem(item.id)} className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-3 text-left hover:border-[var(--shop-blue)]"><div className="flex items-center gap-2"><img src={item.images[0]} alt="" className="h-10 w-10 rounded-full object-cover" /><span className="line-clamp-2 text-xs font-bold text-white">{item.seller.name}</span></div></button>)}</div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">{brandItems.map((item) => <button type="button" key={item.id} onClick={() => openItem(item.id)} className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-3 text-left hover:border-[var(--shop-blue)]"><div className="flex items-center gap-2"><ShopImage src={item.images[0]} alt="" width={80} height={80} className="h-10 w-10 rounded-full object-cover" /><span className="line-clamp-2 text-xs font-bold text-white">{item.seller.name}</span></div></button>)}</div>
     </section>
     <section>
       <SectionHeader title="人気のカテゴリー" actionLabel="すべて見る" onAction={() => openCategory('すべてのカテゴリ')} />
@@ -129,7 +129,7 @@ const ShopPromo: React.FC = () => {
         <button type="button" onClick={() => { setSearchQuery('ノートPC'); setIsSearchOpen(true); }} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#153247] text-[var(--shop-blue)]"><Search className="h-4 w-4" /></span><span><span className="block text-xs font-black text-white">1. ノートPCを検索</span><span className="mt-0.5 block text-[10px] text-[var(--shop-muted)]">フィルタと件数の変化を見る</span></span>
         </button>
-        <button type="button" onClick={() => openItem('pc-2')} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
+        <button type="button" onClick={() => openItem(FEATURED_CATALOG_ITEM_ID)} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#153247] text-[var(--shop-blue)]"><ShoppingBag className="h-4 w-4" /></span><span><span className="block text-xs font-black text-white">2. 商品詳細を確認</span><span className="mt-0.5 block text-[10px] text-[var(--shop-muted)]">安心情報と購入内訳を見る</span></span>
         </button>
         <button type="button" onClick={() => navigateToTab('sell')} className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[#202024]/80 p-3 text-left transition-colors hover:border-[var(--shop-blue)] hover:bg-[#16394d]">
@@ -170,7 +170,7 @@ const RankingSection: React.FC<{ items: MercariItem[]; onOpen: (id: string) => v
       {items.slice(0, 7).map((item, index) => (
         <button type="button" key={item.id} onClick={() => onOpen(item.id)} className="relative w-[138px] shrink-0 overflow-hidden rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] p-2 text-left md:w-[170px]">
           <span className={`absolute left-2 top-2 z-10 flex h-5 min-w-5 items-center justify-center rounded px-1 text-[10px] font-black ${index === 0 ? 'bg-[#b58d29] text-white' : index === 1 ? 'bg-[#6d737b] text-white' : index === 2 ? 'bg-[#9a5c2f] text-white' : 'bg-[var(--shop-surface-raised)] text-[var(--shop-muted)]'}`}>{index + 1}</span>
-          <img src={item.images[0]} alt={item.title} className="aspect-square w-full rounded-md object-cover" loading="lazy" />
+          <ShopImage src={item.images[0]} alt={item.title} width={640} height={640} className="aspect-square w-full rounded-md object-cover" loading="lazy" />
           <p className="mt-2 line-clamp-1 text-[10px] text-[var(--shop-muted)]">{item.title}</p>
           <p className="mt-0.5 text-sm font-black text-white">¥{item.price.toLocaleString()}</p>
           <p className="text-[9px] text-[var(--shop-subtle)]">いいね {item.likesCount}</p>
@@ -200,11 +200,11 @@ const AuctionCategorySection: React.FC<{ items: MercariItem[]; categories: strin
   return <section><SectionHeader title="カテゴリ別オークション" /><div className="mb-3 flex gap-2 overflow-x-auto no-scrollbar">{categories.map((category) => <button type="button" key={category} onClick={() => onCategory(category)} className={`shrink-0 rounded-full border px-3 py-1.5 text-[10px] ${activeCategory === category ? 'border-[var(--shop-blue)] bg-[#16394d] text-[var(--shop-blue)]' : 'border-[var(--shop-border)] text-[var(--shop-muted)] hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)]'}`}>{category}</button>)}</div><div className="grid grid-cols-3 gap-2.5 md:grid-cols-5">{items.slice(0, 10).map((item) => <AuctionGridCard key={item.id} item={item} onOpen={() => onOpen(item.id)} />)}</div></section>;
 };
 
-const AuctionGridCard: React.FC<{ item: MercariItem; onOpen: () => void }> = ({ item, onOpen }) => <button type="button" onClick={onOpen} className="relative overflow-hidden rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] text-left"><div className="relative aspect-square"><img src={item.images[0]} alt={item.title} className="h-full w-full object-cover" loading="lazy" /><span className="absolute inset-x-1 bottom-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-bold text-white">現在 ¥{(item.currentBid ?? item.price).toLocaleString()}</span><Heart className="absolute right-1 top-1 h-4 w-4 text-white" /></div><div className="px-2 py-1.5 text-[9px] text-[var(--shop-muted)]">入札 {item.bidsCount ?? 0} ・ {item.timeLeft || '残り1日'}</div></button>;
+const AuctionGridCard: React.FC<{ item: MercariItem; onOpen: () => void }> = ({ item, onOpen }) => <button type="button" onClick={onOpen} className="relative overflow-hidden rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] text-left"><div className="relative aspect-square"><ShopImage src={item.images[0]} alt={item.title} width={640} height={640} className="h-full w-full object-cover" loading="lazy" /><span className="absolute inset-x-1 bottom-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-bold text-white">現在 ¥{(item.currentBid ?? item.price).toLocaleString()}</span><Heart className="absolute right-1 top-1 h-4 w-4 text-white" /></div><div className="px-2 py-1.5 text-[9px] text-[var(--shop-muted)]">入札 {item.bidsCount ?? 0} ・ {item.timeLeft || '残り1日'}</div></button>;
 
 const AuctionCardLegacy: React.FC<{ item: MercariItem; onOpen: () => void }> = ({ item, onOpen }) => (
   <article className="w-[190px] shrink-0 overflow-hidden rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] md:w-[240px]">
-    <button type="button" onClick={onOpen} className="w-full text-left"><div className="relative aspect-[1.12] overflow-hidden"><img src={item.images[0]} alt={item.title} className="h-full w-full object-cover" loading="lazy" /><span className="absolute left-2 top-2 rounded-full bg-black/65 px-2 py-1 text-xs font-bold text-white">入札 {item.bidsCount || 0}</span><span className="absolute inset-x-2 bottom-2 rounded-md bg-black/75 px-2 py-1 text-[10px] text-white">現在の最高入札額</span></div><div className="p-3"><div className="text-xl font-black text-white">¥{(item.currentBid ?? item.price).toLocaleString()}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-accent)]"><Clock3 className="h-3.5 w-3.5" />{item.timeLeft || '残り1日'}</div></div></button>
+    <button type="button" onClick={onOpen} className="w-full text-left"><div className="relative aspect-[1.12] overflow-hidden"><ShopImage src={item.images[0]} alt={item.title} width={640} height={570} className="h-full w-full object-cover" loading="lazy" /><span className="absolute left-2 top-2 rounded-full bg-black/65 px-2 py-1 text-xs font-bold text-white">入札 {item.bidsCount || 0}</span><span className="absolute inset-x-2 bottom-2 rounded-md bg-black/75 px-2 py-1 text-[10px] text-white">現在の最高入札額</span></div><div className="p-3"><div className="text-xl font-black text-white">¥{(item.currentBid ?? item.price).toLocaleString()}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-accent)]"><Clock3 className="h-3.5 w-3.5" />{item.timeLeft || '残り1日'}</div></div></button>
     <button type="button" onClick={onOpen} className="mx-3 mb-3 block w-[calc(100%-24px)] rounded-full bg-[var(--shop-accent)] py-2.5 text-sm font-bold text-white">入札する</button>
   </article>
 );
@@ -214,7 +214,7 @@ void AuctionCardLegacy;
 const AuctionCard: React.FC<{ item: MercariItem; onOpen: () => void }> = ({ item, onOpen }) => {
   const { startPurchase } = useMercari();
   return <article className="w-[190px] shrink-0 overflow-hidden rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] md:w-[240px]">
-    <button type="button" onClick={onOpen} className="w-full text-left"><div className="relative aspect-[1.12] overflow-hidden"><img src={item.images[0]} alt={item.title} className="h-full w-full object-cover" loading="lazy" /><span className="absolute left-2 top-2 rounded-full bg-black/65 px-2 py-1 text-xs font-bold text-white">入札 {item.bidsCount || 0}</span><span className="absolute inset-x-2 bottom-2 rounded-md bg-black/75 px-2 py-1 text-[10px] text-white">現在の最高入札額</span></div><div className="p-3"><div className="text-xl font-black text-white">¥{(item.currentBid ?? item.price).toLocaleString()}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-accent)]"><Clock3 className="h-3.5 w-3.5" />{item.timeLeft || '残り1日'}</div></div></button>
+    <button type="button" onClick={onOpen} className="w-full text-left"><div className="relative aspect-[1.12] overflow-hidden"><ShopImage src={item.images[0]} alt={item.title} width={640} height={570} className="h-full w-full object-cover" loading="lazy" /><span className="absolute left-2 top-2 rounded-full bg-black/65 px-2 py-1 text-xs font-bold text-white">入札 {item.bidsCount || 0}</span><span className="absolute inset-x-2 bottom-2 rounded-md bg-black/75 px-2 py-1 text-[10px] text-white">現在の最高入札額</span></div><div className="p-3"><div className="text-xl font-black text-white">¥{(item.currentBid ?? item.price).toLocaleString()}</div><div className="mt-1 flex items-center gap-1 text-xs text-[var(--shop-accent)]"><Clock3 className="h-3.5 w-3.5" />{item.timeLeft || '残り1日'}</div></div></button>
     <button type="button" onClick={() => startPurchase(item.id)} className="mx-3 mb-3 block w-[calc(100%-24px)] rounded-full bg-[var(--shop-accent)] py-2.5 text-sm font-bold text-white">入札する</button>
   </article>;
 };
