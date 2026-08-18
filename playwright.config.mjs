@@ -23,6 +23,7 @@ export default defineConfig({
   projects: [
     { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
     { name: 'chromium-mobile', use: { ...devices['iPhone 13'], browserName: 'chromium' } },
+    { name: 'webkit-desktop', use: { ...devices['Desktop Safari'], browserName: 'webkit' } },
   ],
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER === '1'
     ? undefined

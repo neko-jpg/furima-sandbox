@@ -11,9 +11,9 @@ const fakeIndexedDb = {
       transaction() {
         const transaction = { oncomplete: null, onerror: null, objectStore() {
           return {
-            put(value) { records.set(value.id, value); return requestFor(value); },
-            get(id) { return requestFor(records.get(id) ?? null); },
-            delete(id) { records.delete(id); return requestFor(undefined); },
+            put(value) { records.set(value.id, value); return requestFor(value, transaction); },
+            get(id) { return requestFor(records.get(id) ?? null, transaction); },
+            delete(id) { records.delete(id); return requestFor(undefined, transaction); },
           };
         } };
         return transaction;
@@ -29,9 +29,9 @@ const fakeIndexedDb = {
   },
 };
 
-function requestFor(value) {
+function requestFor(value, transaction) {
   const request = { result: value, onsuccess: null, onerror: null };
-  queueMicrotask(() => request.onsuccess?.());
+  queueMicrotask(() => { request.onsuccess?.(); queueMicrotask(() => transaction.oncomplete?.()); });
   return request;
 }
 

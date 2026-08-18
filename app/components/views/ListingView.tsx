@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -30,7 +30,8 @@ import {
 } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import { CATALOG_FAMILIES, CATALOG_VARIANTS } from '../../data/catalogMetadata';
-import { deleteListingMediaMany, getListingMedia, prepareListingMedia } from '../../media/listingMediaStore';
+import { deleteListingMediaMany, getListingMedia, prepareListingMedia, pruneListingMedia } from '../../media/listingMediaStore';
+import { useDialogFocusTrap } from '../ui/useDialogFocusTrap';
 import type { ListingImageOrder, ListingMediaRef, MercariItem } from '../../types/mercari';
 
 type ListingStep = 'photos' | 'info' | 'details' | 'review';
@@ -44,6 +45,7 @@ const MIN_LISTING_PRICE = 300;
 const MAX_LISTING_PRICE = 9_999_999;
 const DRAFT_STORAGE_KEY = 'furima-listing-drafts-v3';
 const OPEN_DRAFT_STORAGE_KEY = 'furima-listing-open-draft-id';
+const scopedDraftKey = (base: string, actorId: string): string => `${base}:furima-demo:${actorId}`;
 const DEFAULT_SHIPPING = {
   shippingFee: '送料込み（出品者負担）',
   shippingMethod: 'ゆうゆう配送',
@@ -71,10 +73,10 @@ const initialForm: DraftFormData = {
   title: '', price: '', description: '', category: '', subcategory: '', condition: '', brand: '', color: '', size: '', modelNumber: '', familyId: '', variantId: '', inventoryPolicy: 'SINGLE', inventoryQuantity: '1', ...DEFAULT_SHIPPING,
 };
 
-const readPersistedDrafts = (): PersistedListingDraft[] => {
+const readPersistedDrafts = (actorId = 'seller_01'): PersistedListingDraft[] => {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    const raw = window.localStorage.getItem(scopedDraftKey(DRAFT_STORAGE_KEY, actorId)) ?? window.localStorage.getItem(DRAFT_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) as unknown : [];
     return Array.isArray(parsed) ? parsed.filter((draft): draft is PersistedListingDraft => Boolean(draft && typeof draft === 'object' && 'form' in draft)).map((draft) => ({
       ...draft,
@@ -87,9 +89,9 @@ const readPersistedDrafts = (): PersistedListingDraft[] => {
   } catch { return []; }
 };
 
-const writePersistedDrafts = (drafts: PersistedListingDraft[]): void => {
+const writePersistedDrafts = (drafts: PersistedListingDraft[], actorId = 'seller_01'): void => {
   try {
-    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+    window.localStorage.setItem(scopedDraftKey(DRAFT_STORAGE_KEY, actorId), JSON.stringify(drafts));
     window.dispatchEvent(new Event('furima-listing-drafts-changed'));
   } catch { /* IndexedDB/API is still authoritative. */ }
 };
@@ -109,12 +111,13 @@ const formatDraftDate = (value: string): string => {
   return Number.isNaN(date.getTime()) ? '日時不明' : date.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
-const createLocalDraftId = (): string => `local-draft-${typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+let localDraftSequence = 0;
+const createLocalDraftId = (): string => `local-draft-${typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${Date.now()}-${++localDraftSequence}`}`;
 
-const cleanupUnusedMedia = (candidateIds: string[], drafts: PersistedListingDraft[]): void => {
+const cleanupUnusedMedia = (candidateIds: string[], drafts: PersistedListingDraft[]): Promise<void> => {
   const referencedIds = new Set(drafts.flatMap((draft) => Array.isArray(draft.media) ? draft.media.map((ref) => ref.id) : []));
   const removableIds = [...new Set(candidateIds)].filter((id) => id.startsWith('media_') && !referencedIds.has(id));
-  if (removableIds.length) void deleteListingMediaMany(removableIds);
+  return removableIds.length ? deleteListingMediaMany(removableIds) : Promise.resolve();
 };
 
 const moveMedia = (items: ListingMediaItem[], index: number, offset: number): ListingMediaItem[] => {
@@ -158,7 +161,7 @@ export const ListingView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [hasPolicyAccepted, setHasPolicyAccepted] = useState(false);
-  const [drafts, setDrafts] = useState<PersistedListingDraft[]>(readPersistedDrafts);
+  const [drafts, setDrafts] = useState<PersistedListingDraft[]>(() => readPersistedDrafts(activeActor.id));
   const [currentDraftId, setCurrentDraftId] = useState<string | undefined>();
   const [isDraftsOpen, setIsDraftsOpen] = useState(false);
   const [isTemplateOpen, setIsTemplateOpen] = useState(false);
@@ -178,6 +181,8 @@ export const ListingView: React.FC = () => {
   const persistDraftRef = useRef<(silent?: boolean) => void>(() => undefined);
   const processingRef = useRef(false);
   const aiTimerRef = useRef<number | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+  const closeFlowRef = useRef<(force?: boolean) => void>(() => undefined);
 
   const stopCameraStream = () => {
     const tracks: MediaStreamTrack[] = cameraStreamRef.current?.getTracks() ?? [];
@@ -212,12 +217,16 @@ export const ListingView: React.FC = () => {
   }, [form.category, form.condition, form.description, form.shippingMethod, form.subcategory, form.title, numericPrice, readyMedia.length]);
   const hasBlockingIssue = policySignals.some((signal) => signal.status === 'blocked');
 
-  const showNotice = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(null), 2600); };
+  const showNotice = (message: string) => {
+    setNotice(message);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => { noticeTimerRef.current = null; setNotice(null); }, 2600);
+  };
 
   const setCategory = (value: string) => setForm((current) => ({ ...current, category: value }));
 
   const resetForm = (remainingDrafts = drafts) => {
-    cleanupUnusedMedia(media.map((item) => item.ref.id), remainingDrafts);
+    void cleanupUnusedMedia(media.map((item) => item.ref.id), remainingDrafts).catch(() => setError('不要な画像のクリーンアップに失敗しました。後で再試行してください。'));
     if (aiTimerRef.current !== null) window.clearTimeout(aiTimerRef.current);
     aiTimerRef.current = null;
     processingRef.current = false;
@@ -225,12 +234,15 @@ export const ListingView: React.FC = () => {
     setCategory('');
   };
 
-  const closeFlow = (force = false) => {
+  const closeFlow = useCallback((force = false) => {
     if (!force && isDirty && (form.title.trim() || form.price || media.length)) {
       if (!window.confirm('保存されていない変更があります。出品フローを閉じますか？')) return;
     }
     setIsListingModalOpen(false);
-  };
+  }, [form.price, form.title, isDirty, media.length, setIsListingModalOpen]);
+  useEffect(() => {
+    closeFlowRef.current = closeFlow;
+  }, [closeFlow]);
 
   useEffect(() => {
     if (!isListingModalOpen) return undefined;
@@ -240,7 +252,7 @@ export const ListingView: React.FC = () => {
     document.body.style.overflow = 'hidden';
     const focusFirstControl = () => { scrollRef.current?.scrollTo({ top: 0, behavior: 'auto' }); flowRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus({ preventScroll: true }); };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); closeFlow(); return; }
+      if (event.key === 'Escape') { event.preventDefault(); closeFlowRef.current(); return; }
       if (event.key !== 'Tab' || !flowRef.current) return;
       const focusable = Array.from(flowRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
       if (!focusable.length) return;
@@ -252,7 +264,6 @@ export const ListingView: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => { window.cancelAnimationFrame(frame); window.removeEventListener('keydown', handleKeyDown); document.body.style.overflow = previousOverflow; window.scrollTo({ top: previousScrollYRef.current, behavior: 'auto' }); previousActiveElementRef.current?.focus({ preventScroll: true }); };
     // The flow owns focus while open. Step focus is handled by the separate effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isListingModalOpen]);
 
   useEffect(() => {
@@ -298,24 +309,40 @@ export const ListingView: React.FC = () => {
     if (files.length > remaining) setError(`写真は最大20枚までです。今回の追加では${remaining}枚まで受け付けます。`);
     const acceptedFiles = files.slice(0, remaining);
     setProcessingProgress({ done: 0, total: acceptedFiles.length });
-    const prepared: ListingMediaItem[] = [];
-    for (let index = 0; index < acceptedFiles.length; index += 2) {
-      const batch = acceptedFiles.slice(index, index + 2);
-      const results = await Promise.all(batch.map(async (file) => {
-        if (file.size > MAX_IMAGE_FILE_BYTES) return { file, error: new Error('image-too-large') };
-        try { return { file, result: await prepareListingMedia(file, source) }; } catch (prepareError) { return { file, error: prepareError instanceof Error ? prepareError : new Error('image-processing-failed') }; }
-      }));
-      results.forEach(({ file, result, error: fileError }) => {
-        if (result) prepared.push({ ref: result.ref, previewUrl: result.previewUrl, sourceFile: file });
-        else prepared.push({ ref: { id: `error_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, status: 'error', mimeType: 'image/webp', createdAt: new Date().toISOString(), errorCode: fileError?.message ?? 'image-processing-failed' }, previewUrl: '', sourceFile: file });
-      });
-      setProcessingProgress({ done: Math.min(index + batch.length, acceptedFiles.length), total: acceptedFiles.length });
-    }
-    setMedia((current) => [...current, ...prepared]); setProcessingProgress(null); processingRef.current = false;
-    if (prepared.some((item) => item.ref.status === 'error')) setError('一部の画像を読み込めませんでした。失敗した画像は「再試行」できます。'); else setError(null);
-    if (acceptedFiles.length && isAutoInputOn) {
-      setIsAnalyzing(true);
-      aiTimerRef.current = window.setTimeout(() => { aiTimerRef.current = null; setAiSuggestions({ title: 'ミントグリーン ウール混ニットセーター', description: '写真から作成した候補です。カラーやサイズ、付属品を確認してから公開してください。\n\n・カラー：ミントグリーン\n・素材：ウール混\n・サイズ：フリーサイズ', category: 'レディース', condition: '目立った傷や汚れなし', color: 'グリーン' }); setAiConfidence(87); setIsAnalyzing(false); }, 500);
+    try {
+      const prepared: ListingMediaItem[] = [];
+      for (let index = 0; index < acceptedFiles.length; index += 2) {
+        const batch = acceptedFiles.slice(index, index + 2);
+        const results = await Promise.all(batch.map(async (file) => {
+          if (file.size > MAX_IMAGE_FILE_BYTES) return { file, error: new Error('image-too-large') };
+          try { return { file, result: await prepareListingMedia(file, source) }; } catch (prepareError) { return { file, error: prepareError instanceof Error ? prepareError : new Error('image-processing-failed') }; }
+        }));
+        results.forEach(({ file, result, error: fileError }, resultIndex) => {
+          if (result) prepared.push({ ref: result.ref, previewUrl: result.previewUrl, sourceFile: file });
+          else prepared.push({ ref: { id: `error_${Date.now()}_${index + resultIndex}`, source, status: 'error', mimeType: 'image/webp', createdAt: new Date().toISOString(), errorCode: fileError?.message ?? 'image-processing-failed' }, previewUrl: '', sourceFile: file });
+        });
+        setProcessingProgress({ done: Math.min(index + batch.length, acceptedFiles.length), total: acceptedFiles.length });
+      }
+      setMedia((current) => [...current, ...prepared]);
+      if (prepared.some((item) => item.ref.status === 'error')) setError('一部の画像を読み込めませんでした。失敗した画像は「再試行」できます。'); else setError(null);
+      if (acceptedFiles.length && isAutoInputOn && prepared.some((item) => item.ref.status === 'ready')) {
+        if (aiTimerRef.current !== null) window.clearTimeout(aiTimerRef.current);
+        setIsAnalyzing(true);
+        showNotice('画像解析デモ（モック）を生成しています。');
+        const sourceName = prepared.find((item) => item.ref.status === 'ready')?.sourceFile?.name?.replace(/\.[^.]+$/u, '').trim();
+        aiTimerRef.current = window.setTimeout(() => {
+          aiTimerRef.current = null;
+          const title = sourceName ? `${sourceName.slice(0, 32)}（デモ候補）` : '画像から作成した商品名（デモ候補）';
+          setAiSuggestions({ title, description: '画像から作成したモック候補です。カラーやサイズ、付属品を確認してから公開してください。', category: 'レディース', condition: '目立った傷や汚れなし', color: 'グリーン' });
+          setAiConfidence(87);
+          setIsAnalyzing(false);
+        }, 500);
+      }
+    } catch (processingError) {
+      setError(humanizeImageError(processingError));
+    } finally {
+      setProcessingProgress(null);
+      processingRef.current = false;
     }
   };
 
@@ -360,7 +387,7 @@ export const ListingView: React.FC = () => {
   const deleteMedia = (id: string) => {
     const item = media.find((candidate) => candidate.ref.id === id); if (!item) return;
     setMedia((current) => current.filter((candidate) => candidate.ref.id !== id));
-    if (!currentDraftId && item.ref.id.startsWith('media_')) void deleteListingMediaMany([item.ref.id]);
+    if (!currentDraftId && item.ref.id.startsWith('media_')) void deleteListingMediaMany([item.ref.id]).catch(() => setError('画像の削除に失敗しました。後で再試行してください。'));
     if (!media.some((candidate) => candidate.ref.id !== id && candidate.ref.status === 'ready')) {
       if (aiTimerRef.current !== null) window.clearTimeout(aiTimerRef.current);
       aiTimerRef.current = null;
@@ -396,10 +423,10 @@ export const ListingView: React.FC = () => {
   };
 
   useEffect(() => {
-    const pendingDraftId = window.localStorage.getItem(OPEN_DRAFT_STORAGE_KEY);
+    const pendingDraftId = window.localStorage.getItem(scopedDraftKey(OPEN_DRAFT_STORAGE_KEY, activeActor.id));
     if (!pendingDraftId) return;
-    window.localStorage.removeItem(OPEN_DRAFT_STORAGE_KEY);
-    const pendingDraft = readPersistedDrafts().find((draft) => draft.draftId === pendingDraftId);
+    window.localStorage.removeItem(scopedDraftKey(OPEN_DRAFT_STORAGE_KEY, activeActor.id));
+    const pendingDraft = readPersistedDrafts(activeActor.id).find((draft) => draft.draftId === pendingDraftId);
     if (pendingDraft) window.setTimeout(() => { void restoreDraft(pendingDraft); }, 0);
     // This is a one-shot handoff from My Page to the newly mounted listing route.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -415,7 +442,7 @@ export const ListingView: React.FC = () => {
       const localDraftId = createLocalDraftId();
       const localDraft: PersistedListingDraft = { ...draftData(), draftId: localDraftId };
       const nextDrafts = [localDraft, ...drafts];
-      setCurrentDraftId(localDraftId); setDrafts(nextDrafts); writePersistedDrafts(nextDrafts); setLastSavedFingerprint(JSON.stringify({ form, media: media.map((item) => item.ref.id) }));
+      setCurrentDraftId(localDraftId); setDrafts(nextDrafts); writePersistedDrafts(nextDrafts, activeActor.id); setLastSavedFingerprint(JSON.stringify({ form, media: media.map((item) => item.ref.id) }));
       if (!silent) showNotice('権限が反映されるまで、この下書きを端末に保存しました。');
       return;
     }
@@ -423,8 +450,8 @@ export const ListingView: React.FC = () => {
     const nextDraftId = result.data.draftId;
     const nextDraft: PersistedListingDraft = { ...draftData(), draftId: nextDraftId };
     const nextDrafts = [nextDraft, ...drafts.filter((draft) => draft.draftId !== nextDraftId && draft.draftId !== currentDraftId)];
-    cleanupUnusedMedia(previousDraft?.media.map((item) => item.id) ?? [], nextDrafts);
-    setCurrentDraftId(nextDraftId); setDrafts(nextDrafts); writePersistedDrafts(nextDrafts); setLastSavedFingerprint(JSON.stringify({ form, media: media.map((item) => item.ref.id) })); if (!silent) showNotice('下書きを保存しました。複数の下書きからいつでも再開できます。');
+    void cleanupUnusedMedia(previousDraft?.media.map((item) => item.id) ?? [], nextDrafts).catch(() => setError('不要な画像のクリーンアップに失敗しました。後で再試行してください。'));
+    setCurrentDraftId(nextDraftId); setDrafts(nextDrafts); writePersistedDrafts(nextDrafts, activeActor.id); setLastSavedFingerprint(JSON.stringify({ form, media: media.map((item) => item.ref.id) })); if (!silent) showNotice('下書きを保存しました。複数の下書きからいつでも再開できます。');
   };
   useEffect(() => {
     persistDraftRef.current = persistDraft;
@@ -432,7 +459,13 @@ export const ListingView: React.FC = () => {
 
   useEffect(() => () => {
     if (aiTimerRef.current !== null) window.clearTimeout(aiTimerRef.current);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    const referencedMediaIds = drafts.flatMap((draft) => draft.media.map((ref) => ref.id));
+    void pruneListingMedia(referencedMediaIds).catch(() => setError('古い画像のクリーンアップに失敗しました。後で再試行してください。'));
+  }, [activeActor.id, drafts]);
 
   useEffect(() => {
     const hasDraftContent = Boolean(form.title.trim() || form.price || media.length);
@@ -448,10 +481,10 @@ export const ListingView: React.FC = () => {
       if (!result.ok && result.error !== 'DRAFT_NOT_FOUND') { setError(result.message || '下書きを削除できませんでした。'); return; }
     }
     const nextDrafts = drafts.filter((candidate) => candidate !== draft && candidate.draftId !== draft.draftId);
-    cleanupUnusedMedia(draft.media.map((item) => item.id), nextDrafts);
-    setDrafts(nextDrafts); writePersistedDrafts(nextDrafts); if (currentDraftId === draft.draftId) setCurrentDraftId(undefined); showNotice('下書きを削除しました。');
+    void cleanupUnusedMedia(draft.media.map((item) => item.id), nextDrafts).catch(() => setError('下書き画像の削除に失敗しました。後で再試行してください。'));
+    setDrafts(nextDrafts); writePersistedDrafts(nextDrafts, activeActor.id); if (currentDraftId === draft.draftId) setCurrentDraftId(undefined); showNotice('下書きを削除しました。');
   };
-  const duplicateDraft = (draft: PersistedListingDraft) => { const duplicate: PersistedListingDraft = { ...draft, draftId: createLocalDraftId(), name: `${draft.name}（コピー）`, updatedAt: new Date().toISOString() }; const nextDrafts = [duplicate, ...drafts]; setDrafts(nextDrafts); writePersistedDrafts(nextDrafts); showNotice('下書きを複製しました。'); };
+  const duplicateDraft = (draft: PersistedListingDraft) => { const duplicate: PersistedListingDraft = { ...draft, draftId: createLocalDraftId(), name: `${draft.name}（コピー）`, updatedAt: new Date().toISOString() }; const nextDrafts = [duplicate, ...drafts]; setDrafts(nextDrafts); writePersistedDrafts(nextDrafts, activeActor.id); showNotice('下書きを複製しました。'); };
   const startNewListing = () => { resetForm(); setIsListingModalOpen(true); };
 
   const validateAndGo = (nextStep: ListingStep): boolean => {
@@ -474,7 +507,7 @@ export const ListingView: React.FC = () => {
     if (!created.ok) { setError(created.message || '下書きを作成できませんでした。seller actorへ切り替えてください。'); return; }
     const result = submitListing(created.data.draftId);
     if (!result.ok) { setError(result.message || '入力内容を確認してください。'); return; }
-    const nextDrafts = drafts.filter((draft) => draft.draftId !== created.data.draftId); setDrafts(nextDrafts); writePersistedDrafts(nextDrafts); resetForm(nextDrafts); setIsListingModalOpen(false); showNotice(`商品をモック出品しました（${activeActor.name}）。ホームの新着商品に追加されています。`);
+    const nextDrafts = drafts.filter((draft) => draft.draftId !== created.data.draftId); setDrafts(nextDrafts); writePersistedDrafts(nextDrafts, activeActor.id); resetForm(nextDrafts); setIsListingModalOpen(false); showNotice(`商品をモック出品しました（${activeActor.name}）。ホームの新着商品に追加されています。`);
   };
 
   const handleSubmit = (event: React.FormEvent) => { event.preventDefault(); if (step !== 'review') { const next: ListingStep = step === 'photos' ? 'info' : step === 'info' ? 'details' : 'review'; validateAndGo(next); } else confirmListing(); };
@@ -494,7 +527,7 @@ interface PhotoStepProps { media: ListingMediaItem[]; processingProgress: { done
 
 const PhotoStep: React.FC<PhotoStepProps> = ({ media, processingProgress, isAnalyzing, aiConfidence, aiSuggestions, isAutoInputOn, onToggleAutoInput, onApplyAiSuggestion, onChooseCamera, onChooseAlbum, onDelete, onRetry, onSetCover, onMove, onDragStart, onDrop }) => {
   const hasSuggestions = Object.values(aiSuggestions).some(Boolean);
-  return <section className="space-y-5"><div><p className="text-xs font-bold text-[var(--shop-blue)]">STEP 1</p><h2 className="mt-1 text-xl font-black text-white">商品の写真を追加</h2><p className="mt-1 text-sm leading-6 text-[var(--shop-muted)]">1枚目が表紙になります。最大20枚を追加して、順序と表紙を確認できます。</p></div><div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4 md:p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-sm font-black text-white">写真 {media.length}/{MAX_LISTING_IMAGES}</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">JPEG・PNG・WebP・AVIF・GIF / 1枚10MB以下 / 自動で1600px以下に変換</p></div><div className="flex items-center gap-2"><button type="button" onClick={onChooseCamera} disabled={media.length >= MAX_LISTING_IMAGES || Boolean(processingProgress)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--shop-border)] px-3 py-2.5 text-xs font-bold text-white hover:border-[var(--shop-blue)] disabled:cursor-not-allowed disabled:opacity-40"><Camera className="h-4 w-4 text-[var(--shop-blue)]" />カメラで撮影</button><button type="button" onClick={onChooseAlbum} disabled={media.length >= MAX_LISTING_IMAGES || Boolean(processingProgress)} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--shop-blue)] px-3 py-2.5 text-xs font-black text-[#06202e] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><ImagePlus className="h-4 w-4" />アルバムから選択</button></div></div><div className="mt-4 grid grid-cols-4 gap-2 xl:grid-cols-5" role="list" aria-label={`追加した写真 ${media.length}枚`} aria-live="polite">{media.map((item, index) => <MediaTile key={item.ref.id} item={item} index={index} total={media.length} onDelete={onDelete} onRetry={onRetry} onSetCover={onSetCover} onMove={onMove} onDragStart={onDragStart} onDrop={onDrop} />)}{Array.from({ length: Math.max(0, Math.min(4, MAX_LISTING_IMAGES - media.length)) }).map((_, index) => <button key={`empty-${index}`} type="button" onClick={onChooseAlbum} disabled={media.length >= MAX_LISTING_IMAGES || Boolean(processingProgress)} className="flex aspect-square min-h-0 flex-col items-center justify-center rounded-lg border border-dashed border-[var(--shop-border)] bg-[var(--shop-bg)] text-[var(--shop-subtle)] hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)] disabled:cursor-not-allowed disabled:opacity-40" aria-label={`写真を追加 ${media.length + index + 1}枚目`}><Plus className="h-5 w-5" /><span className="mt-1 text-[10px]">{media.length + index + 1}</span></button>)}</div>{media.length >= MAX_LISTING_IMAGES && <p className="mt-3 rounded-lg bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200" role="status">最大20枚に達しました。追加ボタンは無効です。</p>}{processingProgress && <div className="mt-4 rounded-lg bg-[var(--shop-bg)] p-3 text-xs text-[var(--shop-muted)]" role="status"><div className="flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-[var(--shop-blue)]" />画像を処理中 {processingProgress.done}/{processingProgress.total}</div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--shop-surface-raised)]"><div className="h-full rounded-full bg-[var(--shop-blue)] transition-all" style={{ width: `${Math.round((processingProgress.done / Math.max(1, processingProgress.total)) * 100)}%` }} /></div></div>}</div><div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-[var(--shop-blue)]" /><div><h3 className="text-sm font-black text-white">AI出品サポート</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">写真から候補を作成します。採用する項目だけ確認して追加してください。</p></div></div><button type="button" onClick={onToggleAutoInput} className={`flex h-7 w-12 items-center rounded-full p-1 transition-colors ${isAutoInputOn ? 'justify-end bg-[var(--shop-blue)]' : 'justify-start bg-[var(--shop-border)]'}`} aria-label={isAutoInputOn ? 'AI出品サポートをオフにする' : 'AI出品サポートをオンにする'}><span className="h-5 w-5 rounded-full bg-white shadow" /></button></div>{isAnalyzing && <p className="mt-3 flex items-center gap-2 text-xs text-[var(--shop-muted)]" role="status"><LoaderCircle className="h-4 w-4 animate-spin" />候補を生成しています…</p>}{aiConfidence && !isAnalyzing && <p className="mt-3 text-[10px] text-[var(--shop-muted)]">候補の信頼度 {aiConfidence}% ・ 公開前に必ず確認してください</p>}{hasSuggestions && !isAnalyzing && <div className="mt-4 grid gap-2 md:grid-cols-2">{([['title', '商品名', aiSuggestions.title], ['description', '説明', aiSuggestions.description], ['category', 'カテゴリー', aiSuggestions.category], ['condition', '状態', aiSuggestions.condition], ['color', '色', aiSuggestions.color]] as const).filter(([, , value]) => value).map(([field, label, value]) => <div key={field} className="rounded-lg bg-[var(--shop-bg)] p-3"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="text-[10px] font-bold text-[var(--shop-muted)]">{label}候補</p><p className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-xs text-white">{value}</p></div><button type="button" onClick={() => onApplyAiSuggestion(field)} className="shrink-0 rounded-md bg-[var(--shop-blue)] px-2 py-1.5 text-[10px] font-black text-[#06202e]">採用</button></div></div>)}</div>}</div></section>;
+  return <section className="space-y-5"><div><p className="text-xs font-bold text-[var(--shop-blue)]">STEP 1</p><h2 className="mt-1 text-xl font-black text-white">商品の写真を追加</h2><p className="mt-1 text-sm leading-6 text-[var(--shop-muted)]">1枚目が表紙になります。最大20枚を追加して、順序と表紙を確認できます。</p></div><div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4 md:p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-sm font-black text-white">写真 {media.length}/{MAX_LISTING_IMAGES}</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">JPEG・PNG・WebP・AVIF・GIF / 1枚10MB以下 / 自動で1600px以下に変換</p></div><div className="flex items-center gap-2"><button type="button" onClick={onChooseCamera} disabled={media.length >= MAX_LISTING_IMAGES || Boolean(processingProgress)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--shop-border)] px-3 py-2.5 text-xs font-bold text-white hover:border-[var(--shop-blue)] disabled:cursor-not-allowed disabled:opacity-40"><Camera className="h-4 w-4 text-[var(--shop-blue)]" />カメラで撮影</button><button type="button" onClick={onChooseAlbum} disabled={media.length >= MAX_LISTING_IMAGES || Boolean(processingProgress)} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--shop-blue)] px-3 py-2.5 text-xs font-black text-[#06202e] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><ImagePlus className="h-4 w-4" />アルバムから選択</button></div></div><div className="mt-4 grid grid-cols-4 gap-2 xl:grid-cols-5" role="list" aria-label={`追加した写真 ${media.length}枚`} aria-live="polite">{media.map((item, index) => <MediaTile key={item.ref.id} item={item} index={index} total={media.length} onDelete={onDelete} onRetry={onRetry} onSetCover={onSetCover} onMove={onMove} onDragStart={onDragStart} onDrop={onDrop} />)}{Array.from({ length: Math.max(0, Math.min(4, MAX_LISTING_IMAGES - media.length)) }).map((_, index) => <button key={`empty-${index}`} type="button" onClick={onChooseAlbum} disabled={media.length >= MAX_LISTING_IMAGES || Boolean(processingProgress)} className="flex aspect-square min-h-0 flex-col items-center justify-center rounded-lg border border-dashed border-[var(--shop-border)] bg-[var(--shop-bg)] text-[var(--shop-subtle)] hover:border-[var(--shop-blue)] hover:text-[var(--shop-blue)] disabled:cursor-not-allowed disabled:opacity-40" aria-label={`写真を追加 ${media.length + index + 1}枚目`}><Plus className="h-5 w-5" /><span className="mt-1 text-[10px]">{media.length + index + 1}</span></button>)}</div>{media.length >= MAX_LISTING_IMAGES && <p className="mt-3 rounded-lg bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200" role="status">最大20枚に達しました。追加ボタンは無効です。</p>}{processingProgress && <div className="mt-4 rounded-lg bg-[var(--shop-bg)] p-3 text-xs text-[var(--shop-muted)]" role="status"><div className="flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin text-[var(--shop-blue)]" />画像を処理中 {processingProgress.done}/{processingProgress.total}</div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--shop-surface-raised)]"><div className="h-full rounded-full bg-[var(--shop-blue)] transition-all" style={{ width: `${Math.round((processingProgress.done / Math.max(1, processingProgress.total)) * 100)}%` }} /></div></div>}</div><div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-[var(--shop-blue)]" /><div><h3 className="text-sm font-black text-white">画像解析デモ（モック）</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">画像ファイル名を使った固定ルールの候補です。公開前に必ず内容を確認してください。</p></div></div><button type="button" onClick={onToggleAutoInput} className={`flex h-7 w-12 items-center rounded-full p-1 transition-colors ${isAutoInputOn ? 'justify-end bg-[var(--shop-blue)]' : 'justify-start bg-[var(--shop-border)]'}`} aria-label={isAutoInputOn ? '画像解析デモをオフにする' : '画像解析デモをオンにする'}><span className="h-5 w-5 rounded-full bg-white shadow" /></button></div>{isAnalyzing && <p className="mt-3 flex items-center gap-2 text-xs text-[var(--shop-muted)]" role="status"><LoaderCircle className="h-4 w-4 animate-spin" />モック候補を生成しています…</p>}{aiConfidence && !isAnalyzing && <p className="mt-3 text-[10px] text-[var(--shop-muted)]">モック推定信頼度 {aiConfidence}% ・ 公開前に必ず確認してください</p>}{hasSuggestions && !isAnalyzing && <div className="mt-4 grid gap-2 md:grid-cols-2">{([['title', '商品名', aiSuggestions.title], ['description', '説明', aiSuggestions.description], ['category', 'カテゴリー', aiSuggestions.category], ['condition', '状態', aiSuggestions.condition], ['color', '色', aiSuggestions.color]] as const).filter(([, , value]) => value).map(([field, label, value]) => <div key={field} className="rounded-lg bg-[var(--shop-bg)] p-3"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="text-[10px] font-bold text-[var(--shop-muted)]">{label}候補</p><p className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-xs text-white">{value}</p></div><button type="button" onClick={() => onApplyAiSuggestion(field)} className="shrink-0 rounded-md bg-[var(--shop-blue)] px-2 py-1.5 text-[10px] font-black text-[#06202e]">採用</button></div></div>)}</div>}</div></section>;
 };
 
 interface MediaTileProps { item: ListingMediaItem; index: number; total: number; onDelete: (id: string) => void; onRetry: (item: ListingMediaItem) => void; onSetCover: (id: string) => void; onMove: (id: string, offset: -1 | 1) => void; onDragStart: (id: string) => void; onDrop: (id: string) => void }
@@ -510,15 +543,19 @@ interface CameraCaptureOverlayProps {
   onFallback: () => void;
 }
 
-const CameraCaptureOverlay: React.FC<CameraCaptureOverlayProps> = ({ videoRef, error, facingMode, isDeviceFrame, onCapture, onClose, onSwitch, onFallback }) => (
-  <div className={`${isDeviceFrame ? 'absolute' : 'fixed'} inset-0 z-[120] flex items-center justify-center bg-black/90 p-4`} role="dialog" aria-modal="true" aria-label="カメラで撮影">
-    <div className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#161618] shadow-2xl">
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3"><div><h2 className="font-black text-white">カメラで撮影</h2><p className="mt-0.5 text-[11px] text-white/60">撮影した画像は自動で出品写真に追加されます</p></div><button type="button" onClick={onClose} aria-label="カメラを閉じる" className="rounded-full p-2 text-white/70 hover:bg-white/10 hover:text-white"><X className="h-5 w-5" /></button></div>
-      <div className="relative aspect-[3/4] min-h-0 bg-black"><video ref={videoRef} playsInline autoPlay muted className="h-full w-full object-cover" aria-label="カメラプレビュー" />{error && <div className="absolute inset-x-4 bottom-4 rounded-xl border border-red-300/30 bg-black/75 p-3 text-xs leading-5 text-red-100" role="alert">{error}</div>}</div>
-      <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/10 px-4 py-4"><button type="button" onClick={onFallback} className="rounded-lg border border-white/15 px-3 py-2.5 text-xs font-bold text-white hover:bg-white/10">端末のカメラ入力</button><button type="button" onClick={onSwitch} className="rounded-full border border-white/15 px-3 py-2.5 text-xs font-bold text-white hover:bg-white/10">カメラ切替（{facingMode === 'environment' ? '背面' : '前面'}）</button><button type="button" onClick={onCapture} className="flex h-14 w-14 items-center justify-center rounded-full border-4 border-white bg-[var(--shop-accent)] text-white shadow-lg hover:scale-105" aria-label="撮影"><Camera className="h-6 w-6" /></button></div>
+const CameraCaptureOverlay: React.FC<CameraCaptureOverlayProps> = ({ videoRef, error, facingMode, isDeviceFrame, onCapture, onClose, onSwitch, onFallback }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, true, onClose);
+  return (
+    <div className={`${isDeviceFrame ? 'absolute' : 'fixed'} inset-0 z-[120] flex items-center justify-center bg-black/90 p-4`} role="dialog" aria-modal="true" aria-label="カメラで撮影">
+      <div ref={dialogRef} className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#161618] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3"><div><h2 className="font-black text-white">カメラで撮影</h2><p className="mt-0.5 text-[11px] text-white/60">撮影した画像は自動で出品写真に追加されます</p></div><button type="button" onClick={onClose} aria-label="カメラを閉じる" className="rounded-full p-2 text-white/70 hover:bg-white/10 hover:text-white"><X className="h-5 w-5" /></button></div>
+        <div className="relative aspect-[3/4] min-h-0 bg-black"><video ref={videoRef} playsInline autoPlay muted className="h-full w-full object-cover" aria-label="カメラプレビュー" />{error && <div className="absolute inset-x-4 bottom-4 rounded-xl border border-red-300/30 bg-black/75 p-3 text-xs leading-5 text-red-100" role="alert">{error}</div>}</div>
+        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/10 px-4 py-4"><button type="button" onClick={onFallback} className="rounded-lg border border-white/15 px-3 py-2.5 text-xs font-bold text-white hover:bg-white/10">端末のカメラ入力</button><button type="button" onClick={onSwitch} className="rounded-full border border-white/15 px-3 py-2.5 text-xs font-bold text-white hover:bg-white/10">カメラ切替（{facingMode === 'environment' ? '背面' : '前面'}）</button><button type="button" onClick={onCapture} className="flex h-14 w-14 items-center justify-center rounded-full border-4 border-white bg-[var(--shop-accent)] text-white shadow-lg hover:scale-105" aria-label="撮影"><Camera className="h-6 w-6" /></button></div>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 const MediaTile: React.FC<MediaTileProps> = ({ item, index, total, onDelete, onRetry, onSetCover, onMove, onDragStart, onDrop }) => (
   <div role="listitem" aria-posinset={index + 1} aria-setsize={total} draggable={item.ref.status === 'ready'} onDragStart={() => onDragStart(item.ref.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => onDrop(item.ref.id)} className={`group relative aspect-square overflow-hidden rounded-lg border ${index === 0 ? 'border-[var(--shop-blue)]' : 'border-[var(--shop-border)]'} bg-[var(--shop-bg)]`}>
     <div className="absolute left-1.5 top-1.5 z-10 flex h-5 min-w-5 items-center justify-center rounded-full bg-black/75 px-1 text-[10px] font-black text-white">{index + 1}</div>
@@ -547,5 +584,14 @@ const ListingHome: React.FC<{ isDeviceFrame: boolean; drafts: PersistedListingDr
 
 const HomeFeature: React.FC<{ icon: React.ReactNode; title: string; body: string }> = ({ icon, title, body }) => <div className="rounded-lg bg-[var(--shop-bg)] p-3"><span className="text-[var(--shop-blue)]">{icon}</span><p className="mt-2 text-xs font-bold text-white">{title}</p><p className="mt-1 text-[10px] text-[var(--shop-muted)]">{body}</p></div>;
 const DraftRow: React.FC<{ draft: PersistedListingDraft; onResume: () => void; onDelete: () => void; onDuplicate: () => void }> = ({ draft, onResume, onDelete, onDuplicate }) => <div className="rounded-lg border border-[var(--shop-border)] bg-[var(--shop-bg)] p-3"><button type="button" onClick={onResume} className="flex w-full items-start gap-3 text-left"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--shop-surface-raised)] text-[var(--shop-blue)]"><FileText className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-white">{draft.name}</span><span className="mt-1 block text-[10px] text-[var(--shop-muted)]">画像{draft.media.length}枚 ・ {formatDraftDate(draft.updatedAt)}</span></span><ChevronRight className="h-4 w-4 text-[var(--shop-subtle)]" /></button><div className="mt-2 flex justify-end gap-1"><button type="button" onClick={onDuplicate} aria-label={`${draft.name}を複製`} className="rounded p-1.5 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)] hover:text-white"><Copy className="h-3.5 w-3.5" /></button><button type="button" onClick={onDelete} aria-label={`${draft.name}を削除`} className="rounded p-1.5 text-[var(--shop-muted)] hover:bg-red-400/20 hover:text-red-300"><Trash2 className="h-3.5 w-3.5" /></button></div></div>;
-const DraftListOverlay: React.FC<{ drafts: PersistedListingDraft[]; onClose: () => void; onResume: (draft: PersistedListingDraft) => void; onDelete: (draft: PersistedListingDraft) => void; onDuplicate: (draft: PersistedListingDraft) => void }> = ({ drafts, onClose, onResume, onDelete, onDuplicate }) => <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="下書き一覧"><div className="w-full max-w-lg rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-base font-black text-white">下書き一覧</h2><button type="button" onClick={onClose} aria-label="下書き一覧を閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div><div className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">{drafts.map((draft) => <DraftRow key={`${draft.draftId ?? draft.name}-${draft.updatedAt}`} draft={draft} onResume={() => onResume(draft)} onDelete={() => onDelete(draft)} onDuplicate={() => onDuplicate(draft)} />)}</div><button type="button" onClick={onClose} className="mt-5 w-full rounded-lg border border-[var(--shop-border)] py-3 text-sm font-bold text-white">閉じる</button></div></div>;
-const TemplateOverlay: React.FC<{ onSelect: (template: TemplateName) => void; onClose: () => void }> = ({ onSelect, onClose }) => { const templates: [TemplateName, string, string][] = [['fashion', 'ファッション', '衣類・バッグ・靴の基本項目を入力'], ['book', '本・マンガ', '本の状態と発送説明を入力'], ['device', '家電・スマホ', '動作確認・付属品の説明を入力']]; return <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="テンプレートを選ぶ"><div className="w-full max-w-lg rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-base font-black text-white">テンプレートから入力</h2><button type="button" onClick={onClose} aria-label="テンプレートを閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div><p className="mt-2 text-xs text-[var(--shop-muted)]">候補を入れたあと、内容を自由に修正できます。</p><div className="mt-5 space-y-2">{templates.map(([value, title, body]) => <button type="button" key={value} onClick={() => onSelect(value)} className="flex w-full items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3 text-left hover:border-[var(--shop-blue)]"><span className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--shop-bg)] text-[var(--shop-blue)]"><Pencil className="h-5 w-5" /></span><span><span className="block text-sm font-bold text-white">{title}</span><span className="mt-1 block text-xs text-[var(--shop-muted)]">{body}</span></span><ChevronRight className="ml-auto h-4 w-4 text-[var(--shop-subtle)]" /></button>)}</div></div></div>; };
+const DraftListOverlay: React.FC<{ drafts: PersistedListingDraft[]; onClose: () => void; onResume: (draft: PersistedListingDraft) => void; onDelete: (draft: PersistedListingDraft) => void; onDuplicate: (draft: PersistedListingDraft) => void }> = ({ drafts, onClose, onResume, onDelete, onDuplicate }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, true, onClose);
+  return <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="下書き一覧"><div ref={dialogRef} className="w-full max-w-lg rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-base font-black text-white">下書き一覧</h2><button type="button" onClick={onClose} aria-label="下書き一覧を閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div><div className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">{drafts.map((draft) => <DraftRow key={`${draft.draftId ?? draft.name}-${draft.updatedAt}`} draft={draft} onResume={() => onResume(draft)} onDelete={() => onDelete(draft)} onDuplicate={() => onDuplicate(draft)} />)}</div><button type="button" onClick={onClose} className="mt-5 w-full rounded-lg border border-[var(--shop-border)] py-3 text-sm font-bold text-white">閉じる</button></div></div>;
+};
+const TemplateOverlay: React.FC<{ onSelect: (template: TemplateName) => void; onClose: () => void }> = ({ onSelect, onClose }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, true, onClose);
+  const templates: [TemplateName, string, string][] = [['fashion', 'ファッション', '衣類・バッグ・靴の基本項目を入力'], ['book', '本・マンガ', '本の状態と発送説明を入力'], ['device', '家電・スマホ', '動作確認・付属品の説明を入力']];
+  return <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="テンプレートを選ぶ"><div ref={dialogRef} className="w-full max-w-lg rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-base font-black text-white">テンプレートから入力</h2><button type="button" onClick={onClose} aria-label="テンプレートを閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div><p className="mt-2 text-xs text-[var(--shop-muted)]">候補を入れたあと、内容を自由に修正できます。</p><div className="mt-5 space-y-2">{templates.map(([value, title, body]) => <button type="button" key={value} onClick={() => onSelect(value)} className="flex w-full items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3 text-left hover:border-[var(--shop-blue)]"><span className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--shop-bg)] text-[var(--shop-blue)]"><Pencil className="h-5 w-5" /></span><span><span className="block text-sm font-bold text-white">{title}</span><span className="mt-1 block text-xs text-[var(--shop-muted)]">{body}</span></span><ChevronRight className="ml-auto h-4 w-4 text-[var(--shop-subtle)]" /></button>)}</div></div></div>;
+};

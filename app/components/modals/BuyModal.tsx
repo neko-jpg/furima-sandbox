@@ -1,10 +1,9 @@
 'use client';
 
-/* eslint-disable @next/next/no-img-element */
-
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, CreditCard, Gavel, MapPin, ShieldCheck, Tag, WalletCards, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
+import { ShopImage } from '../ui/ShopImage';
 
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -82,8 +81,8 @@ export const BuyModal: React.FC = () => {
       setOrderId(`BID-${buyingItem.id.slice(-6).toUpperCase()}`);
     } else {
       const result = purchaseItem(buyingItem.id, {
-        couponDiscount: couponApplied ? 500 : 0,
-        pointsDiscount: pointsApplied ? 200 : 0,
+        couponDiscount,
+        pointsDiscount,
       });
       if (!result.ok) {
         setPurchaseError(result.message || (result.error === 'ALREADY_SOLD' ? 'この商品はすでに売り切れています。' : '処理に失敗しました。入力内容を確認してください。'));
@@ -107,14 +106,14 @@ export const BuyModal: React.FC = () => {
           <div className="space-y-4 overflow-y-auto p-6 text-center animate-fade-in">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400"><CheckCircle2 className="h-10 w-10" /></div>
             <div><h3 className="text-lg font-black text-white">{isAuction ? '入札を受け付けました' : '購入手続きが完了しました'}</h3><p className="mt-1 text-xs text-[var(--shop-muted)]">これはハッカソン用のシミュレーションです。実際の決済・配送は発生しません。</p></div>
-            <div className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3 text-left"><img src={buyingItem.images[0]} alt="" className="h-14 w-14 rounded-lg object-cover" /><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold text-white">{buyingItem.title}</div><div className="mt-0.5 text-sm font-black text-white">¥{(isAuction ? (buyingItem.currentBid ?? buyingItem.price) : total).toLocaleString()}</div>{isAuction && <div className="text-[10px] text-[var(--shop-muted)]">入札 {buyingItem.bidsCount ?? 0}件</div>}</div></div>
+            <div className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3 text-left"><ShopImage src={buyingItem.images[0]} alt="" width={112} height={112} className="h-14 w-14 rounded-lg object-cover" /><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold text-white">{buyingItem.title}</div><div className="mt-0.5 text-sm font-black text-white">¥{(isAuction ? (buyingItem.currentBid ?? buyingItem.price) : total).toLocaleString()}</div>{isAuction && <div className="text-[10px] text-[var(--shop-muted)]">入札 {buyingItem.bidsCount ?? 0}件</div>}</div></div>
             <div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-bg)] p-3 text-left text-xs"><div className="flex justify-between text-[var(--shop-muted)]"><span>デモ注文番号</span><span className="font-bold text-white">{orderId}</span></div><div className="mt-2 flex justify-between text-[var(--shop-muted)]"><span>次にできること</span><span className="font-bold text-[var(--shop-blue)]">商品詳細へ戻る</span></div></div>
             <button type="button" onClick={handleClose} className="w-full rounded-xl bg-[var(--shop-accent)] py-3 text-xs font-bold text-white transition-colors hover:bg-[var(--shop-accent-strong)]" data-testid="complete-close-btn">商品詳細に戻る</button>
           </div>
         ) : (
           <div className="shop-scrollbar space-y-4 overflow-y-auto p-5" aria-describedby="buy-modal-description">
             <div id="buy-modal-description" className="rounded-lg border border-[#2b5367] bg-[#153247] px-3 py-2 text-[11px] leading-5 text-[#c5eaff]"><span className="font-bold">確認ポイント：</span>商品・金額・支払い方法・配送先を見てから、下の同意チェックを入れて確定します。</div>
-            <div className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3"><img src={buyingItem.images[0]} alt="" className="h-16 w-16 rounded-lg object-cover" /><div className="min-w-0 flex-1"><div className="line-clamp-2 text-xs font-bold text-white">{buyingItem.title}</div><div className="mt-1 text-base font-black text-white">¥{(buyingItem.currentBid ?? buyingItem.price).toLocaleString()}</div>{isAuction && <div className="mt-0.5 text-[10px] text-[var(--shop-muted)]">現在の最高入札額 ・ 入札 {buyingItem.bidsCount ?? 0}件</div>}</div></div>
+            <div className="flex items-center gap-3 rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-3"><ShopImage src={buyingItem.images[0]} alt="" width={128} height={128} className="h-16 w-16 rounded-lg object-cover" /><div className="min-w-0 flex-1"><div className="line-clamp-2 text-xs font-bold text-white">{buyingItem.title}</div><div className="mt-1 text-base font-black text-white">¥{(buyingItem.currentBid ?? buyingItem.price).toLocaleString()}</div>{isAuction && <div className="mt-0.5 text-[10px] text-[var(--shop-muted)]">現在の最高入札額 ・ 入札 {buyingItem.bidsCount ?? 0}件</div>}</div></div>
 
             {isAuction ? (
               <div className="rounded-xl border border-[var(--shop-border)] bg-[var(--shop-surface-raised)] p-4"><div className="flex items-center gap-2 text-xs font-bold text-white"><Gavel className="h-4 w-4 text-[var(--shop-accent)]" />入札額を入力</div><div className="relative mt-3"><span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-[var(--shop-muted)]">¥</span><input id="bid-amount" type="number" min={minimumBid} step="100" value={bidAmount || String(minimumBid)} onChange={(event) => setBidAmount(event.target.value)} className="w-full rounded-lg border border-[var(--shop-border)] bg-[var(--shop-surface)] py-3 pl-8 pr-3 text-right text-lg font-black text-white outline-none focus:border-[var(--shop-blue)]" /><p className="mt-2 text-[10px] text-[var(--shop-muted)]">最低入札額：¥{minimumBid.toLocaleString()} ・ 入札後も再入札できます</p></div></div>
@@ -141,8 +140,26 @@ export const BuyModal: React.FC = () => {
 const CostRow: React.FC<{ label: string; value: string; accent?: boolean }> = ({ label, value, accent = false }) => <div className="flex justify-between text-[var(--shop-muted)]"><span>{label}</span><span className={accent ? 'font-bold text-emerald-300' : 'text-white'}>{value}</span></div>;
 
 const CheckoutSheet: React.FC<{ type: 'payment' | 'address'; current: string; onClose: () => void; onSelect: (value: string) => void }> = ({ type, current, onClose, onSelect }) => {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previousActiveElement = document.activeElement as HTMLElement | null;
+    const focusFirstControl = () => sheetRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
+      if (event.key !== 'Tab' || !sheetRef.current) return;
+      const focusable = Array.from(sheetRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    const frame = window.requestAnimationFrame(focusFirstControl);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => { window.cancelAnimationFrame(frame); window.removeEventListener('keydown', handleKeyDown); if (previousActiveElement?.isConnected) previousActiveElement.focus(); };
+  }, [onClose]);
   const options = type === 'payment'
     ? ['クレジットカード（VISA **** 1234）', 'メルペイ残高（¥6,200）', 'コンビニ払い（手数料なし）']
     : ['〒150-0001 東京都渋谷区 shopハウス 1-1', '〒150-0042 東京都渋谷区宇田川町 shopロッカー', '配送先を追加する（デモ）'];
-  return <div className="absolute inset-0 z-[80] flex items-end justify-center bg-black/70 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={type === 'payment' ? '支払い方法を変更' : '配送先を変更'}><div className="w-full max-w-md rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl animate-slide-up"><div className="flex items-center justify-between"><h3 className="font-black text-white">{type === 'payment' ? '支払い方法を変更' : '配送先を変更'}</h3><button type="button" onClick={onClose} aria-label="選択を閉じる" className="rounded-full p-1 text-[var(--shop-muted)]"><X className="h-5 w-5" /></button></div><div className="mt-4 space-y-2">{options.map((option) => <button type="button" key={option} onClick={() => onSelect(option)} className={`flex w-full items-center justify-between rounded-xl border px-3 py-3 text-left text-xs ${current === option ? 'border-[var(--shop-blue)] bg-[#16394d] text-white' : 'border-[var(--shop-border)] bg-[var(--shop-surface-raised)] text-[var(--shop-muted)]'}`}>{option}{current === option && <span className="text-[var(--shop-blue)]">選択中</span>}</button>)}</div><button type="button" onClick={onClose} className="mt-4 w-full rounded-xl border border-[var(--shop-border)] py-3 text-sm font-bold text-white">キャンセル</button></div></div>;
+  return <div className="absolute inset-0 z-[80] flex items-end justify-center bg-black/70 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={type === 'payment' ? '支払い方法を変更' : '配送先を変更'}><div ref={sheetRef} className="w-full max-w-md rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-surface)] p-5 shadow-2xl animate-slide-up"><div className="flex items-center justify-between"><h3 className="font-black text-white">{type === 'payment' ? '支払い方法を変更' : '配送先を変更'}</h3><button type="button" onClick={onClose} aria-label="選択を閉じる" className="rounded-full p-1 text-[var(--shop-muted)]"><X className="h-5 w-5" /></button></div><div className="mt-4 space-y-2">{options.map((option) => <button type="button" key={option} onClick={() => onSelect(option)} className={`flex w-full items-center justify-between rounded-xl border px-3 py-3 text-left text-xs ${current === option ? 'border-[var(--shop-blue)] bg-[#16394d] text-white' : 'border-[var(--shop-border)] bg-[var(--shop-surface-raised)] text-[var(--shop-muted)]'}`}>{option}{current === option && <span className="text-[var(--shop-blue)]">選択中</span>}</button>)}</div><button type="button" onClick={onClose} className="mt-4 w-full rounded-xl border border-[var(--shop-border)] py-3 text-sm font-bold text-white">キャンセル</button></div></div>;
 };

@@ -91,7 +91,7 @@ test("Command Bus rejects sandbox, actor, and state-version mismatches before mu
   assert.equal(calls, 0);
 });
 
-test("large image payloads are compacted for idempotency without changing the operation input", () => {
+test("large image payloads are rejected before execution and never reach the operation", () => {
   const bus = new SandboxCommandBus({ getContext: () => context });
   const image = `data:image/jpeg;base64,${"A".repeat(200_000)}`;
   let received;
@@ -99,7 +99,8 @@ test("large image payloads are compacted for idempotency without changing the op
     received = image;
     return { ok: true, data: { accepted: true }, stateVersion: 5 };
   });
-  assert.equal(result.ok, true);
-  assert.equal(received, image);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "INVALID_INPUT");
+  assert.equal(received, undefined);
   assert.match(JSON.stringify(bus.getTrace()[0]?.payload), /\[image:/);
 });

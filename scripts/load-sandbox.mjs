@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputPath = resolve(root, 'output/load/latest.json');
@@ -25,7 +26,7 @@ const targetRps = Math.max(1, Math.floor(numberArg('rps', 100, 1)));
 const requestTimeoutMs = Math.max(1000, Math.floor(numberArg('timeout-ms', 10_000, 1000)));
 const baseUrl = stringArg('base-url', process.env.SANDBOX_BASE_URL ?? process.env.BASE_URL ?? 'http://127.0.0.1:3001').replace(/\/$/u, '');
 const noStart = booleanArg('no-start') || process.env.LOAD_NO_START === '1';
-const runId = `load-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const runId = `load-${Date.now()}-${randomUUID()}`;
 
 const sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;

@@ -31,11 +31,12 @@ Wallet / Profile
        +--> My Page wallet and profile panels
 ~~~
 
-カタログ全件をSandboxEngineへコピーしない方針です。初期UIは24件、APIの1ページは最大40件とし、必要なページだけをCatalogStoreへ追加します。SandboxEngineには在庫・取引・出品差分を置きます。
+公開UIとSandboxの初期データは、選定済み50件のローカル商品カタログです。APIの1ページは最大40件とし、必要なページだけをCatalogStoreへ追加します。旧来のINITIAL_ITEMSは隔離したテスト用fixtureとして扱い、公開カタログへ混在させません。SandboxEngineには在庫・取引・出品差分を置きます。Catalog APIのHTTP ETagは取得内容のdigestを含み、q/categoryは200文字以内です。
 
 ## 状態保存
 
-localStorageは小さな設定と互換読み込みに限定します。画像本体や大きなSandbox JSONを同期保存しません。書き込みはデバウンスし、D1更新はstateVersion/ETagで競合を検知します。
+IndexedDBをブラウザSandbox aggregateの永続化正本とし、localStorageは小さな設定、actor-scoped draft metadata、legacy stateの互換読み込みに限定します。画像本体はListingMediaStoreへ置き、大きなSandbox JSONを同期保存しません。書き込みはデバウンスし、D1更新はstateVersion/ETagで競合を検知します。D1 HTTP経路はoperator APIであり、browser bearer tokenを埋め込みません。
+Cloudflare Workerの15分Cron Triggerはcommand/preview retention cleanupを実行し、実行結果は構造化ログへ出します。
 
 ## 出品画像
 

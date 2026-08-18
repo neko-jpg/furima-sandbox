@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { INITIAL_ITEMS } from '../app/data/initialData.ts';
 import { SandboxCommandExecutor } from '../app/domain/commandExecutor.ts';
-import { SandboxEngine } from '../app/domain/sandboxEngine.ts';
+import { SandboxEngine, createTrustedPrincipal } from '../app/domain/sandboxEngine.ts';
 import { IndexedDbSandboxStateStore } from '../app/domain/sandboxIdbStore.ts';
 import { FakeD1SandboxStateStore, MemorySandboxStateStore } from '../app/domain/sandboxStore.ts';
 
@@ -36,7 +36,7 @@ test('durable preview and commit survive a new executor and replay the same resu
   const secondEngine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'executor-test', seed: 'executor-seed' });
   const saved = await store.get('executor-test');
   assert.ok(saved);
-  secondEngine.importState(saved.payload, { actorId: 'platform', scope: 'sandbox-control' });
+  secondEngine.importState(saved.payload, { principal: createTrustedPrincipal({ subjectId: 'executor-test-1', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] }) });
   const second = new SandboxCommandExecutor({ engine: secondEngine, store, now: () => new Date('2026-01-01T00:00:01.000Z') });
   const repeated = await second.commitPreview(preview.data.previewId, { actorId: 'buyer_01', idempotencyKey: 'commit-wallet-1' }, () => ({ ok: false, error: 'INVALID_INPUT', stateVersion: secondEngine.getStateVersion() }));
   assert.deepEqual(repeated, commit);
@@ -58,6 +58,24 @@ test('two executors using the same state version cannot lose an update', async (
   assert.equal([left.ok, right.ok].filter(Boolean).length, 1);
   assert.equal([left, right].filter((result) => !result.ok && result.error === 'STATE_CONFLICT').length, 1);
   assert.equal((await store.get('cas-test')).stateVersion, 1);
+});
+
+test('a failed command never mutates the live aggregate or durable state payload', async () => {
+  const store = new MemorySandboxStateStore();
+  const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'failed-command-test', seed: 'failed-command-seed' });
+  await store.put(stateRecord(engine));
+  const before = engine.exportState();
+  const executor = new SandboxCommandExecutor({ engine, store });
+  const result = await executor.execute('wallet.deposit', { amount: 1000 }, { actorId: 'buyer_01', idempotencyKey: 'failed-command-1' }, (working) => {
+    working.depositWallet(1000, { actorId: 'buyer_01' });
+    return { ok: false, error: 'PAYMENT_FAILED', stateVersion: working.getStateVersion() };
+  });
+  assert.equal(result.ok, false);
+  assert.equal(engine.exportState(), before);
+  const persisted = await store.get('failed-command-test');
+  assert.ok(persisted);
+  assert.equal(persisted.payload, before);
+  assert.equal((await store.listCommands('failed-command-test'))[0]?.status, 'FAILED');
 });
 
 test('browser store falls back with a diagnostic when IndexedDB is unavailable', async () => {
@@ -82,7 +100,7 @@ test('fault injection: a lost response after commit is replayed without a duplic
   const persisted = await store.get('fault-test');
   assert.ok(persisted);
   const restartedEngine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'fault-test', seed: 'fault-seed' });
-  assert.equal(restartedEngine.importState(persisted.payload, { actorId: 'platform', scope: 'sandbox-control' }).ok, true);
+  assert.equal(restartedEngine.importState(persisted.payload, { principal: createTrustedPrincipal({ subjectId: 'executor-test-2', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] }) }).ok, true);
   const restarted = new SandboxCommandExecutor({ engine: restartedEngine, store });
   const replayed = await restarted.execute('wallet.deposit', { amount: 1000 }, { actorId: 'buyer_01', idempotencyKey: 'fault-deposit-1' }, (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
   assert.equal(replayed.ok, true);

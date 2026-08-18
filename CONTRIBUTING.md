@@ -12,10 +12,11 @@
 
 1. npm run typecheck
 2. npm run lint
-3. npm run docs:check
-4. npm test
-5. npm run assets:audit
-6. npm audit --omit=dev
+3. npm run types:worker
+4. npm run docs:check
+5. npm test
+6. npm run assets:audit
+7. npm audit --omit=dev
 
 `npm audit`全体では、現行`vinext`が固定する`image-size`のhigh advisoryが残ります。これはビルド時の開発依存で、`npm audit fix --force`はvinextの破壊的な置換を伴うため実行しません。更新時にvinext側の修正版を再確認してください。
 

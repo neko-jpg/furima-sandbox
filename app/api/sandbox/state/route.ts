@@ -3,6 +3,10 @@ import {
   DEFAULT_SANDBOX_ID,
   failure,
   MAX_SANDBOX_REQUEST_BYTES,
+  hasJsonContentType,
+  readJson,
+  SANDBOX_CONTROL_OPTIONS,
+  createSeededEngine,
   sandboxIdFrom,
   storeForRequest,
 } from '../runtime';
@@ -38,36 +42,31 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function PUT(request: Request): Promise<Response> {
-  const authError = await authorizationFailure(request);
+  const authError = await authorizationFailure(request, { requireControl: true });
   if (authError) return authError;
+  if (!hasJsonContentType(request)) return failure('INVALID_INPUT', 415, { message: 'Content-Typeはapplication/jsonで指定してください' });
   const id = sandboxIdFrom(request);
   if (!id) return failure('INVALID_STATE_ID', 400);
   const contentLength = Number(request.headers.get('content-length') ?? 0);
   if (contentLength > MAX_SANDBOX_REQUEST_BYTES) return failure('PAYLOAD_TOO_LARGE', 413, { maxBytes: MAX_SANDBOX_REQUEST_BYTES });
-  let raw: string;
-  try {
-    raw = await request.text();
-    if (raw.length > MAX_SANDBOX_REQUEST_BYTES) return failure('PAYLOAD_TOO_LARGE', 413, { maxBytes: MAX_SANDBOX_REQUEST_BYTES });
-  } catch {
-    return failure('INVALID_STATE', 400);
-  }
-  let candidate: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return failure('INVALID_STATE', 400);
-    candidate = parsed as Record<string, unknown>;
-  } catch {
-    return failure('INVALID_STATE', 400);
-  }
+  const candidate = await readJson(request);
+  if (!candidate) return failure('INVALID_STATE', 400);
+  const raw = JSON.stringify(candidate);
   const stateVersion = candidate.stateVersion;
   if (!hasValidStateEnvelope(candidate, id) || !Number.isInteger(stateVersion) || Number(stateVersion) < 0) return failure('INVALID_STATE', 400);
   try {
     const store = await storeForRequest();
     const expected = request.headers.get('if-match-state-version');
     const expectedStateVersion = expected === null ? undefined : Number(expected);
-    const existing = expected === null ? await store.get(id) : null;
+    const existing = await store.get(id);
     if (expected !== null && !Number.isInteger(expectedStateVersion)) return failure('STATE_CONFLICT', 409, { expectedStateVersion: expected, actualStateVersion: null });
-    else if (existing) return failure('STATE_CONFLICT', 409, { expectedStateVersion: null, actualStateVersion: existing.stateVersion });
+    else if (existing) {
+      if (expected === null) return failure('STATE_CONFLICT', 409, { expectedStateVersion: null, actualStateVersion: existing.stateVersion });
+      if (Number(stateVersion) < existing.stateVersion) return failure('STATE_CONFLICT', 409, { expectedStateVersion: existing.stateVersion, actualStateVersion: Number(stateVersion) });
+    }
+    const validationEngine = createSeededEngine(id);
+    const imported = validationEngine.importState(raw, SANDBOX_CONTROL_OPTIONS);
+    if (!imported.ok) return failure(imported.error, 400, imported);
     const result = await store.put({
       id,
       scenarioId: String(candidate.scenarioId),

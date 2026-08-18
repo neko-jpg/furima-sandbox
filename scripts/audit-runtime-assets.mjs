@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const publicRoot = join(root, 'public');
 const ignored = new Set(['public/images/products/pexels-candidates', 'public/images/products/pexels-candidates-1000']);
-const maxRuntimeBytes = 120 * 1024 * 1024;
+const maxRuntimeBytes = 80 * 1024 * 1024;
 
 async function walk(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

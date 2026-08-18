@@ -3,9 +3,9 @@ import test from 'node:test';
 import fc from 'fast-check';
 
 import { INITIAL_ITEMS } from '../app/data/initialData.ts';
-import { SandboxEngine } from '../app/domain/sandboxEngine.ts';
+import { SandboxEngine, createTrustedPrincipal } from '../app/domain/sandboxEngine.ts';
 
-const control = { actorId: 'platform', scope: 'sandbox-control' };
+const control = { principal: createTrustedPrincipal({ subjectId: 'model-control', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] }) };
 const buyers = ['buyer_01', 'buyer_02'];
 const scenarios = ['catalog_default', 'purchase_happy_path', 'multi_inventory', 'auction_outbid', 'zero_search_results', 'delivery_delay'];
 

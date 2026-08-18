@@ -43,6 +43,8 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
     readFile(new URL("app/api/sandbox/state/route.ts", root), "utf8"),
   ]);
   assert.match(context, /new SandboxEngine\(items/);
+  assert.match(context, /const INITIAL_CATALOG_ITEMS = \[\.\.\.CATALOG_ITEMS\]/);
+  assert.doesNotMatch(context, /const INITIAL_CATALOG_ITEMS = \[\.\.\.INITIAL_ITEMS\]/);
   assert.match(context, /sandboxEngine\.startPurchase/);
   assert.match(context, /sandboxEngine\.confirmPurchase/);
   assert.match(context, /window\.__MERCARI_API__ = api/);
@@ -59,7 +61,7 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
   assert.match(context, /serializedDigest/);
   assert.match(context, /compactImagePayloadForFingerprint/);
   assert.match(context, /Sandbox stateのバックアップ/);
-  assert.match(context, /furima-sandbox-state-v1/);
+  assert.match(context, /furima-sandbox-state-v2/);
   assert.match(context, /viewsCount: \(item\.viewsCount \?\? 0\) \+ 1/);
   assert.match(engine, /CONFIRMATION_REQUIRED/);
   assert.match(engine, /POLICY_BLOCKED/);

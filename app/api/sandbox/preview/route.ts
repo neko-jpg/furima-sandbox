@@ -6,6 +6,8 @@ import {
   authorizationFailure,
   engineFromRecord,
   MAX_SANDBOX_REQUEST_BYTES,
+  hasJsonContentType,
+  principalForRequest,
   readJson,
   sandboxIdFrom,
   storeForRequest,
@@ -24,8 +26,9 @@ const statusFor = (error: string): number => {
 };
 
 export async function POST(request: Request): Promise<Response> {
-  const authError = await authorizationFailure(request);
+  const authError = await authorizationFailure(request, { requireControl: true });
   if (authError) return authError;
+  if (!hasJsonContentType(request)) return actionFailure(request, undefined, 'preview', 'INVALID_INPUT', 415, 0, { message: 'Content-Typeはapplication/jsonで指定してください' });
   const contentLength = Number(request.headers.get('content-length') ?? 0);
   if (contentLength > MAX_SANDBOX_REQUEST_BYTES) return actionFailure(request, undefined, 'preview', 'PAYLOAD_TOO_LARGE', 413, 0, { maxBytes: MAX_SANDBOX_REQUEST_BYTES });
   const body = await readJson(request);
@@ -39,7 +42,7 @@ export async function POST(request: Request): Promise<Response> {
     const record = await store.get(id);
     if (!record) return actionFailure(request, body, 'preview', 'STATE_NOT_FOUND', 404, 0, { sandboxId: id });
     const engine = engineFromRecord(id, record);
-    const options = actionOptionsFor(body, engine.getCurrentActor().id);
+    const options = actionOptionsFor(body, engine.getCurrentActor().id, principalForRequest(request));
     const executor = new SandboxCommandExecutor({ engine, store });
     const result = await executor.preview(command as PreviewCommand, body.payload ?? {}, options, (previewEngine) => previewOperationFor(command as PreviewCommand, body.payload ?? {}, options.actorId ?? previewEngine.getCurrentActor().id, previewEngine));
     return Response.json(result, { status: result.ok ? 200 : statusFor(result.error), headers: { 'cache-control': 'no-store' } });

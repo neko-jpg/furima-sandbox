@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronRight, Clock3, Search, SlidersHorizontal, X } from 'lucide-react';
 import { useMercari } from '../../context/MercariContext';
 import { MercariItem } from '../../types/mercari';
 import { createFilterState, FilterSidebar, FilterState } from '../ui/FilterSidebar';
 import { ProductCard } from '../ui/ShopPrimitives';
+import { useDialogFocusTrap } from '../ui/useDialogFocusTrap';
 import { filterCatalogItems, joinSearchTokens, searchCatalogItems, tokenizeSearchQuery } from '../searchUtils';
 
 export const SearchView: React.FC = () => {
@@ -14,6 +15,7 @@ export const SearchView: React.FC = () => {
   const [filters, setFilters] = useState<FilterState>(() => createFilterState());
   const [sortOrder, setSortOrder] = useState<'new' | 'priceAsc' | 'priceDesc' | 'likes'>('new');
   const [visibleCount, setVisibleCount] = useState(60);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const tokens = useMemo(() => tokenizeSearchQuery(searchQuery), [searchQuery]);
   const [draftQuery, setDraftQuery] = useState('');
 
@@ -89,9 +91,10 @@ export const SearchView: React.FC = () => {
   };
   const clearSearchInput = () => commitTokens([]);
   const filterProps = { state: filters, onChange: updateFilter, onClear: clearFilters };
+  useDialogFocusTrap(dialogRef, !isResultPage, () => setIsSearchOpen(false));
 
   return (
-    <div className={`${isResultPage ? 'shop-search-page relative -mt-10 flex-1 overflow-y-auto bg-[var(--shop-bg)]' : 'absolute inset-0 z-50 flex flex-col overflow-y-auto bg-[var(--shop-bg)] animate-fade-in'}`} role={isResultPage ? undefined : 'dialog'} aria-modal={isResultPage ? undefined : true} aria-labelledby="search-view-title" data-testid="search-view">
+    <div ref={dialogRef} className={`${isResultPage ? 'shop-search-page relative -mt-10 flex-1 overflow-y-auto bg-[var(--shop-bg)]' : 'absolute inset-0 z-50 flex flex-col overflow-y-auto bg-[var(--shop-bg)] animate-fade-in'}`} role={isResultPage ? undefined : 'dialog'} aria-modal={isResultPage ? undefined : true} aria-labelledby="search-view-title" data-testid="search-view">
       {(!isResultPage || isDeviceFrame) && <div className="sticky top-0 z-20 border-b border-[var(--shop-border)] bg-[rgba(31,31,33,.96)] px-4 py-4 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1400px] items-center gap-4">
           <button type="button" onClick={() => setIsSearchOpen(false)} className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface)] hover:text-white" aria-label="検索を閉じる"><ArrowLeft className="h-5 w-5" /></button>
@@ -146,12 +149,16 @@ const SearchResults: React.FC<{ results: MercariItem[]; totalCount: number; rawC
   </section>
 );
 
-const FilterSheet: React.FC<{ state: FilterState; onChange: <K extends keyof FilterState>(key: K, value: FilterState[K]) => void; onClear: () => void; onClose: () => void }> = ({ state, onChange, onClear, onClose }) => (
-  <div className="absolute inset-0 z-[60] flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="検索結果を絞り込む">
-    <div className="max-h-[88%] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-bg)] p-5 shadow-2xl animate-slide-up">
-      <div className="mb-4 flex items-center justify-between"><h2 className="text-base font-black text-white">絞り込み</h2><button type="button" onClick={onClose} aria-label="絞り込みを閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div>
-      <FilterSidebar idPrefix="search-mobile" state={state} onChange={onChange} onClear={onClear} />
-      <button type="button" onClick={onClose} className="mt-5 w-full rounded-lg bg-[var(--shop-accent)] py-3 text-sm font-black text-white">商品を見る</button>
+const FilterSheet: React.FC<{ state: FilterState; onChange: <K extends keyof FilterState>(key: K, value: FilterState[K]) => void; onClear: () => void; onClose: () => void }> = ({ state, onChange, onClear, onClose }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, true, onClose);
+  return (
+    <div className="absolute inset-0 z-[60] flex items-end justify-center bg-black/65 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="検索結果を絞り込む">
+      <div ref={dialogRef} className="max-h-[88%] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--shop-border)] bg-[var(--shop-bg)] p-5 shadow-2xl animate-slide-up">
+        <div className="mb-4 flex items-center justify-between"><h2 className="text-base font-black text-white">絞り込み</h2><button type="button" onClick={onClose} aria-label="絞り込みを閉じる" className="rounded-full p-1 text-[var(--shop-muted)] hover:bg-[var(--shop-surface-raised)]"><X className="h-5 w-5" /></button></div>
+        <FilterSidebar idPrefix="search-mobile" state={state} onChange={onChange} onClear={onClear} />
+        <button type="button" onClick={onClose} className="mt-5 w-full rounded-lg bg-[var(--shop-accent)] py-3 text-sm font-black text-white">商品を見る</button>
+      </div>
     </div>
-  </div>
-);
+  );
+};

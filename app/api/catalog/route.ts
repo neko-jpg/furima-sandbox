@@ -4,6 +4,25 @@ const DEFAULT_PAGE_SIZE = 24;
 const MAX_PAGE_SIZE = 40;
 
 const normalize = (value: string): string => value.normalize('NFKC').toLocaleLowerCase('ja-JP').trim();
+const hashText = (value: string): string => {
+  let a = 0x811c9dc5;
+  let b = 0x9e3779b9;
+  let c = 0x85ebca6b;
+  let d = 0xc2b2ae35;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    a = Math.imul(a ^ code, 0x01000193);
+    b = Math.imul(b ^ (code + index), 0x27d4eb2d);
+    c = Math.imul(c ^ (code << (index % 8)), 0x165667b1);
+    d = Math.imul(d ^ (code * 31), 0x9e3779b1);
+  }
+  return [a, b, c, d].map((lane) => (lane >>> 0).toString(16).padStart(8, '0')).join('');
+};
+const CATALOG_INDEX = CATALOG_ITEMS.map((item) => ({
+  item,
+  haystack: normalize([item.title, item.description, ...item.category, ...(item.searchTags ?? [])].join(' ')),
+  categories: item.category.map(normalize),
+}));
 
 /**
  * Keep the large demo catalog out of the interactive client bundle. The
@@ -17,12 +36,11 @@ export function GET(request: Request): Response {
   const offset = Number.isInteger(requestedOffset) ? Math.max(0, requestedOffset) : 0;
   const query = normalize(url.searchParams.get('q') ?? '');
   const category = normalize(url.searchParams.get('category') ?? '');
-  const filtered = CATALOG_ITEMS.filter((item) => {
-    const haystack = normalize([item.title, item.description, ...item.category, ...(item.searchTags ?? [])].join(' '));
-    return (!query || haystack.includes(query)) && (!category || item.category.some((value) => normalize(value).includes(category)));
-  });
-  const page = filtered.slice(offset, offset + limit);
-  const etag = `"catalog-v2-${offset}-${limit}-${encodeURIComponent(query)}-${encodeURIComponent(category)}-${filtered.length}"`;
+  if (query.length > 200 || category.length > 200) return Response.json({ ok: false, error: 'INVALID_INPUT', message: 'qとcategoryは200文字以内で指定してください' }, { status: 400, headers: { 'cache-control': 'no-store' } });
+  const filtered = CATALOG_INDEX.filter(({ haystack, categories }) => (!query || haystack.includes(query)) && (!category || categories.some((value) => value.includes(category))));
+  const page = filtered.slice(offset, offset + limit).map(({ item }) => item);
+  const contentDigest = hashText(JSON.stringify(filtered.map(({ item }) => item)));
+  const etag = `"catalog-v3-${offset}-${limit}-${encodeURIComponent(query)}-${encodeURIComponent(category)}-${contentDigest}"`;
   const headers = {
     'cache-control': 'public, max-age=300, stale-while-revalidate=600',
     etag,

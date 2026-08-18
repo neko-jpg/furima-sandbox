@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /**
  * Durable mirror for the sandbox aggregates. The browser demo currently uses
@@ -164,7 +164,7 @@ export const sandboxStates = sqliteTable('sandbox_states', {
 }, (table) => [index('sandbox_states_scenario_idx').on(table.scenarioId)]);
 
 export const sandboxCommandRecords = sqliteTable('sandbox_command_records', {
-  operationId: text('operation_id').primaryKey(),
+  operationId: text('operation_id').notNull(),
   sandboxId: text('sandbox_id').notNull(),
   actorId: text('actor_id').notNull(),
   command: text('command').notNull(),
@@ -180,12 +180,13 @@ export const sandboxCommandRecords = sqliteTable('sandbox_command_records', {
   createdAt: text('created_at').notNull(),
   expiresAt: text('expires_at').notNull(),
 }, (table) => [
+  primaryKey({ columns: [table.sandboxId, table.operationId] }),
   uniqueIndex('sandbox_command_records_idempotency_idx').on(table.sandboxId, table.idempotencyKey),
   index('sandbox_command_records_sandbox_idx').on(table.sandboxId, table.createdAt),
 ]);
 
 export const sandboxPreviewRecords = sqliteTable('sandbox_preview_records', {
-  previewId: text('preview_id').primaryKey(),
+  previewId: text('preview_id').notNull(),
   sandboxId: text('sandbox_id').notNull(),
   actorId: text('actor_id').notNull(),
   command: text('command').notNull(),
@@ -199,6 +200,7 @@ export const sandboxPreviewRecords = sqliteTable('sandbox_preview_records', {
   retentionExpiresAt: text('retention_expires_at').notNull(),
   committedOperationId: text('committed_operation_id'),
 }, (table) => [
+  primaryKey({ columns: [table.sandboxId, table.previewId] }),
   index('sandbox_preview_records_sandbox_idx').on(table.sandboxId, table.status),
   index('sandbox_preview_records_retention_idx').on(table.retentionExpiresAt),
 ]);

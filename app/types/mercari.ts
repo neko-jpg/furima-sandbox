@@ -243,7 +243,7 @@ export type TransactionStatus =
   | 'REFUNDED';
 
 export type PaymentStatus = 'INITIATED' | 'AUTHORIZED' | 'CAPTURED' | 'FAILED' | 'REFUNDED' | 'PARTIALLY_REFUNDED';
-export type ShipmentStatus = 'PENDING' | 'LABEL_READY' | 'HANDED_OVER' | 'IN_TRANSIT' | 'DELIVERED' | 'EXCEPTION' | 'RETURNING';
+export type ShipmentStatus = 'PENDING' | 'LABEL_READY' | 'HANDED_OVER' | 'IN_TRANSIT' | 'DELIVERED' | 'EXCEPTION' | 'RETURNING' | 'RETURNED';
 export type ReservationStatus = 'ACTIVE' | 'COMMITTED' | 'RELEASED' | 'EXPIRED';
 export type ModerationStatus = 'PENDING' | 'APPROVED' | 'HELD' | 'REJECTED' | 'APPEALED' | 'RESOLVED';
 
@@ -288,7 +288,7 @@ export interface TransactionRecord {
   sellerReviewedAt?: string;
   canceledAt?: string;
   cancelReason?: string;
-  cancelPreviousStatus?: Extract<TransactionStatus, 'SHIPPED' | 'DELIVERED'>;
+  cancelPreviousStatus?: Extract<TransactionStatus, 'SHIPPED' | 'DELIVERED' | 'COMPLETED'>;
 }
 
 export interface PaymentRecord {
@@ -404,7 +404,17 @@ export interface WalletSnapshot {
   ledger: Array<{ id: string; type: WalletLedgerType; amount: number; referenceId: string; at: string }>;
 }
 
-export type WalletLedgerType = 'DEPOSIT' | 'WITHDRAWAL' | 'HOLD' | 'CAPTURE' | 'REFUND' | 'SALE' | 'FEE';
+export type WalletLedgerType =
+  | 'DEPOSIT'
+  | 'WITHDRAWAL'
+  | 'HOLD'
+  | 'CAPTURE'
+  | 'REFUND'
+  | 'POST_CAPTURE_REFUND'
+  | 'SALE'
+  | 'SALE_REVERSAL'
+  | 'FEE'
+  | 'FEE_REVERSAL';
 
 export interface SandboxSnapshot {
   version: '1';
@@ -413,6 +423,8 @@ export interface SandboxSnapshot {
   seed: string;
   now: string;
   stateVersion: number;
+  /** UI-only revision. It must not invalidate domain command expected versions. */
+  uiRevision?: number;
   currentActor: SandboxActor;
   actors: SandboxActor[];
   purchaseIntents: PurchaseIntent[];
@@ -474,7 +486,19 @@ export type AgentErrorCode =
   | 'STATE_NOT_FOUND'
   | 'INVALID_STATE_ID'
   | 'AUTH_NOT_CONFIGURED'
-  | 'FEATURE_NOT_AVAILABLE';
+  | 'FEATURE_NOT_AVAILABLE'
+  | 'INTERNAL_ERROR';
+
+/**
+ * Principal established by a trusted boundary (HTTP auth, host application,
+ * or an internal control plane). Never deserialize this from an action body.
+ */
+export interface ExecutionPrincipal {
+  subjectId: string;
+  actorId: string;
+  roles: readonly ActorRole[];
+  scopes: readonly ('user' | 'operator' | 'sandbox-control')[];
+}
 
 export type ActionResult<T = undefined> =
   | { ok: true; data: T; stateVersion: number; meta?: ActionMetadata; events?: DomainEvent[]; nextActions?: string[] }
@@ -510,6 +534,10 @@ export interface AgentActionOptions {
   mode?: 'preview' | 'commit';
   /** Explicitly separates operator controls from ordinary user commands. */
   scope?: 'user' | 'operator' | 'sandbox-control';
+  /** Trusted execution identity injected by an adapter, not supplied by JSON. */
+  principal?: ExecutionPrincipal;
+  /** Target actor for an explicitly authorized operator action. */
+  targetActorId?: string;
 }
 
 export interface PurchasePricing {
@@ -695,6 +723,8 @@ declare global {
       ready: boolean;
       fallbackReason?: 'UNAVAILABLE' | 'QUOTA_EXCEEDED' | 'CORRUPTED' | 'VERSION_MISMATCH';
       migratedLegacyLocalStorage: boolean;
+      localPersistenceError?: 'UNAVAILABLE' | 'QUOTA_EXCEEDED' | 'CORRUPTED' | 'VERSION_MISMATCH';
+      remoteStateError?: 'AUTH_REQUIRED' | 'FORBIDDEN' | 'D1_UNAVAILABLE';
     };
   }
 }

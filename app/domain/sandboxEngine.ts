@@ -3,6 +3,7 @@ import type {
   AgentActionOptions,
   AgentErrorCode,
   AuctionBidRecord,
+  CommentItem,
   DomainEvent,
   ActorProfile,
   FollowDirection,
@@ -30,6 +31,7 @@ import type {
   TransactionRecord,
   TransactionStatus,
   WalletSnapshot,
+  ExecutionPrincipal,
 } from '../types/mercari.ts';
 
 const BASE_NOW = '2026-01-01T00:00:00.000Z';
@@ -48,7 +50,13 @@ const SCENARIOS: ScenarioId[] = [
   'delivery_delay',
 ];
 
-const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const clone = <T,>(value: T): T => {
+  if (value === undefined || value === null) return value;
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 const resultOk = <T,>(data: T, stateVersion: number, events?: DomainEvent[], nextActions?: string[]): ActionResult<T> => ({
   ok: true,
@@ -72,6 +80,21 @@ const isInteger = (value: unknown): value is number => typeof value === 'number'
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isIsoDate = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value));
 
+const trustedPrincipals = new WeakSet<object>();
+
+/** Register a principal only at a trusted adapter boundary. JSON payloads cannot recreate this identity. */
+export const createTrustedPrincipal = (principal: ExecutionPrincipal): ExecutionPrincipal => {
+  const trusted = Object.freeze({
+    ...principal,
+    roles: Object.freeze([...principal.roles]),
+    scopes: Object.freeze([...principal.scopes]),
+  });
+  trustedPrincipals.add(trusted);
+  return trusted;
+};
+
+export const isTrustedPrincipal = (principal: ExecutionPrincipal | undefined): boolean => Boolean(principal && trustedPrincipals.has(principal));
+
 const normalize = (value: string): string => value.normalize('NFKC').toLocaleLowerCase('ja-JP').trim();
 
 const sellerIdForItem = (item: MercariItem): string => item.sellerId ?? 'seller_01';
@@ -81,6 +104,10 @@ const shippingCostFor = (item: MercariItem): number => item.shippingFee.includes
 const publicListingStatuses = new Set(['ACTIVE', 'RESERVED', 'SOLD']);
 const sandboxControlScope = 'sandbox-control' as const;
 const MAX_IMPORTED_STATE_BYTES = 8 * 1024 * 1024;
+const MAX_STATE_COLLECTION_ENTRIES = 5_000;
+const MAX_STATE_EVENT_ENTRIES = 500;
+const MAX_STATE_NOTIFICATION_ENTRIES = 200;
+const MAX_STATE_MOVEMENT_ENTRIES = 2_000;
 const MAX_LISTING_IMAGES = 20;
 const MAX_SINGLE_IMAGE_BYTES = 2_000_000;
 const MAX_TOTAL_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -117,8 +144,8 @@ const imagePayloadError = (images: unknown): string | null => {
   if (images.length > MAX_LISTING_IMAGES) return `images must contain at most ${MAX_LISTING_IMAGES} entries`;
   let totalBytes = 0;
   for (const image of images) {
-    if (typeof image !== 'string' || image.length > MAX_SINGLE_IMAGE_BYTES) return 'an image exceeds the per-file limit';
-    totalBytes += image.length;
+    if (typeof image !== 'string' || utf8Bytes(image) > MAX_SINGLE_IMAGE_BYTES) return 'an image exceeds the per-file limit';
+    totalBytes += utf8Bytes(image);
     if (totalBytes > MAX_TOTAL_IMAGE_BYTES) return 'images exceed the total payload limit';
   }
   return null;
@@ -147,6 +174,7 @@ export interface SandboxEngineState {
   seed: string;
   now: string;
   stateVersion: number;
+  uiRevision: number;
   idCounter: number;
   currentActorId: string;
   actors: SandboxActor[];
@@ -168,6 +196,7 @@ export interface SandboxEngineState {
   follows: FollowRelation[];
   drafts: Record<string, Partial<MercariItem>>;
   draftOwners: Record<string, string>;
+  draftUpdatedAt: Record<string, string>;
   pendingFailures: string[];
 }
 
@@ -204,6 +233,7 @@ export interface CloseAuctionResult {
 
 export class SandboxEngine {
   private eventSubscribers: Set<(event: DomainEvent) => void> = new Set();
+  private eventSubscriberFailureCount = 0;
   private initialItems: MercariItem[];
   private readonly initialNotifications: NotificationItem[];
   private readonly sandboxId: string;
@@ -274,6 +304,7 @@ export class SandboxEngine {
       seed,
       now,
       stateVersion: 0,
+      uiRevision: 0,
       idCounter: 0,
       currentActorId: 'buyer_01',
       actors,
@@ -295,6 +326,7 @@ export class SandboxEngine {
       follows: [],
       drafts: {},
       draftOwners: {},
+      draftUpdatedAt: {},
       pendingFailures: scenarioId === 'payment_timeout' ? ['payment'] : scenarioId === 'delivery_delay' ? ['delivery'] : [],
     };
   }
@@ -340,15 +372,34 @@ export class SandboxEngine {
         actualStateVersion: this.state.stateVersion,
       });
     }
-    if (options?.actorId && !this.currentActor(options.actorId)) return resultError('INVALID_ACTOR', this.state.stateVersion, '指定されたactorは存在しません');
+    const requestedActorId = options?.principal?.actorId ?? options?.targetActorId ?? options?.actorId;
+    if (requestedActorId && !this.currentActor(requestedActorId)) return resultError('INVALID_ACTOR', this.state.stateVersion, '指定されたactorは存在しません');
+    if (options?.principal) {
+      if (!isTrustedPrincipal(options.principal)) return resultError('FORBIDDEN', this.state.stateVersion, '実行Principalは信頼済みadapterから注入してください');
+      const principalActor = this.currentActor(options.principal.actorId);
+      if (!principalActor || !principalActor.authenticated || !options.principal.roles.includes(principalActor.role)) {
+        return resultError('FORBIDDEN', this.state.stateVersion, '実行PrincipalがSandbox actorと一致しません');
+      }
+      if (options.actorId && options.actorId !== options.principal.actorId && !options.principal.scopes.includes(sandboxControlScope)) {
+        return resultError('FORBIDDEN', this.state.stateVersion, '実行Principal以外のactorを指定できません');
+      }
+    } else if (options?.targetActorId) {
+      return resultError('FORBIDDEN', this.state.stateVersion, 'targetActorIdは信頼済みoperator操作でのみ指定できます');
+    } else if (options?.actorId && options.actorId !== this.state.currentActorId) {
+      return resultError('FORBIDDEN', this.state.stateVersion, 'actorIdは現在のSandbox actorと一致している必要があります');
+    }
     return null;
   }
 
   private validateControlOptions(options?: AgentActionOptions): ActionResult<undefined> | null {
     const invalid = this.validateOptions(options);
     if (invalid) return invalid;
-    if (options?.scope !== sandboxControlScope) {
-      return resultError('FORBIDDEN', this.state.stateVersion, 'この操作はsandbox-control scopeからのみ実行できます');
+    if (options?.principal) {
+      if (!options.principal.scopes.includes(sandboxControlScope)) {
+        return resultError('FORBIDDEN', this.state.stateVersion, 'この操作はsandbox-control scopeからのみ実行できます');
+      }
+    } else {
+      return resultError('FORBIDDEN', this.state.stateVersion, 'Sandbox制御には信頼済みPrincipalが必要です');
     }
     const actor = this.actorFor(options);
     if (!actor?.authenticated || (actor.role !== 'admin' && actor.role !== 'platform')) {
@@ -358,7 +409,7 @@ export class SandboxEngine {
   }
 
   private actorFor(options?: AgentActionOptions): SandboxActor | undefined {
-    return this.currentActor(options?.actorId);
+    return this.currentActor(options?.principal?.actorId ?? options?.targetActorId ?? options?.actorId);
   }
 
   private commit(specs: EventSpec[]): DomainEvent[] {
@@ -375,7 +426,7 @@ export class SandboxEngine {
       payload: clone(spec.payload),
       correlationId,
     } satisfies DomainEvent));
-    this.state.events = [...this.state.events.slice(-499), ...events];
+    this.state.events = [...this.state.events, ...events].slice(-500);
     if (events.length && this.eventSubscribers.size) {
       const subscribers = [...this.eventSubscribers];
       for (const event of events) {
@@ -385,7 +436,10 @@ export class SandboxEngine {
             try {
               subscriber(clone(eventSnapshot));
             } catch {
-              // A subscriber must never roll back or corrupt committed domain state.
+              // A subscriber must never roll back or corrupt committed domain
+              // state, but the failure must remain observable to diagnostics.
+              this.eventSubscriberFailureCount += 1;
+              console.error('[SandboxEngine] event subscriber failed', this.eventSubscriberFailureCount);
             }
           }
         });
@@ -440,9 +494,16 @@ export class SandboxEngine {
     return this.state.wallets.find((wallet) => wallet.actorId === actorId);
   }
 
-  private addLedger(actorId: string, type: WalletSnapshot['ledger'][number]['type'], amount: number, referenceId: string): void {
+  private addLedger(actorId: string, type: WalletSnapshot['ledger'][number]['type'], amount: number, referenceId: string): boolean {
     const wallet = this.wallet(actorId);
-    if (!wallet) return;
+    if (!wallet || !isInteger(amount) || amount <= 0) return false;
+    const nextAvailable = wallet.availableBalance
+      + (type === 'DEPOSIT' || type === 'SALE' || type === 'FEE_REVERSAL' || type === 'POST_CAPTURE_REFUND' ? amount : 0)
+      - (type === 'WITHDRAWAL' || type === 'HOLD' || type === 'FEE' || type === 'SALE_REVERSAL' ? amount : 0);
+    const nextHeld = wallet.heldBalance
+      + (type === 'HOLD' ? amount : 0)
+      - (type === 'CAPTURE' || type === 'REFUND' ? amount : 0);
+    if (nextAvailable < 0 || nextHeld < 0) return false;
     wallet.ledger = [...wallet.ledger, { id: this.nextId('ledger'), type, amount, referenceId, at: this.state.now }];
     if (type === 'DEPOSIT') {
       wallet.availableBalance += amount;
@@ -454,12 +515,20 @@ export class SandboxEngine {
     } else if (type === 'CAPTURE') {
       wallet.heldBalance = Math.max(0, wallet.heldBalance - amount);
     } else if (type === 'REFUND') {
+      wallet.heldBalance -= amount;
+      wallet.availableBalance += amount;
+    } else if (type === 'POST_CAPTURE_REFUND') {
       wallet.availableBalance += amount;
     } else if (type === 'SALE') {
       wallet.availableBalance += amount;
+    } else if (type === 'SALE_REVERSAL') {
+      wallet.availableBalance -= amount;
     } else if (type === 'FEE') {
       wallet.availableBalance -= amount;
+    } else if (type === 'FEE_REVERSAL') {
+      wallet.availableBalance += amount;
     }
+    return true;
   }
 
   private releaseWalletHold(actorId: string, amount: number, referenceId: string): number {
@@ -470,10 +539,7 @@ export class SandboxEngine {
       .reduce((balance, entry) => entry.type === 'HOLD' ? balance + entry.amount : entry.type === 'CAPTURE' || entry.type === 'REFUND' ? balance - entry.amount : balance, 0);
     const releaseAmount = Math.min(amount, Math.max(0, heldForReference), wallet.heldBalance);
     if (releaseAmount <= 0) return 0;
-    wallet.ledger = [...wallet.ledger, { id: this.nextId('ledger'), type: 'REFUND', amount: releaseAmount, referenceId, at: this.state.now }];
-    wallet.heldBalance -= releaseAmount;
-    wallet.availableBalance += releaseAmount;
-    return releaseAmount;
+    return this.addLedger(actorId, 'REFUND', releaseAmount, referenceId) ? releaseAmount : 0;
   }
 
   private activeReservationQuantity(itemId: string): number {
@@ -546,11 +612,11 @@ export class SandboxEngine {
   }
 
   public mergeCatalogItems(items: MercariItem[]): void {
-    const existingInitialIds = new Set(this.initialItems.map((item) => item.id));
-    const additions = clone(items).filter((item) => !existingInitialIds.has(item.id));
-    if (!additions.length) return;
-    this.initialItems = [...this.initialItems, ...additions];
     const existingStateIds = new Set(this.state.items.map((item) => item.id));
+    const additions = clone(items).filter((item) => !existingStateIds.has(item.id));
+    if (!additions.length) return;
+    const existingInitialIds = new Set(this.initialItems.map((item) => item.id));
+    this.initialItems = [...this.initialItems, ...additions.filter((item) => !existingInitialIds.has(item.id))];
     const stateAdditions = additions
       .filter((item) => !existingStateIds.has(item.id))
       .map((item, index) => this.normalizeCatalogItem(item, this.state.items.length + index, this.state.items.length + additions.length, this.state.now));
@@ -621,6 +687,7 @@ export class SandboxEngine {
       seed: this.state.seed,
       now: this.state.now,
       stateVersion: this.state.stateVersion,
+      uiRevision: this.state.uiRevision,
       currentActor: this.getCurrentActor(),
       actors: clone(this.state.actors),
       purchaseIntents: clone(this.state.purchaseIntents),
@@ -709,7 +776,7 @@ export class SandboxEngine {
     const actor = this.actorFor(options);
     if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion, 'フォロー機能を利用するにはログインが必要です');
     const current = this.getCurrentActor();
-    if (actor.id !== current.id && current.role !== 'admin' && current.role !== 'platform' && options?.scope !== 'sandbox-control') {
+    if (actor.id !== current.id && current.role !== 'admin' && current.role !== 'platform' && !(options?.principal && isTrustedPrincipal(options.principal) && options.principal.scopes.includes(sandboxControlScope))) {
       return resultError('FORBIDDEN', this.state.stateVersion, '現在のactor以外のフォロー情報は変更できません');
     }
     return { actor };
@@ -734,7 +801,8 @@ export class SandboxEngine {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     const targetIds = relations.map((follow) => direction === 'following' ? follow.followeeId : follow.followerId);
     const users = targetIds
-      .map((targetId) => this.getProfile(targetId))
+      .map((targetId) => this.state.profiles.find((profile) => profile.actorId === targetId))
+      .map((profile) => profile ? clone(profile) : undefined)
       .filter((profile): profile is ActorProfile => Boolean(profile));
     return resultOk({ actorId: actor.id, direction, users, summary: this.followSummaryFor(actor.id, actor.id) }, this.state.stateVersion);
   }
@@ -846,7 +914,7 @@ export class SandboxEngine {
         'ITEM_NOT_FOUND', 'ALREADY_SOLD', 'BID_TOO_LOW', 'NOT_AUCTION', 'INVALID_INPUT', 'DRAFT_NOT_FOUND',
         'INVALID_TAB', 'CONFIRMATION_REQUIRED', 'AUTH_REQUIRED', 'POLICY_REVIEW_REQUIRED', 'POLICY_BLOCKED',
         'INVALID_ACTOR', 'FORBIDDEN', 'STATE_CONFLICT', 'PURCHASE_INTENT_EXPIRED', 'PAYMENT_FAILED', 'PREVIEW_NOT_FOUND', 'PREVIEW_EXPIRED',
-        'TRANSACTION_NOT_FOUND', 'INVALID_TRANSITION', 'IDEMPOTENCY_CONFLICT', 'UNKNOWN_SCENARIO', 'AUCTION_ENDED',
+        'TRANSACTION_NOT_FOUND', 'INVALID_TRANSITION', 'IDEMPOTENCY_CONFLICT', 'UNKNOWN_SCENARIO', 'AUCTION_ENDED', 'INVALID_STATE', 'REPLAY_FAILED', 'STATE_NOT_FOUND', 'INVALID_STATE_ID', 'AUTH_NOT_CONFIGURED', 'FEATURE_NOT_AVAILABLE', 'INTERNAL_ERROR', 'D1_UNAVAILABLE', 'PAYLOAD_TOO_LARGE', 'SANDBOX_NOT_READY',
         'INVALID_AMOUNT', 'INSUFFICIENT_FUNDS', 'WALLET_NOT_FOUND', 'FOLLOW_TARGET_NOT_FOUND', 'ALREADY_FOLLOWING', 'NOT_FOLLOWING', 'CANNOT_FOLLOW_SELF', 'NO_RESULTS', 'UNSUPPORTED_CATEGORY',
       ] satisfies AgentErrorCode[],
     };
@@ -858,6 +926,28 @@ export class SandboxEngine {
     const actor = this.actorFor(options);
     if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion, '購入にはログイン済みbuyer actorが必要です');
     if (actor.role !== 'buyer') return resultError('FORBIDDEN', this.state.stateVersion, '購入を実行できるのはbuyer actorだけです');
+    let item = this.item(itemId);
+    if (!item) return resultError('ITEM_NOT_FOUND', this.state.stateVersion);
+    if (item.isAuction) return resultError('INVALID_TRANSITION', this.state.stateVersion, 'オークション商品は入札コマンドを使用してください');
+    if (item.listingStatus === 'HELD') return resultError('POLICY_REVIEW_REQUIRED', this.state.stateVersion, 'この商品は審査完了まで購入できません');
+    if (item.listingStatus && !publicListingStatuses.has(item.listingStatus)) return resultError('INVALID_TRANSITION', this.state.stateVersion, 'この商品は現在公開購入できる状態ではありません');
+    const existing = this.activeIntentFor(itemId, actor.id);
+    if (existing && Date.parse(existing.expiresAt) > Date.parse(this.state.now)) {
+      return resultOk({ purchaseIntentId: existing.id, transactionId: existing.transactionId, expiresAt: existing.expiresAt, quote: existing.quote }, this.state.stateVersion, undefined, ['ConfirmCheckout', 'CancelPurchase']);
+    }
+    const createdAt = this.state.now;
+    const total = item.price + shippingCostFor(item);
+    const buyerWallet = this.wallet(actor.id);
+    const expiredHold = existing ? this.heldAmountForReference(actor.id, existing.transactionId) : 0;
+    if (!buyerWallet || buyerWallet.availableBalance + expiredHold < total) {
+      return resultError('PAYMENT_FAILED', this.state.stateVersion, 'Sandboxウォレットの残高が不足しています', { required: total, available: buyerWallet?.availableBalance ?? 0, retryable: false });
+    }
+    if (item.isSold) return resultError('ALREADY_SOLD', this.state.stateVersion, 'この商品は購入できません');
+    const expiredReservationQuantity = this.state.purchaseIntents
+      .filter((intent) => intent.itemId === itemId && intent.status === 'ACTIVE' && Date.parse(intent.expiresAt) <= Date.parse(this.state.now))
+      .reduce((sum, intent) => sum + intent.quantity, 0);
+    const effectiveReservedQuantity = Math.max(0, (item.reservedQuantity ?? 0) - expiredReservationQuantity);
+    if ((item.inventoryQuantity ?? 0) - effectiveReservedQuantity <= 0) return resultError('ALREADY_SOLD', this.state.stateVersion, 'この商品は購入できません');
     const expired = this.releaseExpiredPurchaseIntents(actor.id);
     if (expired.specs.length) {
       this.commit(expired.specs);
@@ -866,26 +956,14 @@ export class SandboxEngine {
         this.addNotification(expiredIntent?.buyerId ?? actor.id, '購入予約の期限が切れました', '在庫予約を解放しました。もう一度購入手続きを開始してください。');
       });
     }
-    const item = this.item(itemId);
-    if (!item) return resultError('ITEM_NOT_FOUND', this.state.stateVersion);
-    if (item.isAuction) return resultError('INVALID_TRANSITION', this.state.stateVersion, 'オークション商品は入札コマンドを使用してください');
-    if (item.listingStatus === 'HELD') return resultError('POLICY_REVIEW_REQUIRED', this.state.stateVersion, 'この商品は審査完了まで購入できません');
-    if (item.listingStatus && !publicListingStatuses.has(item.listingStatus)) return resultError('INVALID_TRANSITION', this.state.stateVersion, 'この商品は現在公開購入できる状態ではありません');
-    if ((item.inventoryQuantity ?? 0) - (item.reservedQuantity ?? 0) <= 0 || item.isSold) return resultError('ALREADY_SOLD', this.state.stateVersion, 'この商品は購入できません');
-    const existing = this.activeIntentFor(itemId, actor.id);
-    if (existing) {
-      return resultOk({ purchaseIntentId: existing.id, transactionId: existing.transactionId, expiresAt: existing.expiresAt, quote: existing.quote }, this.state.stateVersion, undefined, ['ConfirmCheckout', 'CancelPurchase']);
-    }
-    const createdAt = this.state.now;
+    item = this.item(itemId);
+    if (!item || (item.inventoryQuantity ?? 0) - (item.reservedQuantity ?? 0) <= 0 || item.isSold) return resultError('ALREADY_SOLD', this.state.stateVersion, 'この商品は購入できません');
+    // Allocate IDs only after every precondition that can fail without a
+    // domain mutation has passed. A rejected command must be state-neutral.
     const intentId = this.nextId('purchase-intent');
     const transactionId = this.nextId('txn');
     const paymentId = this.nextId('payment');
     const shipmentId = this.nextId('shipment');
-    const total = item.price + shippingCostFor(item);
-    const buyerWallet = this.wallet(actor.id);
-    if (!buyerWallet || buyerWallet.availableBalance < total) {
-      return resultError('PAYMENT_FAILED', this.state.stateVersion, 'Sandboxウォレットの残高が不足しています', { required: total, available: buyerWallet?.availableBalance ?? 0, retryable: false });
-    }
     const intent: PurchaseIntent = {
       id: intentId,
       transactionId,
@@ -971,13 +1049,21 @@ export class SandboxEngine {
     const nextTotal = Math.max(0, item.price + shippingCostFor(item) - couponDiscount - pointsDiscount);
     const previousTotal = transaction.total;
     if (nextTotal !== previousTotal) {
+      const heldForTransaction = this.heldAmountForReference(actorId, transaction.id);
+      if (wallet.availableBalance + heldForTransaction < nextTotal) {
+        return resultError('PAYMENT_FAILED', this.state.stateVersion, 'Sandboxウォレットの残高が不足しています', { required: nextTotal, available: wallet.availableBalance + heldForTransaction, retryable: false });
+      }
+      const pricingState = clone(this.state);
       const released = this.releaseWalletHold(actorId, previousTotal, transaction.id);
       const walletAfterRelease = this.wallet(actorId);
       if (!walletAfterRelease || walletAfterRelease.availableBalance < nextTotal) {
-        if (released > 0) this.addLedger(actorId, 'HOLD', released, transaction.id);
+        this.state = pricingState;
         return resultError('PAYMENT_FAILED', this.state.stateVersion, 'Sandboxウォレットの残高が不足しています', { required: nextTotal, available: walletAfterRelease?.availableBalance ?? 0, retryable: false });
       }
-      this.addLedger(actorId, 'HOLD', nextTotal, transaction.id);
+      if (released !== previousTotal || !this.addLedger(actorId, 'HOLD', nextTotal, transaction.id)) {
+        this.state = pricingState;
+        return resultError('INVALID_STATE', this.state.stateVersion, '購入保留残高を更新できませんでした');
+      }
     }
     intent.quote = nextTotal;
     intent.couponDiscount = couponDiscount || undefined;
@@ -1122,6 +1208,15 @@ export class SandboxEngine {
     if (isSeller && transaction.status !== 'BUYER_REVIEWED') return resultError('INVALID_TRANSITION', this.state.stateVersion, '出品者評価は購入者の受取評価後にできます');
     if (isBuyer && transaction.buyerReviewedAt) return resultError('INVALID_TRANSITION', this.state.stateVersion, '購入者評価はすでに登録されています');
     if (isSeller && transaction.sellerReviewedAt) return resultError('INVALID_TRANSITION', this.state.stateVersion, '出品者評価はすでに登録されています');
+    const willComplete = Boolean((isBuyer && transaction.sellerReviewedAt) || (isSeller && transaction.buyerReviewedAt));
+    if (willComplete) {
+      const buyerWallet = this.wallet(transaction.buyerId);
+      const sellerWallet = this.wallet(transaction.sellerId);
+      const sellerFee = Math.floor(transaction.priceSnapshot * 0.1);
+      if (!buyerWallet || !sellerWallet || this.heldAmountForReference(transaction.buyerId, transaction.id) < transaction.total || sellerWallet.availableBalance + transaction.priceSnapshot < sellerFee) {
+        return resultError('INVALID_STATE', this.state.stateVersion, '取引の決済残高が不足しています');
+      }
+    }
     const review: ReviewRecord = { id: this.nextId('review'), transactionId, reviewerId: actor.id, revieweeId: isBuyer ? transaction.sellerId : transaction.buyerId, rating: rating as 1 | 2 | 3 | 4 | 5, comment: normalizedComment || undefined, createdAt: this.state.now };
     this.state.reviews.push(review);
     if (isBuyer) {
@@ -1134,10 +1229,10 @@ export class SandboxEngine {
     if (transaction.buyerReviewedAt && transaction.sellerReviewedAt) {
       transaction.status = 'COMPLETED';
       transaction.completedAt = this.state.now;
-      this.addLedger(transaction.buyerId, 'CAPTURE', transaction.total, transaction.id);
+      if (!this.addLedger(transaction.buyerId, 'CAPTURE', transaction.total, transaction.id)) return resultError('INVALID_STATE', this.state.stateVersion, '決済を確定できません');
       const sellerFee = Math.floor(transaction.priceSnapshot * 0.1);
-      this.addLedger(transaction.sellerId, 'SALE', transaction.priceSnapshot, transaction.id);
-      if (sellerFee > 0) this.addLedger(transaction.sellerId, 'FEE', sellerFee, transaction.id);
+      if (!this.addLedger(transaction.sellerId, 'SALE', transaction.priceSnapshot, transaction.id)) return resultError('INVALID_STATE', this.state.stateVersion, '売上を記録できません');
+      if (sellerFee > 0 && !this.addLedger(transaction.sellerId, 'FEE', sellerFee, transaction.id)) return resultError('INVALID_STATE', this.state.stateVersion, '販売手数料を記録できません');
     }
     transaction.updatedAt = this.state.now;
     const reviewSpecs: EventSpec[] = [{ type: isBuyer ? 'BUYER_REVIEWED' : 'SELLER_REVIEWED', aggregateType: 'transaction', aggregateId: transaction.id, actorId: actor.id, payload: { rating } }];
@@ -1164,6 +1259,9 @@ export class SandboxEngine {
     const item = this.item(transaction.itemId);
     const intent = this.state.purchaseIntents.find((candidate) => candidate.id === transaction.reservationId);
     const specs: EventSpec[] = [];
+    if (payment?.status === 'CAPTURED' && !['SHIPPED', 'DELIVERED'].includes(transaction.status) && this.heldAmountForReference(transaction.buyerId, transaction.id) < transaction.total) {
+      return resultError('INVALID_STATE', this.state.stateVersion, '返金対象のウォレット保留残高が見つかりません');
+    }
     if (intent?.status === 'ACTIVE') specs.push(...this.releaseIntent(intent, 'RELEASED', actor.id));
     if (['SHIPPED', 'DELIVERED'].includes(transaction.status)) {
       transaction.cancelPreviousStatus = transaction.status as Extract<TransactionStatus, 'SHIPPED' | 'DELIVERED'>;
@@ -1211,18 +1309,31 @@ export class SandboxEngine {
     const returnCase = this.state.returns.find((candidate) => candidate.transactionId === transactionId && candidate.status === 'REQUESTED');
     if (!payment || !shipment || !item) return resultError('STATE_CONFLICT', this.state.stateVersion);
     if (approve) {
-      payment.status = 'REFUNDED';
-      payment.updatedAt = this.state.now;
-      this.releaseWalletHold(transaction.buyerId, transaction.total, transaction.id);
-      const buyerWallet = this.wallet(transaction.buyerId);
-      if (buyerWallet && transaction.pointsUsed) buyerWallet.points += transaction.pointsUsed;
-      transaction.status = 'REFUNDED';
-      shipment.status = 'RETURNING';
-      const restoredQuantity = Math.min(item.inventoryInitialQuantity ?? 1, (item.inventoryQuantity ?? 0) + 1);
-      const nextReserved = this.activeReservationQuantity(item.id);
-      this.updateItem(item.id, { inventoryQuantity: restoredQuantity, reservedQuantity: nextReserved, isSold: false, listingStatus: nextReserved > 0 ? 'RESERVED' : 'ACTIVE', soldAt: undefined });
-      this.recordInventoryMovement(item, 'RELEASE', 1, 'キャンセル承認による在庫復元', transaction.id);
-      if (returnCase) { returnCase.status = 'IN_TRANSIT'; returnCase.decidedAt = this.state.now; returnCase.refundedAt = this.state.now; }
+      if (returnCase) {
+        // Approval is not receipt. Keep the capture and inventory reservation
+        // until the returned parcel is actually received.
+        returnCase.status = 'IN_TRANSIT';
+        returnCase.decidedAt = this.state.now;
+        transaction.status = 'CANCEL_REQUESTED';
+        shipment.status = 'RETURNING';
+      } else {
+        if (payment.status === 'CAPTURED' && this.heldAmountForReference(transaction.buyerId, transaction.id) < transaction.total) {
+          return resultError('INVALID_STATE', this.state.stateVersion, '返金対象のウォレット保留残高が見つかりません');
+        }
+        payment.status = 'REFUNDED';
+        payment.updatedAt = this.state.now;
+        if (!this.releaseWalletHold(transaction.buyerId, transaction.total, transaction.id)) {
+          return resultError('INVALID_STATE', this.state.stateVersion, '返金対象のウォレット保留残高が見つかりません');
+        }
+        const buyerWallet = this.wallet(transaction.buyerId);
+        if (buyerWallet && transaction.pointsUsed) buyerWallet.points += transaction.pointsUsed;
+        transaction.status = 'REFUNDED';
+        shipment.status = 'RETURNED';
+        const restoredQuantity = Math.min(item.inventoryInitialQuantity ?? 1, (item.inventoryQuantity ?? 0) + 1);
+        const nextReserved = this.activeReservationQuantity(item.id);
+        this.updateItem(item.id, { inventoryQuantity: restoredQuantity, reservedQuantity: nextReserved, isSold: false, listingStatus: nextReserved > 0 ? 'RESERVED' : 'ACTIVE', soldAt: undefined });
+        this.recordInventoryMovement(item, 'RELEASE', 1, 'キャンセルによる在庫復元', transaction.id);
+      }
     } else {
       transaction.status = transaction.cancelPreviousStatus ?? 'SHIPPED';
       shipment.status = transaction.status === 'DELIVERED' ? 'DELIVERED' : 'IN_TRANSIT';
@@ -1231,7 +1342,7 @@ export class SandboxEngine {
     transaction.updatedAt = this.state.now;
     const events = this.commit([
       { type: approve ? 'CANCELLATION_APPROVED' : 'CANCELLATION_DECLINED', aggregateType: 'transaction', aggregateId: transaction.id, actorId: actor.id, payload: { transactionId, approve } },
-      ...(approve ? [{ type: 'PAYMENT_REFUNDED', aggregateType: 'payment', aggregateId: payment.id, actorId: actor.id, payload: { transactionId, amount: transaction.total } } satisfies EventSpec] : []),
+      ...(approve && !returnCase ? [{ type: 'PAYMENT_REFUNDED', aggregateType: 'payment', aggregateId: payment.id, actorId: actor.id, payload: { transactionId, amount: transaction.total } } satisfies EventSpec] : []),
     ]);
     this.addNotification(transaction.buyerId, approve ? 'キャンセルが承認され返金されました' : 'キャンセル申請が却下されました', `${transaction.titleSnapshot}の取引状態が更新されました。`, events[0]?.id);
     this.addNotification(transaction.sellerId, approve ? 'キャンセルが承認されました' : 'キャンセル申請が却下されました', `${transaction.titleSnapshot}の取引状態が更新されました。`, events[0]?.id);
@@ -1252,7 +1363,7 @@ export class SandboxEngine {
     if (this.state.returns.some((returnCase) => returnCase.transactionId === transactionId && !['DECLINED', 'REFUND_COMPLETED'].includes(returnCase.status))) return resultError('INVALID_TRANSITION', this.state.stateVersion, 'この取引には既に返品申請があります');
     const returnCase: ReturnCase = { id: this.nextId('return'), transactionId, requesterId: actor.id, reason: normalizedReason, status: 'REQUESTED', requestedAt: this.state.now };
     this.state.returns.push(returnCase);
-    transaction.cancelPreviousStatus = 'DELIVERED';
+    transaction.cancelPreviousStatus = transaction.status as Extract<TransactionStatus, 'DELIVERED' | 'COMPLETED'>;
     transaction.status = 'CANCEL_REQUESTED';
     transaction.cancelReason = normalizedReason;
     transaction.canceledAt = this.state.now;
@@ -1271,14 +1382,43 @@ export class SandboxEngine {
     const transaction = this.state.transactions.find((candidate) => candidate.id === transactionId);
     const returnCase = this.state.returns.find((candidate) => candidate.transactionId === transactionId && candidate.status === 'IN_TRANSIT');
     if (!transaction) return resultError('TRANSACTION_NOT_FOUND', this.state.stateVersion);
+    const completedReturn = this.state.returns.find((candidate) => candidate.transactionId === transactionId && candidate.status === 'REFUND_COMPLETED');
+    if (completedReturn) return resultOk({ returnCaseId: completedReturn.id, status: completedReturn.status }, this.state.stateVersion);
     if (!returnCase) return resultError('INVALID_TRANSITION', this.state.stateVersion, '返送中の返品ケースがありません');
     if (actor.role === 'seller' && actor.id !== transaction.sellerId) return resultError('FORBIDDEN', this.state.stateVersion);
+    const payment = this.state.payments.find((candidate) => candidate.id === transaction.paymentId);
+    const item = this.item(transaction.itemId);
+    const shipment = this.state.shipments.find((candidate) => candidate.id === transaction.shipmentId);
+    const buyerWallet = this.wallet(transaction.buyerId);
+    const sellerWallet = this.wallet(transaction.sellerId);
+    if (!payment || !item || !shipment || !buyerWallet || !sellerWallet) return resultError('INVALID_STATE', this.state.stateVersion, '返品返金に必要な取引集約が見つかりません');
+    const sellerFee = Math.floor(transaction.priceSnapshot * 0.1);
+    const settled = transaction.completedAt !== undefined
+      || sellerWallet.ledger.some((entry) => entry.referenceId === transaction.id && entry.type === 'SALE');
+    if (settled) {
+      // Reverse fee before sale so the seller's net balance never goes
+      // negative during the two-entry reversal.
+      if (sellerWallet.availableBalance < transaction.priceSnapshot - sellerFee) return resultError('INVALID_STATE', this.state.stateVersion, '出品者の決済残高が返金可能な状態ではありません');
+      if (sellerFee > 0 && !this.addLedger(transaction.sellerId, 'FEE_REVERSAL', sellerFee, transaction.id)) return resultError('INVALID_STATE', this.state.stateVersion, '販売手数料の返金を記録できません');
+      if (!this.addLedger(transaction.sellerId, 'SALE_REVERSAL', transaction.priceSnapshot, transaction.id)) return resultError('INVALID_STATE', this.state.stateVersion, '売上返金を記録できません');
+      if (!this.addLedger(transaction.buyerId, 'POST_CAPTURE_REFUND', transaction.total, transaction.id)) return resultError('INVALID_STATE', this.state.stateVersion, '購入者返金を記録できません');
+    } else if (!this.releaseWalletHold(transaction.buyerId, transaction.total, transaction.id)) {
+      return resultError('INVALID_STATE', this.state.stateVersion, '購入者のウォレット保留残高が見つかりません');
+    }
+    payment.status = 'REFUNDED';
+    payment.updatedAt = this.state.now;
+    buyerWallet.points += transaction.pointsUsed ?? 0;
+    transaction.status = 'REFUNDED';
+    transaction.updatedAt = this.state.now;
     returnCase.status = 'REFUND_COMPLETED';
     returnCase.receivedAt = this.state.now;
-    returnCase.refundedAt ??= this.state.now;
-    const shipment = this.state.shipments.find((candidate) => candidate.id === transaction.shipmentId);
-    if (shipment) { shipment.status = 'RETURNING'; shipment.updatedAt = this.state.now; }
-    transaction.updatedAt = this.state.now;
+    returnCase.refundedAt = this.state.now;
+    const restoredQuantity = Math.min(item.inventoryInitialQuantity ?? 1, (item.inventoryQuantity ?? 0) + 1);
+    const nextReserved = this.activeReservationQuantity(item.id);
+    this.updateItem(item.id, { inventoryQuantity: restoredQuantity, reservedQuantity: nextReserved, isSold: false, listingStatus: nextReserved > 0 ? 'RESERVED' : 'ACTIVE', soldAt: undefined });
+    this.recordInventoryMovement(item, 'RELEASE', 1, '返品受領による在庫復元', transaction.id);
+    shipment.status = 'RETURNED';
+    shipment.updatedAt = this.state.now;
     const events = this.commit([{ type: 'RETURN_RECEIVED', aggregateType: 'transaction', aggregateId: transactionId, actorId: actor.id, payload: { returnCaseId: returnCase.id, refundCompleted: true } }]);
     this.addNotification(transaction.buyerId, '返送を受領し返金を完了しました', `${transaction.titleSnapshot}の返品処理が完了しました。`, events[0]?.id);
     return resultOk({ returnCaseId: returnCase.id, status: returnCase.status }, this.state.stateVersion, events, ['ViewTransaction']);
@@ -1301,6 +1441,36 @@ export class SandboxEngine {
     return resultOk(clone(message), this.state.stateVersion, events, ['ReadTransactionMessages']);
   }
 
+  public addComment(itemId: string, text: string, options?: AgentActionOptions): ActionResult<undefined> {
+    const invalid = this.validateOptions(options);
+    if (invalid) return invalid as ActionResult<undefined>;
+    const actor = this.actorFor(options);
+    if (!actor?.authenticated) return resultError('AUTH_REQUIRED', this.state.stateVersion, 'コメントするにはログインが必要です');
+    const item = this.item(itemId);
+    if (!item) return resultError('ITEM_NOT_FOUND', this.state.stateVersion);
+    if (item.isSold || item.listingStatus === 'SOLD') return resultError('ALREADY_SOLD', this.state.stateVersion, '売り切れの商品にはコメントできません');
+    const normalizedText = typeof text === 'string' ? text.trim() : '';
+    if (!normalizedText) return resultError('INVALID_INPUT', this.state.stateVersion, 'コメントを入力してください');
+    if (normalizedText.length > 500) return resultError('INVALID_INPUT', this.state.stateVersion, 'コメントは500文字以内で入力してください');
+    if (unsafeContactText(normalizedText)) return resultError('POLICY_BLOCKED', this.state.stateVersion, 'コメントに外部URLや連絡先を含めることはできません');
+    if (item.comments.some((comment) => comment.userId === actor.id && comment.text === normalizedText)) {
+      return resultError('INVALID_INPUT', this.state.stateVersion, '同じコメントは連続して投稿できません');
+    }
+    const actorProfile = this.state.profiles.find((profile) => profile.actorId === actor.id);
+    const comment: CommentItem = {
+      id: this.nextId('comment'),
+      userId: actor.id,
+      userName: actorProfile?.displayName ?? actor.name,
+      userAvatar: actorProfile?.avatar ?? '/favicon.svg',
+      text: normalizedText,
+      date: this.state.now.slice(0, 10),
+    };
+    const updatedItem = this.updateItem(itemId, { comments: [...item.comments, comment] });
+    if (!updatedItem) return resultError('INVALID_STATE', this.state.stateVersion, 'コメントを保存できませんでした');
+    const events = this.commit([{ type: 'COMMENT_ADDED', aggregateType: 'listing', aggregateId: itemId, actorId: actor.id, payload: { commentId: comment.id } }]);
+    return resultOk(undefined, this.state.stateVersion, events);
+  }
+
   public createSupportTicket(input: Partial<SupportTicket>, options?: AgentActionOptions): ActionResult<SupportTicket> {
     const invalid = this.validateOptions(options);
     if (invalid) return invalid as ActionResult<SupportTicket>;
@@ -1309,7 +1479,8 @@ export class SandboxEngine {
     const category = input?.category;
     const subject = typeof input?.subject === 'string' ? input.subject.trim() : '';
     const body = typeof input?.body === 'string' ? input.body.trim() : '';
-    const evidence = Array.isArray(input?.evidence) ? input.evidence.filter((entry): entry is string => typeof entry === 'string' && entry.length <= 2_000_000).slice(0, 5) : [];
+    const evidence = Array.isArray(input?.evidence) ? input.evidence.filter((entry): entry is string => typeof entry === 'string' && utf8Bytes(entry) <= 2_000_000).slice(0, 5) : [];
+    if (evidence.reduce((total, entry) => total + utf8Bytes(entry), 0) > 4 * 1024 * 1024) return resultError('PAYLOAD_TOO_LARGE', this.state.stateVersion, '証拠画像の合計サイズが大きすぎます');
     if (!['TRANSACTION', 'LISTING', 'PAYMENT', 'DELIVERY', 'SAFETY'].includes(String(category)) || !subject || subject.length > 100 || !body || body.length > 2000 || unsafeContactText(`${subject} ${body}`)) return resultError('INVALID_INPUT', this.state.stateVersion, 'サポートチケットの入力が不正です');
     const transaction = input.transactionId ? this.state.transactions.find((candidate) => candidate.id === input.transactionId) : undefined;
     if (input.transactionId && (!transaction || (actor.role !== 'admin' && actor.role !== 'platform' && ![transaction.buyerId, transaction.sellerId].includes(actor.id)))) return resultError('FORBIDDEN', this.state.stateVersion);
@@ -1364,27 +1535,54 @@ export class SandboxEngine {
     const item = this.item(itemId);
     if (!item || !item.isAuction || !item.auctionEndsAt || Date.parse(item.auctionEndsAt) > Date.parse(this.state.now)) return [];
     if (this.state.transactions.some((transaction) => transaction.itemId === itemId)) return [];
-    const highestBid = [...this.state.bids]
+    const rankedBids = [...this.state.bids]
       .filter((bid) => bid.itemId === itemId)
-      .sort((left, right) => right.amount - left.amount || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
-    if (!highestBid) {
+      .sort((left, right) => right.amount - left.amount || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+    const firstBid = rankedBids[0];
+    if (!firstBid) {
       this.updateItem(itemId, { listingStatus: 'ARCHIVED' });
       const events = this.commit([{ type: 'AUCTION_CLOSED_NO_BIDS', aggregateType: 'auction', aggregateId: itemId, actorId: 'platform', payload: { itemId } }]);
       return events;
     }
-    const winner = this.currentActor(highestBid.bidderId);
-    const total = highestBid.amount + shippingCostFor(item);
-    const wallet = winner ? this.wallet(winner.id) : undefined;
-    const holdReference = this.auctionHoldReference(itemId, highestBid.bidderId);
-    const heldForWinner = winner && wallet ? this.heldAmountForReference(winner.id, holdReference) : 0;
-    const missingHold = Math.max(0, total - heldForWinner);
-    if (!winner || !wallet || wallet.availableBalance < missingHold || this.state.pendingFailures.includes('payment')) {
-      if (winner && heldForWinner > 0) this.releaseWalletHold(winner.id, heldForWinner, holdReference);
-      if (this.state.pendingFailures.includes('payment')) this.state.pendingFailures = this.state.pendingFailures.filter((failure) => failure !== 'payment');
+    let highestBid = firstBid;
+    let winner = this.currentActor(highestBid.bidderId);
+    let total = highestBid.amount + shippingCostFor(item);
+    let wallet = winner ? this.wallet(winner.id) : undefined;
+    let holdReference = this.auctionHoldReference(itemId, highestBid.bidderId);
+    let heldForWinner = winner && wallet ? this.heldAmountForReference(winner.id, holdReference) : 0;
+    let selected = false;
+    for (const candidate of rankedBids) {
+      const candidateWinner = this.currentActor(candidate.bidderId);
+      const candidateWallet = candidateWinner ? this.wallet(candidateWinner.id) : undefined;
+      const candidateTotal = candidate.amount + shippingCostFor(item);
+      const candidateReference = this.auctionHoldReference(itemId, candidate.bidderId);
+      const candidateHeld = candidateWinner && candidateWallet ? this.heldAmountForReference(candidateWinner.id, candidateReference) : 0;
+      const paymentInjected = this.state.pendingFailures.includes('payment');
+      if (paymentInjected) this.state.pendingFailures = this.state.pendingFailures.filter((failure) => failure !== 'payment');
+      if (candidateWinner && candidateWallet && candidateWallet.availableBalance >= Math.max(0, candidateTotal - candidateHeld) && !paymentInjected) {
+        highestBid = candidate;
+        winner = candidateWinner;
+        total = candidateTotal;
+        wallet = candidateWallet;
+        holdReference = candidateReference;
+        heldForWinner = candidateHeld;
+        selected = true;
+        break;
+      }
+      if (candidateWinner && candidateHeld > 0) this.releaseWalletHold(candidateWinner.id, candidateHeld, candidateReference);
+      this.addNotification(candidate.bidderId, 'オークションの決済に失敗しました', `${item.title}は残高不足または決済エラーのため落札候補から外れました。`, undefined);
+    }
+    if (!selected) {
       this.updateItem(itemId, { listingStatus: 'ARCHIVED' });
-      const events = this.commit([{ type: 'AUCTION_PAYMENT_FAILED', aggregateType: 'auction', aggregateId: itemId, actorId: 'platform', payload: { itemId, bidderId: highestBid.bidderId, required: total, available: wallet?.availableBalance ?? 0 } }]);
-      this.addNotification(highestBid.bidderId, 'オークションの決済に失敗しました', `${item.title}は残高不足または決済エラーのため落札を確定できませんでした。`, events[0]?.id);
+      const events = this.commit([{ type: 'AUCTION_PAYMENT_FAILED', aggregateType: 'auction', aggregateId: itemId, actorId: 'platform', payload: { itemId, bidderId: highestBid.bidderId, required: total, available: wallet?.availableBalance ?? 0, attemptedBidderIds: rankedBids.map((bid) => bid.bidderId) } }]);
       return events;
+    }
+    if (!winner) return [];
+    const sellerWallet = this.wallet(sellerIdForItem(item));
+    const sellerFee = Math.floor(highestBid.amount * 0.1);
+    if (!sellerWallet || sellerWallet.availableBalance + highestBid.amount < sellerFee) {
+      this.updateItem(itemId, { listingStatus: 'ARCHIVED' });
+      return this.commit([{ type: 'AUCTION_PAYMENT_FAILED', aggregateType: 'auction', aggregateId: itemId, actorId: 'platform', payload: { itemId, bidderId: winner.id, required: total, available: wallet?.availableBalance ?? 0, reason: 'seller-settlement-unavailable' } }]);
     }
     const createdAt = this.state.now;
     const intentId = this.nextId('auction-intent');
@@ -1423,12 +1621,19 @@ export class SandboxEngine {
     };
     const payment: PaymentRecord = { id: paymentId, transactionId, method: 'sandbox-wallet', amount: total, status: 'CAPTURED', createdAt, updatedAt: createdAt };
     const shipment: ShipmentRecord = { id: shipmentId, transactionId, method: item.shippingMethod, status: 'PENDING', createdAt, updatedAt: createdAt };
+    const settlementState = clone(this.state);
+    if (heldForWinner > 0 && this.releaseWalletHold(winner.id, heldForWinner, holdReference) !== heldForWinner) {
+      this.state = settlementState;
+      return this.commit([{ type: 'AUCTION_PAYMENT_FAILED', aggregateType: 'auction', aggregateId: itemId, actorId: 'platform', payload: { itemId, bidderId: winner.id, required: total, reason: 'winner-hold-mismatch' } }]);
+    }
+    if (!wallet || wallet.availableBalance < total || !this.addLedger(winner.id, 'HOLD', total, transactionId) || !this.addLedger(winner.id, 'CAPTURE', total, transactionId) || !this.addLedger(sellerWallet.actorId, 'SALE', highestBid.amount, transactionId) || (sellerFee > 0 && !this.addLedger(sellerWallet.actorId, 'FEE', sellerFee, transactionId))) {
+      this.state = settlementState;
+      return this.commit([{ type: 'AUCTION_PAYMENT_FAILED', aggregateType: 'auction', aggregateId: itemId, actorId: 'platform', payload: { itemId, bidderId: winner.id, required: total, available: wallet?.availableBalance ?? 0, reason: 'ledger-write-failed' } }]);
+    }
     this.state.purchaseIntents.push(intent);
     this.state.transactions.push(transaction);
     this.state.payments.push(payment);
     this.state.shipments.push(shipment);
-    if (heldForWinner > 0) this.releaseWalletHold(winner.id, heldForWinner, holdReference);
-    this.addLedger(winner.id, 'HOLD', total, transactionId);
     this.updateItem(itemId, { inventoryQuantity: Math.max(0, (item.inventoryQuantity ?? 0) - 1), reservedQuantity: 0, isSold: true, listingStatus: 'SOLD', soldAt: this.state.now });
     this.recordInventoryMovement(item, 'OUT', 1, 'オークション落札確定', transactionId);
     const events = this.commit([
@@ -1604,6 +1809,7 @@ export class SandboxEngine {
     const draftId = this.nextId('draft');
     this.state.drafts[draftId] = clone(input);
     this.state.draftOwners[draftId] = actor.id;
+    this.state.draftUpdatedAt[draftId] = this.state.now;
     const events = this.commit([{ type: 'LISTING_DRAFT_CREATED', aggregateType: 'listing', aggregateId: draftId, actorId: actor.id, payload: { fields: Object.keys(input) } }]);
     return resultOk({ draftId }, this.state.stateVersion, events, ['SubmitListing']);
   }
@@ -1619,7 +1825,8 @@ export class SandboxEngine {
     if (imageError) return resultError('INVALID_INPUT', this.state.stateVersion, imageError);
     if (!this.state.drafts[draftId]) return resultError('DRAFT_NOT_FOUND', this.state.stateVersion);
     if (this.state.draftOwners[draftId] !== actor.id) return resultError('FORBIDDEN', this.state.stateVersion, 'この出品下書きを編集できるactorではありません');
-    this.state.drafts[draftId] = clone(input);
+    this.state.drafts[draftId] = { ...clone(this.state.drafts[draftId]), ...clone(input) };
+    this.state.draftUpdatedAt[draftId] = this.state.now;
     const events = this.commit([{ type: 'LISTING_DRAFT_UPDATED', aggregateType: 'listing', aggregateId: draftId, actorId: actor.id, payload: { fields: Object.keys(input) } }]);
     return resultOk({ draftId }, this.state.stateVersion, events, ['SubmitListing']);
   }
@@ -1629,7 +1836,7 @@ export class SandboxEngine {
     if (!actor?.authenticated) return [];
     return Object.entries(this.state.drafts)
       .filter(([draftId]) => actor.role === 'admin' || actor.role === 'platform' || this.state.draftOwners[draftId] === actor.id)
-      .map(([draftId, fields]) => ({ draftId, fields: clone(fields), updatedAt: this.state.now }));
+      .map(([draftId, fields]) => ({ draftId, fields: clone(fields), updatedAt: this.state.draftUpdatedAt[draftId] ?? this.state.now }));
   }
 
   public deleteListingDraft(draftId: string, options?: AgentActionOptions): ActionResult<{ draftId: string }> {
@@ -1642,6 +1849,7 @@ export class SandboxEngine {
     if (actor.role !== 'admin' && actor.role !== 'platform' && this.state.draftOwners[draftId] !== actor.id) return resultError('FORBIDDEN', this.state.stateVersion, 'この出品下書きを削除できるactorではありません');
     delete this.state.drafts[draftId];
     delete this.state.draftOwners[draftId];
+    delete this.state.draftUpdatedAt[draftId];
     const events = this.commit([{ type: 'LISTING_DRAFT_DELETED', aggregateType: 'listing', aggregateId: draftId, actorId: actor.id, payload: { draftId } }]);
     return resultOk({ draftId }, this.state.stateVersion, events, ['CreateListingDraft']);
   }
@@ -1658,7 +1866,9 @@ export class SandboxEngine {
     if (!result.ok) return resultError(result.error, result.stateVersion, result.message, result.details);
     delete this.state.drafts[draftId];
     delete this.state.draftOwners[draftId];
-    return resultOk({ itemId: result.data.id }, result.stateVersion, result.events, result.nextActions);
+    delete this.state.draftUpdatedAt[draftId];
+    const submitEvents = this.commit([{ type: 'LISTING_DRAFT_SUBMITTED', aggregateType: 'listing', aggregateId: draftId, actorId: actor.id, payload: { itemId: result.data.id } }]);
+    return resultOk({ itemId: result.data.id }, this.state.stateVersion, [...(result.events ?? []), ...submitEvents], result.nextActions);
   }
 
   public reviewListing(itemId: string, approve: boolean, options?: AgentActionOptions): ActionResult<MercariItem> {
@@ -1688,13 +1898,40 @@ export class SandboxEngine {
     if (!actor?.authenticated || (actor.role !== 'admin' && actor.role !== 'platform' && actor.id !== item.sellerId)) return resultError('FORBIDDEN', this.state.stateVersion, '出品を編集できるのは所有sellerまたは運営だけです');
     if (!['ACTIVE', 'HELD', 'ARCHIVED'].includes(String(item.listingStatus))) return resultError('INVALID_TRANSITION', this.state.stateVersion, '購入予約・売却済みの出品は編集できません');
     if (!input || typeof input !== 'object' || Array.isArray(input)) return resultError('INVALID_INPUT', this.state.stateVersion);
+    const imageError = imagePayloadError(input.images) ?? imageReferenceError(input.imageRefs);
+    if (imageError) return resultError('INVALID_INPUT', this.state.stateVersion, imageError);
     const editableKeys = ['title', 'description', 'price', 'category', 'condition', 'shippingFee', 'shippingMethod', 'origin', 'shippingDays', 'shippingSize', 'images', 'imageRefs', 'brand', 'size', 'color', 'inventoryPolicy', 'inventoryInitialQuantity', 'inventoryQuantity', 'isAnonymousShipping'] as const;
     const editable = Object.fromEntries(editableKeys.filter((key) => key in input).map((key) => [key, input[key]])) as Partial<MercariItem>;
     const normalizedEditable = editable.condition === undefined ? editable : { ...editable, condition: canonicalListingCondition(editable.condition) };
+    const inventoryKeys = ['inventoryPolicy', 'inventoryInitialQuantity', 'inventoryQuantity'] as const;
+    const changesInventory = inventoryKeys.some((key) => key in normalizedEditable);
+    if (changesInventory && this.activeReservationQuantity(item.id) > 0) return resultError('INVALID_TRANSITION', this.state.stateVersion, '購入予約中は在庫設定を変更できません');
+    const nextInitial = normalizedEditable.inventoryInitialQuantity ?? item.inventoryInitialQuantity ?? item.inventoryQuantity ?? 0;
+    const nextQuantity = normalizedEditable.inventoryQuantity ?? item.inventoryQuantity ?? 0;
+    const nextReserved = item.reservedQuantity ?? 0;
+    if (!isInteger(nextInitial) || !isInteger(nextQuantity) || !isInteger(nextReserved) || nextInitial < 0 || nextQuantity < 0 || nextReserved < 0 || nextQuantity < nextReserved || nextInitial < nextQuantity) {
+      return resultError('INVALID_INPUT', this.state.stateVersion, '在庫数は0以上の整数で、初期在庫>=在庫数>=予約数を満たす必要があります');
+    }
+    const nextPolicy = normalizedEditable.inventoryPolicy ?? item.inventoryPolicy ?? 'SINGLE';
+    if (!['SINGLE', 'MULTI'].includes(String(nextPolicy)) || (nextPolicy === 'SINGLE' && (nextInitial > 1 || nextQuantity > 1))) {
+      return resultError('INVALID_INPUT', this.state.stateVersion, '在庫ポリシーと数量の組み合わせが不正です');
+    }
     const decision = this.evaluateListingPolicy({ ...item, ...normalizedEditable });
     if (!decision.allowed) return resultError('POLICY_BLOCKED', this.state.stateVersion, '出品ポリシーによりブロックされました', decision);
-    const next = this.updateItem(itemId, { ...normalizedEditable, listingStatus: decision.status === 'HELD' ? 'HELD' : 'ACTIVE', moderationStatus: decision.status === 'HELD' ? 'HELD' : 'APPROVED' });
+    const previousItem = clone(item);
+    const nextIsSold = nextQuantity === 0;
+    const next = this.updateItem(itemId, {
+      ...normalizedEditable,
+      isSold: nextIsSold,
+      listingStatus: nextIsSold ? 'SOLD' : decision.status === 'HELD' ? 'HELD' : 'ACTIVE',
+      moderationStatus: decision.status === 'HELD' ? 'HELD' : 'APPROVED',
+    });
     if (!next) return resultError('STATE_CONFLICT', this.state.stateVersion);
+    const violations = this.assertInvariants();
+    if (violations.length) {
+      this.state.items = this.state.items.map((candidate) => candidate.id === itemId ? previousItem : candidate);
+      return resultError('INVALID_STATE', this.state.stateVersion, '在庫変更後のSandbox状態が不正です', { violations });
+    }
     const events = this.commit([{ type: 'LISTING_UPDATED', aggregateType: 'listing', aggregateId: itemId, actorId: actor.id, payload: { fields: Object.keys(editable), policy: decision } }]);
     return resultOk(clone(next), this.state.stateVersion, events, decision.status === 'HELD' ? ['ReviewListing'] : ['OpenListing']);
   }
@@ -1730,7 +1967,25 @@ export class SandboxEngine {
     if (!item) return resultError('ITEM_NOT_FOUND', this.state.stateVersion);
     if (!actor?.authenticated || actor.role !== 'seller' || actor.id !== item.sellerId) return resultError('FORBIDDEN', this.state.stateVersion, '再出品は所有sellerだけが実行できます');
     if (!['SOLD', 'ARCHIVED'].includes(String(item.listingStatus))) return resultError('INVALID_TRANSITION', this.state.stateVersion, '売切れまたは停止済みの出品だけ再出品できます');
-    const result = this.listItem({ ...clone(item), id: undefined, isSold: false, listingStatus: 'ACTIVE', inventoryQuantity: item.inventoryInitialQuantity ?? 1, reservedQuantity: 0, sku: `${item.sku ?? item.id}-relist-${this.state.idCounter}` }, { actorId: actor.id });
+    const result = this.listItem({
+      title: item.title,
+      price: item.price,
+      images: [...item.images],
+      imageRefs: item.imageRefs ? [...item.imageRefs] : undefined,
+      description: item.description,
+      category: [...item.category],
+      condition: item.condition,
+      shippingFee: item.shippingFee,
+      shippingMethod: item.shippingMethod,
+      origin: item.origin,
+      shippingDays: item.shippingDays,
+      shippingSize: item.shippingSize,
+      inventoryPolicy: item.inventoryPolicy,
+      inventoryQuantity: item.inventoryInitialQuantity ?? 1,
+      isAuction: item.isAuction,
+      auctionEndsAt: item.isAuction ? item.auctionEndsAt : undefined,
+      sku: `${item.sku ?? item.id}-relist-${this.state.idCounter}`,
+    }, { actorId: actor.id });
     return result;
   }
 
@@ -1759,11 +2014,18 @@ export class SandboxEngine {
     const pickAvailable = () => this.state.items.find((item) => !item.isAuction && (item.inventoryQuantity ?? 0) > 0);
     if (scenarioId === 'already_sold') {
       const target = pickAvailable();
-      if (target) this.updateItem(target.id, { inventoryQuantity: 0, reservedQuantity: 0, isSold: true, listingStatus: 'SOLD' });
+      if (target) {
+        const originalQuantity = target.inventoryQuantity ?? 1;
+        this.updateItem(target.id, { inventoryQuantity: 0, reservedQuantity: 0, isSold: true, listingStatus: 'SOLD' });
+        this.recordInventoryMovement(target, 'OUT', originalQuantity, 'シナリオ初期SOLD状態');
+      }
     }
     if (scenarioId === 'multi_inventory') {
       const target = pickAvailable();
-      if (target) this.updateItem(target.id, { inventoryPolicy: 'MULTI', inventoryInitialQuantity: 5, inventoryQuantity: 5, reservedQuantity: 0, isSold: false, listingStatus: 'ACTIVE' });
+      if (target) {
+        this.updateItem(target.id, { inventoryPolicy: 'MULTI', inventoryInitialQuantity: 5, inventoryQuantity: 5, reservedQuantity: 0, isSold: false, listingStatus: 'ACTIVE' });
+        this.state.inventoryMovements = this.state.inventoryMovements.map((movement) => movement.id === `seed-in-${target.id}` ? { ...movement, quantity: 5 } : movement);
+      }
     }
     if (scenarioId === 'auction_outbid') {
       const target = this.state.items.find((item) => item.isAuction) ?? this.state.items[0];
@@ -1822,15 +2084,10 @@ export class SandboxEngine {
     this.state.notifications = this.state.notifications.map((notification) => notification.id === notificationId ? { ...notification, isRead: true } : notification);
   }
 
-  /**
-   * Advance the aggregate version for deterministic client-side view/domain
-   * state changes that do not produce a business event (navigation, likes,
-   * view counters, and read markers). Keeping this on the engine means the
-   * persisted snapshot and ActionResult metadata cannot drift apart.
-   */
+  /** Advance a UI-only revision without invalidating domain CAS versions. */
   public advanceViewState(): number {
-    this.state.stateVersion += 1;
-    return this.state.stateVersion;
+    this.state.uiRevision += 1;
+    return this.state.uiRevision;
   }
 
   public replaceItems(items: MercariItem[]): void {
@@ -1858,7 +2115,14 @@ export class SandboxEngine {
       if (!next || this.state.purchaseIntents.some((intent) => intent.itemId === current.id && intent.status === 'ACTIVE')) return current;
       const initialQuantity = Math.max(0, current.inventoryInitialQuantity ?? current.inventoryQuantity ?? 0);
       const quantity = Math.min(initialQuantity, Math.max(0, Math.floor(next.inventoryQuantity ?? initialQuantity)));
-      return { ...current, inventoryQuantity: quantity, reservedQuantity: 0, isSold: quantity === 0, listingStatus: quantity === 0 ? 'SOLD' : 'ACTIVE' };
+      const protectedStatus = current.listingStatus === 'HELD' || current.listingStatus === 'ARCHIVED' || current.listingStatus === 'DRAFT';
+      return {
+        ...current,
+        inventoryQuantity: quantity,
+        reservedQuantity: current.reservedQuantity ?? 0,
+        isSold: quantity === 0,
+        listingStatus: protectedStatus ? current.listingStatus : quantity === 0 ? 'SOLD' : current.listingStatus === 'SOLD' ? 'ACTIVE' : current.listingStatus,
+      };
     });
   }
 
@@ -1869,8 +2133,8 @@ export class SandboxEngine {
   public importState(serialized: string, options?: AgentActionOptions): ActionResult<{ stateVersion: number }> {
     const invalid = this.validateControlOptions(options);
     if (invalid) return invalid as ActionResult<{ stateVersion: number }>;
-    if (typeof serialized !== 'string' || serialized.length > MAX_IMPORTED_STATE_BYTES) {
-      return resultError('INVALID_INPUT', this.state.stateVersion, `Sandbox stateは${MAX_IMPORTED_STATE_BYTES.toLocaleString()}文字以内のJSONで指定してください`);
+    if (typeof serialized !== 'string' || utf8Bytes(serialized) > MAX_IMPORTED_STATE_BYTES) {
+      return resultError('INVALID_INPUT', this.state.stateVersion, `Sandbox stateは${MAX_IMPORTED_STATE_BYTES.toLocaleString()}バイト以内のJSONで指定してください`);
     }
     try {
       const candidate = JSON.parse(serialized) as Partial<SandboxEngineState>;
@@ -1882,6 +2146,8 @@ export class SandboxEngine {
         supportTickets: candidate.supportTickets ?? [],
         profiles: candidate.profiles ?? [],
         follows: candidate.follows ?? [],
+        uiRevision: candidate.uiRevision ?? 0,
+        draftUpdatedAt: candidate.draftUpdatedAt ?? {},
       };
       const requiredArrays = [migrated.actors, migrated.items, migrated.purchaseIntents, migrated.transactions, migrated.payments, migrated.shipments, migrated.bids, migrated.reviews, migrated.inventoryMovements, migrated.events, migrated.notifications, migrated.wallets, migrated.returns, migrated.messages, migrated.supportTickets, migrated.profiles, migrated.follows];
       const valid = migrated.version === '1'
@@ -1890,17 +2156,31 @@ export class SandboxEngine {
         && typeof migrated.seed === 'string'
         && typeof migrated.now === 'string' && Number.isFinite(Date.parse(migrated.now))
         && Number.isInteger(migrated.stateVersion) && (migrated.stateVersion ?? -1) >= 0
+        && Number.isInteger(migrated.uiRevision) && (migrated.uiRevision ?? -1) >= 0
         && Number.isInteger(migrated.idCounter) && (migrated.idCounter ?? -1) >= 0
         && typeof migrated.currentActorId === 'string'
         && requiredArrays.every(Array.isArray)
         && (migrated.actors ?? []).some((actor) => actor && actor.id === migrated.currentActorId)
         && isRecord(migrated.drafts ?? {})
         && isRecord(migrated.draftOwners ?? {})
+        && isRecord(migrated.draftUpdatedAt ?? {})
         && (migrated.items ?? []).every((item) => item && typeof item.id === 'string' && Number.isFinite(item.price) && item.price >= 0 && Number.isInteger(item.inventoryQuantity ?? 0) && Number.isInteger(item.reservedQuantity ?? 0));
       if (!valid) return resultError('INVALID_INPUT', this.state.stateVersion, 'Sandbox stateの形式が不正です');
+      if ((migrated.stateVersion ?? 0) < this.state.stateVersion) return resultError('STATE_CONFLICT', this.state.stateVersion, '古いstateVersionで現在のSandboxを巻き戻すことはできません', { expectedStateVersion: this.state.stateVersion, receivedStateVersion: migrated.stateVersion });
+      const collectionCaps: Array<[string, unknown, number]> = [
+        ['actors', migrated.actors, 32], ['items', migrated.items, MAX_STATE_COLLECTION_ENTRIES], ['purchaseIntents', migrated.purchaseIntents, MAX_STATE_COLLECTION_ENTRIES],
+        ['transactions', migrated.transactions, MAX_STATE_COLLECTION_ENTRIES], ['payments', migrated.payments, MAX_STATE_COLLECTION_ENTRIES], ['shipments', migrated.shipments, MAX_STATE_COLLECTION_ENTRIES],
+        ['bids', migrated.bids, MAX_STATE_COLLECTION_ENTRIES], ['reviews', migrated.reviews, MAX_STATE_COLLECTION_ENTRIES], ['inventoryMovements', migrated.inventoryMovements, MAX_STATE_MOVEMENT_ENTRIES],
+        ['events', migrated.events, MAX_STATE_EVENT_ENTRIES], ['notifications', migrated.notifications, MAX_STATE_NOTIFICATION_ENTRIES], ['wallets', migrated.wallets, 32],
+        ['returns', migrated.returns, MAX_STATE_COLLECTION_ENTRIES], ['messages', migrated.messages, MAX_STATE_COLLECTION_ENTRIES], ['supportTickets', migrated.supportTickets, MAX_STATE_COLLECTION_ENTRIES],
+        ['profiles', migrated.profiles, 32], ['follows', migrated.follows, MAX_STATE_COLLECTION_ENTRIES],
+      ];
+      if (collectionCaps.some(([, value, cap]) => !Array.isArray(value) || value.length > cap)) return resultError('PAYLOAD_TOO_LARGE', this.state.stateVersion, 'Sandbox stateの配列件数上限を超えています');
+      if (Object.keys(migrated.drafts ?? {}).length > MAX_STATE_COLLECTION_ENTRIES || Object.keys(migrated.draftOwners ?? {}).length > MAX_STATE_COLLECTION_ENTRIES || Object.keys(migrated.draftUpdatedAt ?? {}).length > MAX_STATE_COLLECTION_ENTRIES) return resultError('PAYLOAD_TOO_LARGE', this.state.stateVersion, 'Sandbox stateの下書き件数上限を超えています');
       const normalizedItems = (migrated.items ?? []).map((item) => ({
         ...item,
         images: Array.isArray(item.images) && item.images.length ? item.images : ['/images/products/knit.jpg'],
+        auctionEndsAt: item.isAuction ? item.auctionEndsAt : undefined,
       }));
       const normalizedDrafts = Object.fromEntries(Object.entries(migrated.drafts ?? {}).map(([draftId, fields]) => [draftId, {
         ...fields,
@@ -1914,7 +2194,7 @@ export class SandboxEngine {
         return { ...wallet, openingBalance, ledger: Array.isArray(wallet?.ledger) ? wallet.ledger : [] };
       });
       const previous = this.state;
-      this.state = { ...clone({ ...migrated, sandboxId: this.sandboxId, items: normalizedItems, wallets: normalizedWallets, drafts: normalizedDrafts, follows: migrated.follows ?? [] } as SandboxEngineState), wallets: normalizedWallets, drafts: normalizedDrafts, draftOwners: migrated.draftOwners ?? {}, follows: migrated.follows ?? [], pendingFailures: migrated.pendingFailures ?? [] };
+      this.state = { ...clone({ ...migrated, sandboxId: this.sandboxId, items: normalizedItems, wallets: normalizedWallets, drafts: normalizedDrafts, follows: migrated.follows ?? [] } as SandboxEngineState), wallets: normalizedWallets, drafts: normalizedDrafts, draftOwners: migrated.draftOwners ?? {}, draftUpdatedAt: migrated.draftUpdatedAt ?? {}, follows: migrated.follows ?? [], pendingFailures: migrated.pendingFailures ?? [] };
       const violations = this.assertInvariants();
       if (violations.length) {
         this.state = previous;
@@ -1939,6 +2219,9 @@ export class SandboxEngine {
     arrays.forEach(([label, value]) => {
       if (!Array.isArray(value)) violations.push(`${label}-not-array`);
     });
+    if (Array.isArray(state.events) && state.events.length > MAX_STATE_EVENT_ENTRIES) violations.push('events-retention-limit-exceeded');
+    if (Array.isArray(state.inventoryMovements) && state.inventoryMovements.length > MAX_STATE_MOVEMENT_ENTRIES) violations.push('inventory-movement-retention-limit-exceeded');
+    if (Array.isArray(state.notifications) && state.notifications.length > MAX_STATE_NOTIFICATION_ENTRIES) violations.push('notifications-retention-limit-exceeded');
     const records = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.filter(isRecord) : [];
     const checkUniqueIds = (label: string, values: unknown[], field = 'id') => {
       const seen = new Set<string>();
@@ -2027,6 +2310,7 @@ export class SandboxEngine {
     shipments.forEach((shipment) => {
       const id = String(shipment.id);
       if (!transactionIds.has(String(shipment.transactionId))) violations.push(`shipment-transaction-missing:${id}`);
+      if (!new Set(['PENDING', 'LABEL_READY', 'HANDED_OVER', 'IN_TRANSIT', 'DELIVERED', 'EXCEPTION', 'RETURNING', 'RETURNED']).has(String(shipment.status))) violations.push(`shipment-status-invalid:${id}`);
       if (!isIsoDate(shipment.createdAt) || !isIsoDate(shipment.updatedAt)) violations.push(`shipment-shape-invalid:${id}`);
     });
     transactions.forEach((transaction) => {
@@ -2058,6 +2342,7 @@ export class SandboxEngine {
       const transaction = transactionById.get(String(review.transactionId));
       if (!transaction || ![String(transaction.buyerId), String(transaction.sellerId)].includes(String(review.reviewerId)) || !isInteger(review.rating) || Number(review.rating) < 1 || Number(review.rating) > 5) violations.push(`review-invalid:${id}`);
     });
+    const walletRecords = records(state.wallets);
     const returns = records(state.returns);
     const validReturnStatuses = new Set(['REQUESTED', 'APPROVED', 'DECLINED', 'IN_TRANSIT', 'RECEIVED', 'REFUND_COMPLETED']);
     returns.forEach((returnCase) => {
@@ -2067,6 +2352,34 @@ export class SandboxEngine {
       if (returnCase.decidedAt !== undefined && !isIsoDate(returnCase.decidedAt)) violations.push(`return-decision-date-invalid:${id}`);
       if (returnCase.receivedAt !== undefined && !isIsoDate(returnCase.receivedAt)) violations.push(`return-received-date-invalid:${id}`);
       if (returnCase.refundedAt !== undefined && !isIsoDate(returnCase.refundedAt)) violations.push(`return-refunded-date-invalid:${id}`);
+      if (returnCase.status === 'IN_TRANSIT' && transaction?.status !== 'CANCEL_REQUESTED') violations.push(`return-in-transit-transaction-mismatch:${id}`);
+      if (returnCase.status === 'REFUND_COMPLETED' && transaction?.status !== 'REFUNDED') violations.push(`return-refunded-transaction-mismatch:${id}`);
+      if (returnCase.status === 'REFUND_COMPLETED' && !returnCase.receivedAt) violations.push(`return-refunded-without-received:${id}`);
+      if (returnCase.status === 'IN_TRANSIT') {
+        const payment = transaction ? paymentById.get(String(transaction.paymentId)) : undefined;
+        const shipment = transaction ? shipmentById.get(String(transaction.shipmentId)) : undefined;
+        if (payment?.status !== 'CAPTURED') violations.push(`return-in-transit-payment-mismatch:${id}`);
+        if (shipment?.status !== 'RETURNING') violations.push(`return-in-transit-shipment-mismatch:${id}`);
+        if (returnCase.receivedAt || returnCase.refundedAt) violations.push(`return-in-transit-has-settlement-date:${id}`);
+      }
+      if (returnCase.status === 'REFUND_COMPLETED' && transaction) {
+        const typedTransaction = transaction as unknown as TransactionRecord;
+        const buyerWallet = walletRecords.find((wallet) => wallet.actorId === typedTransaction.buyerId) as unknown as WalletSnapshot | undefined;
+        const sellerWallet = walletRecords.find((wallet) => wallet.actorId === typedTransaction.sellerId) as unknown as WalletSnapshot | undefined;
+        const buyerLedger = buyerWallet?.ledger ?? [];
+        const sellerLedger = sellerWallet?.ledger ?? [];
+        const hasBuyerPostCaptureRefund = buyerLedger.some((entry) => entry.referenceId === typedTransaction.id && entry.type === 'POST_CAPTURE_REFUND' && entry.amount === typedTransaction.total);
+        const hasSellerSale = sellerLedger.some((entry) => entry.referenceId === typedTransaction.id && entry.type === 'SALE');
+        const sellerFee = Math.floor(typedTransaction.priceSnapshot * 0.1);
+        const hasBuyerHoldRefund = buyerLedger.some((entry) => entry.referenceId === typedTransaction.id && entry.type === 'REFUND' && entry.amount === typedTransaction.total);
+        if (hasSellerSale) {
+          if (!hasBuyerPostCaptureRefund) violations.push(`return-post-capture-buyer-refund-missing:${id}`);
+          if (!sellerLedger.some((entry) => entry.referenceId === typedTransaction.id && entry.type === 'SALE_REVERSAL' && entry.amount === typedTransaction.priceSnapshot)) violations.push(`return-sale-reversal-missing:${id}`);
+          if (sellerFee > 0 && !sellerLedger.some((entry) => entry.referenceId === transaction.id && entry.type === 'FEE_REVERSAL' && entry.amount === sellerFee)) violations.push(`return-fee-reversal-missing:${id}`);
+        } else if (!hasBuyerHoldRefund) {
+          violations.push(`return-hold-refund-missing:${id}`);
+        }
+      }
     });
     const messages = records(state.messages);
     messages.forEach((message) => {
@@ -2079,7 +2392,8 @@ export class SandboxEngine {
     const validTicketStatuses = new Set(['OPEN', 'IN_REVIEW', 'RESOLVED', 'CLOSED']);
     supportTickets.forEach((ticket) => {
       const id = String(ticket.id);
-      if (!actorIds.has(String(ticket.reporterId)) || (ticket.transactionId !== undefined && !transactionIds.has(String(ticket.transactionId))) || !['TRANSACTION', 'LISTING', 'PAYMENT', 'DELIVERY', 'SAFETY'].includes(String(ticket.category)) || typeof ticket.subject !== 'string' || typeof ticket.body !== 'string' || !Array.isArray(ticket.evidence) || ticket.evidence.some((evidence) => typeof evidence !== 'string' || evidence.length > 2_000_000) || !validTicketStatuses.has(String(ticket.status)) || !isIsoDate(ticket.createdAt) || !isIsoDate(ticket.updatedAt)) violations.push(`support-ticket-invalid:${id}`);
+      const evidenceBytes = Array.isArray(ticket.evidence) ? ticket.evidence.reduce((total, evidence) => total + (typeof evidence === 'string' ? utf8Bytes(evidence) : 0), 0) : 0;
+      if (!actorIds.has(String(ticket.reporterId)) || (ticket.transactionId !== undefined && !transactionIds.has(String(ticket.transactionId))) || !['TRANSACTION', 'LISTING', 'PAYMENT', 'DELIVERY', 'SAFETY'].includes(String(ticket.category)) || typeof ticket.subject !== 'string' || typeof ticket.body !== 'string' || !Array.isArray(ticket.evidence) || ticket.evidence.length > 5 || evidenceBytes > 4 * 1024 * 1024 || ticket.evidence.some((evidence) => typeof evidence !== 'string' || utf8Bytes(evidence) > 2_000_000) || !validTicketStatuses.has(String(ticket.status)) || !isIsoDate(ticket.createdAt) || !isIsoDate(ticket.updatedAt)) violations.push(`support-ticket-invalid:${id}`);
     });
     const profiles = records(state.profiles);
     profiles.forEach((profile) => {
@@ -2123,7 +2437,7 @@ export class SandboxEngine {
         const entryId = typeof ledger.id === 'string' ? ledger.id : '';
         const entryType = String(ledger.type);
         const amount = ledger.amount;
-        if (!entryId || ledgerIds.has(entryId) || !['DEPOSIT', 'WITHDRAWAL', 'HOLD', 'CAPTURE', 'REFUND', 'SALE', 'FEE'].includes(entryType) || !isInteger(amount) || Number(amount) <= 0 || typeof ledger.referenceId !== 'string' || !isIsoDate(ledger.at)) {
+        if (!entryId || ledgerIds.has(entryId) || !['DEPOSIT', 'WITHDRAWAL', 'HOLD', 'CAPTURE', 'REFUND', 'POST_CAPTURE_REFUND', 'SALE', 'SALE_REVERSAL', 'FEE', 'FEE_REVERSAL'].includes(entryType) || !isInteger(amount) || Number(amount) <= 0 || typeof ledger.referenceId !== 'string' || !isIsoDate(ledger.at)) {
           violations.push(`wallet-ledger-invalid:${actorId}`);
           return;
         }
@@ -2133,8 +2447,11 @@ export class SandboxEngine {
         if (entryType === 'HOLD') { derivedAvailable -= Number(amount); derivedHeld += Number(amount); }
         if (entryType === 'CAPTURE') derivedHeld -= Number(amount);
         if (entryType === 'REFUND') { derivedHeld -= Number(amount); derivedAvailable += Number(amount); }
+        if (entryType === 'POST_CAPTURE_REFUND') derivedAvailable += Number(amount);
         if (entryType === 'SALE') derivedAvailable += Number(amount);
+        if (entryType === 'SALE_REVERSAL') derivedAvailable -= Number(amount);
         if (entryType === 'FEE') derivedAvailable -= Number(amount);
+        if (entryType === 'FEE_REVERSAL') derivedAvailable += Number(amount);
       });
       if (derivedAvailable !== Number(wallet.availableBalance) || derivedHeld !== Number(wallet.heldBalance) || derivedAvailable < 0 || derivedHeld < 0) violations.push(`wallet-ledger-balance-mismatch:${actorId}`);
     });
@@ -2148,7 +2465,7 @@ export class SandboxEngine {
       if (!actorIds.has(String(event.actorId)) || !isInteger(version) || Number(version) <= 0 || Number(version) > state.stateVersion || Number(version) < previousEventVersion || !isIsoDate(event.at) || typeof event.correlationId !== 'string' || !event.correlationId) violations.push(`event-invalid:${id}`);
       previousEventVersion = Math.max(previousEventVersion, Number(version ?? 0));
       if (typeof event.correlationId === 'string') correlationIds.add(event.correlationId);
-      const isDraftEvent = ['LISTING_DRAFT_CREATED', 'LISTING_DRAFT_UPDATED'].includes(String(event.type));
+      const isDraftEvent = ['LISTING_DRAFT_CREATED', 'LISTING_DRAFT_UPDATED', 'LISTING_DRAFT_DELETED', 'LISTING_DRAFT_SUBMITTED'].includes(String(event.type));
       if (!isDraftEvent && ['listing', 'inventory', 'auction'].includes(String(event.aggregateType)) && !itemIds.has(String(event.aggregateId))) violations.push(`event-item-missing:${id}`);
       if (['transaction'].includes(String(event.aggregateType)) && !transactionIds.has(String(event.aggregateId))) violations.push(`event-transaction-missing:${id}`);
       if (['payment'].includes(String(event.aggregateType)) && !paymentIds.has(String(event.aggregateId))) violations.push(`event-payment-missing:${id}`);
@@ -2160,6 +2477,7 @@ export class SandboxEngine {
 
     if (!isRecord(state.drafts)) violations.push('drafts-not-object');
     if (!isRecord(state.draftOwners)) violations.push('draft-owners-not-object');
+    if (!isRecord(state.draftUpdatedAt)) violations.push('draft-updated-at-not-object');
     const drafts = isRecord(state.drafts) ? state.drafts : {};
     const draftOwners = isRecord(state.draftOwners) ? state.draftOwners : {};
     Object.keys(drafts).forEach((draftId) => {

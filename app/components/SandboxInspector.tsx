@@ -5,6 +5,10 @@ import { Activity, ChevronDown, Clock3, RotateCcw, ShieldCheck, UserRound, X } f
 import { useMercari } from '../context/MercariContext';
 import type { ScenarioId } from '../types/mercari';
 
+// The inspector exposes sandbox-control operations and is disabled in
+// production unless an explicit build-time flag enables the demo surface.
+const INSPECTOR_ENABLED = __FURIMA_ENABLE_SANDBOX_INSPECTOR__;
+
 const scenarioLabels: Record<ScenarioId, string> = {
   catalog_default: 'カタログ初期状態',
   purchase_happy_path: '正常購入',
@@ -23,6 +27,8 @@ export const SandboxInspector: React.FC = () => {
   const [scenario, setScenario] = useState<ScenarioId>(sandboxSnapshot.scenarioId);
   const [feedback, setFeedback] = useState<string | null>(null);
   const recentEvents = useMemo(() => sandboxSnapshot.events.slice(-5).reverse(), [sandboxSnapshot.events]);
+
+  if (!INSPECTOR_ENABLED) return null;
 
   const run = (action: () => { ok: boolean; message?: string }) => {
     const result = action();

@@ -74,7 +74,9 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
     }
   });
   const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const rootRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const tokens = useMemo(() => tokenizeSearchQuery(searchQuery), [searchQuery]);
 
   useEffect(() => {
@@ -102,6 +104,7 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
     }
     setDraftQuery('');
     setIsAutocompleteOpen(false);
+    setActiveSuggestionIndex(-1);
     setIsSearchOpen(true);
   };
 
@@ -109,6 +112,32 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
     setIsAutocompleteOpen(false);
     setSearchQuery('');
     openCategory(mode === 'category' ? 'カテゴリー一覧' : 'ブランド一覧');
+  };
+
+  const historySuggestions = searchHistory.slice(0, 8);
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown' && historySuggestions.length) {
+      event.preventDefault();
+      setIsAutocompleteOpen(true);
+      setActiveSuggestionIndex((index) => (index + 1) % historySuggestions.length);
+    } else if (event.key === 'ArrowUp' && historySuggestions.length) {
+      event.preventDefault();
+      setIsAutocompleteOpen(true);
+      setActiveSuggestionIndex((index) => (index <= 0 ? historySuggestions.length - 1 : index - 1));
+    } else if (event.key === 'Home' && event.altKey && historySuggestions.length) {
+      event.preventDefault();
+      setActiveSuggestionIndex(0);
+    } else if (event.key === 'End' && event.altKey && historySuggestions.length) {
+      event.preventDefault();
+      setActiveSuggestionIndex(historySuggestions.length - 1);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setIsAutocompleteOpen(false);
+      setActiveSuggestionIndex(-1);
+    } else if (event.key === 'Enter' && activeSuggestionIndex >= 0 && !draftQuery.trim()) {
+      event.preventDefault();
+      openSearchResults(historySuggestions[activeSuggestionIndex]);
+    }
   };
 
   const handleDraftChange = (value: string) => {
@@ -140,15 +169,15 @@ const HeaderSearch: React.FC<{ mobileMode: boolean }> = ({ mobileMode }) => {
     <form onSubmit={(event) => { event.preventDefault(); openSearchResults(joinSearchTokens(tokenizeSearchQuery([...tokens, draftQuery].join(' ')))); }} role="search" aria-label="商品検索" className="flex h-9 min-h-0 w-full items-center gap-2 rounded-[7px] border border-[var(--shop-border)] bg-[#202022] px-3 py-1 focus-within:border-[var(--shop-blue)]">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5" onFocus={() => setIsAutocompleteOpen(true)}>
         {tokens.map((token, index) => <span key={`${token}-${index}`} className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--shop-border)] bg-[#2d2d30] px-3 py-1.5 text-sm text-white"><span className="truncate">{token}</span><button type="button" onClick={() => removeToken(index)} aria-label={`${token}を削除`} className="rounded-full text-[var(--shop-muted)] hover:text-white"><X className="h-3.5 w-3.5" /></button></span>)}
-        <input value={draftQuery} onChange={(event) => handleDraftChange(event.target.value)} onFocus={() => setIsAutocompleteOpen(true)} placeholder={tokens.length ? '' : 'なにをお探しですか？'} aria-label="検索キーワードを入力" className="min-w-[100px] flex-1 bg-transparent py-1 text-sm text-white outline-none placeholder:text-[var(--shop-muted)]" />
+        <input ref={searchInputRef} value={draftQuery} onChange={(event) => handleDraftChange(event.target.value)} onKeyDown={handleSearchKeyDown} onFocus={() => setIsAutocompleteOpen(true)} placeholder={tokens.length ? '' : 'なにをお探しですか？'} aria-label="検索キーワードを入力" role="combobox" aria-controls="search-bar-autocomplete-menu" aria-expanded={isAutocompleteOpen} aria-autocomplete="list" aria-activedescendant={activeSuggestionIndex >= 0 ? `search-suggestion-${activeSuggestionIndex}` : undefined} className="min-w-[100px] flex-1 bg-transparent py-1 text-sm text-white outline-none placeholder:text-[var(--shop-muted)]" />
       </div>
-      <button type="button" aria-label="画像からさがす" onClick={() => setIsAutocompleteOpen(true)} className="shrink-0 text-[var(--shop-muted)] hover:text-white"><ScanLine className="h-[19px] w-[19px]" /></button>
+      <button type="button" aria-label="画像からさがす（準備中）" title="画像検索は準備中です" disabled className="shrink-0 cursor-not-allowed text-[var(--shop-muted)] opacity-50"><ScanLine className="h-[19px] w-[19px]" /></button>
       <button type="submit" aria-label="検索" className="shrink-0 text-[var(--shop-muted)] hover:text-white"><Search className="h-[19px] w-[19px]" /></button>
     </form>
-    {isAutocompleteOpen && <div id="search-bar-autocomplete" role="combobox" aria-controls="search-bar-autocomplete-menu" aria-expanded="true" className="absolute left-0 top-full z-[70] mt-2 max-h-[min(620px,calc(100vh-120px))] w-full overflow-y-auto rounded-lg border border-[var(--shop-border)] bg-[#232325] p-4 shadow-[0_18px_44px_rgba(0,0,0,.45)]">
-      <div id="search-bar-autocomplete-menu"><div className="mb-5 grid grid-cols-2 gap-3"><button type="button" onClick={() => openDirectory('category')} className="flex items-center justify-center gap-2 rounded-full bg-[#303032] py-3 text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)]"><Layers3 className="h-4 w-4" />カテゴリー</button><button type="button" onClick={() => openDirectory('brand')} className="flex items-center justify-center gap-2 rounded-full bg-[#303032] py-3 text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)]"><Tag className="h-4 w-4" />ブランド</button></div>
+    {isAutocompleteOpen && <div id="search-bar-autocomplete" className="absolute left-0 top-full z-[70] mt-2 max-h-[min(620px,calc(100vh-120px))] w-full overflow-y-auto rounded-lg border border-[var(--shop-border)] bg-[#232325] p-4 shadow-[0_18px_44px_rgba(0,0,0,.45)]">
+      <div id="search-bar-autocomplete-panel"><div className="mb-5 grid grid-cols-2 gap-3"><button type="button" onClick={() => openDirectory('category')} className="flex items-center justify-center gap-2 rounded-full bg-[#303032] py-3 text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)]"><Layers3 className="h-4 w-4" />カテゴリー</button><button type="button" onClick={() => openDirectory('brand')} className="flex items-center justify-center gap-2 rounded-full bg-[#303032] py-3 text-sm font-bold text-white hover:bg-[var(--shop-surface-raised)]"><Tag className="h-4 w-4" />ブランド</button></div>
       <div className="mb-3 flex items-center justify-between border-b border-[var(--shop-border)] pb-3"><h2 className="text-lg font-black text-white">検索履歴</h2>{searchHistory.length > 0 && <button type="button" onClick={clearSearchHistory} className="text-sm font-bold text-[var(--shop-blue)] hover:text-white">クリア</button>}</div>
-      <div className="divide-y divide-[var(--shop-border)]">{searchHistory.slice(0, 8).map((historyQuery) => { const saved = savedQueries.includes(historyQuery); return <div key={historyQuery} className="flex items-center gap-3 py-4"><button type="button" onClick={() => openSearchResults(historyQuery)} className="min-w-0 flex-1 truncate text-left text-base font-bold text-white hover:text-[var(--shop-blue)]">{historyQuery}</button><button type="button" aria-label={saved ? `${historyQuery}の保存を解除` : `${historyQuery}の検索条件を保存`} onClick={() => toggleSavedQuery(historyQuery)} className={`shrink-0 hover:text-[var(--shop-accent)] ${saved ? 'text-[var(--shop-accent)]' : 'text-white'}`}><Heart className={`h-5 w-5 ${saved ? 'fill-current' : ''}`} /></button><button type="button" aria-label={`${historyQuery}を検索`} onClick={() => openSearchResults(historyQuery)} className="shrink-0 text-[var(--shop-muted)] hover:text-white"><span aria-hidden="true" className="text-2xl leading-none">›</span></button></div>; })}</div>
+      <div id="search-bar-autocomplete-menu" role="listbox" aria-label="検索候補" className="divide-y divide-[var(--shop-border)]">{searchHistory.slice(0, 8).map((historyQuery, index) => { const saved = savedQueries.includes(historyQuery); return <div key={historyQuery} className="flex items-center gap-3 py-4"><button id={`search-suggestion-${index}`} role="option" aria-selected={index === activeSuggestionIndex} type="button" onClick={() => openSearchResults(historyQuery)} className="min-w-0 flex-1 truncate text-left text-base font-bold text-white hover:text-[var(--shop-blue)]">{historyQuery}</button><button type="button" aria-label={saved ? `${historyQuery}の保存を解除` : `${historyQuery}の検索条件を保存`} onClick={() => toggleSavedQuery(historyQuery)} className={`shrink-0 hover:text-[var(--shop-accent)] ${saved ? 'text-[var(--shop-accent)]' : 'text-white'}`}><Heart className={`h-5 w-5 ${saved ? 'fill-current' : ''}`} /></button><button type="button" aria-label={`${historyQuery}を検索`} onClick={() => openSearchResults(historyQuery)} className="shrink-0 text-[var(--shop-muted)] hover:text-white"><span aria-hidden="true" className="text-2xl leading-none">›</span></button></div>; })}</div>
       {searchHistory.length === 0 && <p className="py-8 text-center text-sm text-[var(--shop-muted)]">検索履歴はありません</p>}
       <button type="button" onClick={() => setIsSearchOpen(true)} className="mt-4 text-xs font-bold text-[var(--shop-blue)] hover:text-white">検索のヘルプ</button></div>
     </div>}

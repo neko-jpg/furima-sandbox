@@ -4,8 +4,10 @@ import {
   createSeededEngine,
   engineFromRecord,
   failure,
+  hasJsonContentType,
   readJson,
   sandboxIdFrom,
+  controlPrincipalForRequest,
   statePayloadFor,
   stateRecordFor,
   storeForRequest,
@@ -13,8 +15,9 @@ import {
 import { SandboxCommandExecutor } from '../../../domain/commandExecutor.ts';
 
 export async function POST(request: Request): Promise<Response> {
-  const authError = await authorizationFailure(request);
+  const authError = await authorizationFailure(request, { requireControl: true });
   if (authError) return authError;
+  if (!hasJsonContentType(request)) return failure('INVALID_INPUT', 415, { message: 'Content-Typeはapplication/jsonで指定してください' });
   const body = await readJson(request);
   if (request.headers.get('content-length') && !body) return failure('INVALID_INPUT', 400, { message: 'JSON bodyが不正です' });
   const id = sandboxIdFrom(request, body ?? undefined);
@@ -30,7 +33,7 @@ export async function POST(request: Request): Promise<Response> {
       if (!initialWrite.ok) return failure(initialWrite.error === 'CONFLICT' ? 'STATE_CONFLICT' : 'D1_UNAVAILABLE', initialWrite.error === 'CONFLICT' ? 409 : 503, { actualStateVersion: initialWrite.actualStateVersion, retryable: initialWrite.error === 'UNAVAILABLE' });
     }
     const input = { scenarioId, seed };
-    const options = { ...actionOptionsFor(body ?? {}, 'platform'), actorId: 'platform', sandboxId: id, scope: 'sandbox-control' as const };
+    const options = { ...actionOptionsFor(body ?? {}, 'platform', controlPrincipalForRequest(request)), actorId: 'platform', sandboxId: id };
     const executor = new SandboxCommandExecutor({ engine, store });
     const result = await executor.execute('resetScenario', input, options, (working) => working.resetScenario({ ...options, scenarioId: scenarioId as never, seed }));
     if (!result.ok) return failure(result.error, result.error === 'STATE_CONFLICT' || result.error === 'IDEMPOTENCY_CONFLICT' ? 409 : result.error === 'D1_UNAVAILABLE' ? 503 : 400, result);

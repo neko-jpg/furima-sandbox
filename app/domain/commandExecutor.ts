@@ -1,12 +1,12 @@
 import { SandboxCommandBus, compactImagePayload, fingerprint } from './commandBus.ts';
-import { SandboxEngine } from './sandboxEngine.ts';
+import { SandboxEngine, createTrustedPrincipal, isTrustedPrincipal } from './sandboxEngine.ts';
+import { applyPreviewOperation } from './previewOperations.ts';
 import type {
   ActionMetadata,
   ActionPreview,
   ActionResult,
   AgentActionOptions,
   AgentErrorCode,
-  MercariItem,
   PreviewCommand,
 } from '../types/mercari.ts';
 import type {
@@ -18,7 +18,16 @@ import type {
 
 const COMMAND_RETENTION_MS = 24 * 60 * 60 * 1000;
 const PREVIEW_VIRTUAL_TTL_MS = 10 * 60 * 1000;
-const MAX_PAYLOAD_BYTES = 128 * 1024;
+const MAX_DURABLE_RESULT_BYTES = 64 * 1024;
+let fallbackIdCounter = 0;
+const INTERNAL_CONTROL_OPTIONS: AgentActionOptions = {
+  principal: createTrustedPrincipal({ subjectId: 'command-executor-control', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] }),
+};
+
+const uniqueId = (prefix: string): string => {
+  const randomUuid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now().toString(36)}-${(++fallbackIdCounter).toString(36)}`;
+  return `${prefix}-${randomUuid}`;
+};
 
 const failure = <T,>(error: AgentErrorCode, stateVersion: number, message: string, details?: unknown): ActionResult<T> => ({
   ok: false,
@@ -45,6 +54,20 @@ const parseResult = <T,>(serialized: string): ActionResult<T> | null => {
   }
 };
 
+const durableResult = <T,>(result: ActionResult<T>): string => {
+  const serialized = JSON.stringify(result);
+  if (new TextEncoder().encode(serialized).byteLength <= MAX_DURABLE_RESULT_BYTES) return serialized;
+  const compact = result.ok
+    ? { ...result, data: { truncated: true, reason: 'RESULT_TOO_LARGE' } }
+    : { ...result, details: undefined };
+  return JSON.stringify(compact);
+};
+
+const executorErrorCode = (error: unknown): 'D1_UNAVAILABLE' | 'INTERNAL_ERROR' => {
+  const message = error instanceof Error ? error.message : String(error);
+  return /D1_UNAVAILABLE|REQUEST_ABORT|IndexedDB|QuotaExceeded|timeout/i.test(message) ? 'D1_UNAVAILABLE' : 'INTERNAL_ERROR';
+};
+
 const stateRecordFor = (sandboxId: string, engine: SandboxEngine, updatedAt: string): SandboxStateRecord => {
   const snapshot = engine.getSnapshot();
   return {
@@ -66,7 +89,7 @@ const cloneEngine = (engine: SandboxEngine): SandboxEngine | null => {
     now: snapshot.now,
     notifications: engine.getNotifications(),
   });
-  const imported = clone.importState(engine.exportState(), { actorId: 'platform', scope: 'sandbox-control' });
+  const imported = clone.importState(engine.exportState(), INTERNAL_CONTROL_OPTIONS);
   return imported.ok ? clone : null;
 };
 
@@ -100,10 +123,10 @@ export class SandboxCommandExecutor {
 
   private metadata(command: string, options: AgentActionOptions | undefined, mode: 'preview' | 'commit', stateVersion: number): ActionMetadata {
     const context = this.context();
-    const operationId = options?.operationId ?? options?.idempotencyKey ?? options?.requestId ?? options?.commandId ?? `${context.sandboxId}:${command}:${++this.sequence}`;
+    const operationId = options?.operationId ?? options?.idempotencyKey ?? options?.requestId ?? options?.commandId ?? `${context.sandboxId}:${command}:${uniqueId('op')}:${++this.sequence}`;
     return {
       sandboxId: context.sandboxId,
-      actorId: options?.actorId ?? context.actorId,
+      actorId: options?.principal?.actorId ?? options?.actorId ?? context.actorId,
       stateVersion,
       operationId,
       ...(options?.commandId ? { commandId: options.commandId } : {}),
@@ -116,11 +139,14 @@ export class SandboxCommandExecutor {
   private validate(command: string, payload: unknown, options: AgentActionOptions | undefined, mode: 'preview' | 'commit'): { metadata: ActionMetadata; payloadHash: string } | ActionResult<never> {
     const context = this.context();
     const metadata = this.metadata(command, options, mode, context.stateVersion);
+    const originalHash = fingerprint({ sandboxId: context.sandboxId, actorId: metadata.actorId, command, mode, payload });
     const compacted = compactImagePayload(payload);
     const payloadHash = fingerprint({ sandboxId: context.sandboxId, actorId: metadata.actorId, command, mode, payload: compacted });
-    if (!payloadHash || payloadHash.length > MAX_PAYLOAD_BYTES) return resultWithMeta(failure('INVALID_INPUT', context.stateVersion, 'payloadはJSON互換・循環参照なし・128KB以内で指定してください'), metadata);
+    if (!originalHash || !payloadHash) return resultWithMeta(failure('INVALID_INPUT', context.stateVersion, 'payloadはJSON互換・循環参照なし・128KB以内で指定してください'), metadata);
     if (options?.sandboxId && options.sandboxId !== context.sandboxId) return resultWithMeta(failure('INVALID_INPUT', context.stateVersion, 'sandboxIdが現在のSandboxと一致しません', { expectedSandboxId: context.sandboxId, receivedSandboxId: options.sandboxId }), metadata);
-    if (options?.actorId && options.scope !== 'sandbox-control' && options.actorId !== context.actorId) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, 'actorIdは現在のSandbox actorと一致している必要があります'), metadata);
+    if (options?.principal && !isTrustedPrincipal(options.principal)) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, '実行Principalは信頼済みadapterから注入してください'), metadata);
+    if (options?.principal && options.principal.actorId !== context.actorId && !options.principal.scopes.includes('sandbox-control')) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, '実行Principalは現在のSandbox actorと一致している必要があります'), metadata);
+    if (!options?.principal && options?.actorId && options.scope !== 'sandbox-control' && options.actorId !== context.actorId) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, 'actorIdは現在のSandbox actorと一致している必要があります'), metadata);
     if (options?.expectedStateVersion !== undefined && options.expectedStateVersion !== context.stateVersion) return resultWithMeta(failure('STATE_CONFLICT', context.stateVersion, '状態が更新されています。最新スナップショットを取得してください。', { expectedStateVersion: options.expectedStateVersion, actualStateVersion: context.stateVersion }), metadata);
     return { metadata, payloadHash };
   }
@@ -149,7 +175,7 @@ export class SandboxCommandExecutor {
       stateVersionBefore: before,
       stateVersionAfter: result.stateVersion,
       status: result.ok ? 'SUCCEEDED' : 'FAILED',
-      result: JSON.stringify(result),
+      result: durableResult(result),
       createdAt: createdAt.toISOString(),
       expiresAt,
     };
@@ -162,6 +188,7 @@ export class SandboxCommandExecutor {
     const { metadata, payloadHash } = validated;
     const key = operationKeyFor(options, metadata.operationId);
     try {
+      await this.store.purgeExpired(this.now().toISOString());
       const existing = await this.existingResult<T>(metadata.sandboxId, key, payloadHash, command, mode, metadata);
       if (existing) return existing;
       const before = this.engine.getStateVersion();
@@ -169,19 +196,35 @@ export class SandboxCommandExecutor {
       if (!working) return resultWithMeta(failure('INVALID_STATE', before, 'Sandboxの作業コピーを作成できませんでした'), metadata);
       const bus = new SandboxCommandBus({ getContext: () => ({ sandboxId: working.getSandboxId(), actorId: working.getCurrentActor().id, stateVersion: working.getStateVersion() }) });
       const result = bus.execute(command, payload, { ...options, mode }, () => operation(working));
+      // Failed commands are observational only at the persistence boundary.
+      // Some domain failure paths deliberately consume an injected fault on a
+      // working copy; that copy must never become the durable source of truth.
+      const effectiveResult = result.ok ? result : { ...result, stateVersion: before };
       const createdAt = this.now();
-      const record = this.commandRecord(result, command, payloadHash, options, metadata, before, createdAt);
-      const committed = await this.store.commitCommand(record, stateRecordFor(metadata.sandboxId, working, createdAt.toISOString()), before, previewId);
+      const record = this.commandRecord(effectiveResult, command, payloadHash, options, metadata, before, createdAt);
+      const stateForPersist = result.ok ? working : this.engine;
+      const previousState = result.ok ? this.engine.exportState() : null;
+      if (result.ok) {
+        // Apply to the live aggregate before the durable write. If the store
+        // rejects the CAS/idempotency write, restore the exact prior state so
+        // the browser/server cannot observe a durable/live split.
+        const imported = this.engine.importState(working.exportState(), INTERNAL_CONTROL_OPTIONS);
+        if (!imported.ok) return resultWithMeta(failure('INVALID_STATE', before, 'Sandbox状態を反映できませんでした'), metadata);
+      }
+      const committed = await this.store.commitCommand(record, stateRecordFor(metadata.sandboxId, stateForPersist, createdAt.toISOString()), before, previewId);
       if (!committed.ok) {
+        if (previousState) this.engine.importState(previousState, INTERNAL_CONTROL_OPTIONS);
         if (committed.error === 'IDEMPOTENCY_CONFLICT') return resultWithMeta(failure('IDEMPOTENCY_CONFLICT', this.engine.getStateVersion(), '同じ冪等キーで異なるpayloadを再利用できません'), metadata);
         return resultWithMeta(failure(committed.error === 'UNAVAILABLE' ? 'D1_UNAVAILABLE' : 'STATE_CONFLICT', committed.actualStateVersion ?? this.engine.getStateVersion(), committed.error === 'UNAVAILABLE' ? 'Sandbox永続化が利用できません' : 'Sandbox状態が競合しています'), metadata);
       }
-      if (committed.duplicate) return parseResult<T>(committed.record.result) ?? resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '保存済みcommand結果を読み込めません'), metadata);
-      const imported = this.engine.importState(working.exportState(), { actorId: 'platform', scope: 'sandbox-control' });
-      if (!imported.ok) return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), 'Sandbox状態を反映できませんでした'), metadata);
-      return resultWithMeta(result, { ...metadata, stateVersion: result.stateVersion });
-    } catch {
-      return resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), 'Sandbox永続化が利用できません', { retryable: true }), metadata);
+      if (committed.duplicate) {
+        if (previousState) this.engine.importState(previousState, INTERNAL_CONTROL_OPTIONS);
+        return parseResult<T>(committed.record.result) ?? resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '保存済みcommand結果を読み込めません'), metadata);
+      }
+      return resultWithMeta(effectiveResult, { ...metadata, stateVersion: effectiveResult.stateVersion });
+    } catch (error) {
+      const code = executorErrorCode(error);
+      return resultWithMeta(failure(code, this.engine.getStateVersion(), code === 'D1_UNAVAILABLE' ? 'Sandbox永続化が利用できません' : 'Sandbox commandの実行に失敗しました', { retryable: code === 'D1_UNAVAILABLE' }), metadata);
     }
   }
 
@@ -196,20 +239,21 @@ export class SandboxCommandExecutor {
     const { metadata, payloadHash } = validated;
     const key = operationKeyFor(previewOptions, metadata.operationId);
     try {
+      await this.store.purgeExpired(this.now().toISOString());
       const existing = await this.existingResult<ActionPreview>(metadata.sandboxId, key, payloadHash, command, 'preview', metadata);
       if (existing) return existing;
       const working = cloneEngine(this.engine);
       if (!working) return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), 'Sandboxのpreviewコピーを作成できませんでした'), metadata);
       const result = operation(working);
       if (!result.ok) return resultWithMeta(result as ActionResult<ActionPreview>, metadata);
-      const now = new Date();
+      const now = this.now();
       const virtualNow = working.getNow();
       const virtualExpiresAt = new Date(Date.parse(virtualNow) + PREVIEW_VIRTUAL_TTL_MS).toISOString();
-      const previewId = `preview-${metadata.sandboxId}-${++this.sequence}`;
+      const previewId = uniqueId(`preview-${metadata.sandboxId}`);
       const preview: ActionPreview = {
         previewId,
         command,
-        payload,
+        payload: compactImagePayload(payload),
         createdAt: virtualNow,
         expiresAt: virtualExpiresAt,
         stateVersion: this.engine.getStateVersion(),
@@ -222,7 +266,7 @@ export class SandboxCommandExecutor {
         sandboxId: metadata.sandboxId,
         actorId: metadata.actorId,
         command,
-        payload: JSON.stringify(payload),
+        payload: JSON.stringify(compactImagePayload(payload)),
         payloadHash,
         baseStateVersion: this.engine.getStateVersion(),
         summary: JSON.stringify(preview.summary),
@@ -231,53 +275,51 @@ export class SandboxCommandExecutor {
         virtualExpiresAt,
         retentionExpiresAt: new Date(now.getTime() + COMMAND_RETENTION_MS).toISOString(),
       };
-      const previewWrite = await this.store.putPreview(storedPreview);
-      if (!previewWrite.ok) return resultWithMeta(failure(previewWrite.error === 'UNAVAILABLE' ? 'D1_UNAVAILABLE' : 'IDEMPOTENCY_CONFLICT', this.engine.getStateVersion(), 'previewを永続化できませんでした'), metadata);
       const commandResult = resultWithMeta({ ok: true, data: preview, stateVersion: this.engine.getStateVersion() }, metadata);
       const record = this.commandRecord(commandResult, command, payloadHash, previewOptions, metadata, this.engine.getStateVersion(), now);
-      const commandWrite = await this.store.commitCommand(record, stateRecordFor(metadata.sandboxId, this.engine, now.toISOString()), this.engine.getStateVersion());
+      const commandWrite = await this.store.putPreviewAndCommand(storedPreview, record, stateRecordFor(metadata.sandboxId, this.engine, now.toISOString()), this.engine.getStateVersion());
       if (!commandWrite.ok) return resultWithMeta(failure(commandWrite.error === 'UNAVAILABLE' ? 'D1_UNAVAILABLE' : commandWrite.error === 'IDEMPOTENCY_CONFLICT' ? 'IDEMPOTENCY_CONFLICT' : 'STATE_CONFLICT', this.engine.getStateVersion(), 'preview commandを記録できませんでした'), metadata);
       return commandResult;
-    } catch {
-      return resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), 'preview永続化が利用できません', { retryable: true }), metadata);
+    } catch (error) {
+      const code = executorErrorCode(error);
+      return resultWithMeta(failure(code, this.engine.getStateVersion(), code === 'D1_UNAVAILABLE' ? 'preview永続化が利用できません' : 'previewの作成に失敗しました', { retryable: code === 'D1_UNAVAILABLE' }), metadata);
     }
   }
 
   public async commitPreview(previewId: string, options: AgentActionOptions | undefined, operation: (engine: SandboxEngine, command: string, payload: unknown) => ActionResult<unknown>): Promise<ActionResult<unknown>> {
-    const preview = await this.store.getPreview(this.engine.getSandboxId(), previewId);
     const metadata = this.metadata('commitPreview', options, 'commit', this.engine.getStateVersion());
-    if (!preview) return resultWithMeta(failure('PREVIEW_NOT_FOUND', this.engine.getStateVersion(), 'previewが見つかりません'), metadata);
-    if (preview.actorId !== metadata.actorId || preview.sandboxId !== metadata.sandboxId) return resultWithMeta(failure('FORBIDDEN', this.engine.getStateVersion(), 'previewを作成したactorとSandboxだけが確定できます'), metadata);
-    const key = operationKeyFor(options, metadata.operationId);
-    const existingCommit = await this.store.getCommand(this.engine.getSandboxId(), key);
-    if (existingCommit && existingCommit.mode === 'commit' && existingCommit.command === preview.command) {
+    try {
+      await this.store.purgeExpired(this.now().toISOString());
+      const preview = await this.store.getPreview(this.engine.getSandboxId(), previewId);
+      if (!preview) return resultWithMeta(failure('PREVIEW_NOT_FOUND', this.engine.getStateVersion(), 'previewが見つかりません'), metadata);
+      if (preview.actorId !== metadata.actorId || preview.sandboxId !== metadata.sandboxId) return resultWithMeta(failure('FORBIDDEN', this.engine.getStateVersion(), 'previewを作成したactorとSandboxだけが確定できます'), metadata);
+      const key = operationKeyFor(options, metadata.operationId);
+      const existingCommit = await this.store.getCommand(this.engine.getSandboxId(), key);
+      if (existingCommit && existingCommit.mode === 'commit' && existingCommit.command === preview.command) {
+        let payload: unknown;
+        try { payload = JSON.parse(preview.payload) as unknown; } catch { payload = undefined; }
+        const expectedHash = fingerprint({ sandboxId: metadata.sandboxId, actorId: metadata.actorId, command: preview.command, mode: 'commit', payload: compactImagePayload(payload) });
+        if (existingCommit.payloadHash !== expectedHash) return resultWithMeta(failure('IDEMPOTENCY_CONFLICT', this.engine.getStateVersion(), '同じ冪等キーで異なるpayloadを再利用できません'), metadata);
+        const saved = parseResult<unknown>(existingCommit.result);
+        if (saved) return resultWithMeta(saved, { ...metadata, operationId: existingCommit.operationId, actorId: existingCommit.actorId, stateVersion: saved.stateVersion });
+      }
+      if (preview.status !== 'PENDING') return resultWithMeta(failure('PREVIEW_EXPIRED', this.engine.getStateVersion(), 'previewはすでに確定または期限切れです'), metadata);
+      if (preview.baseStateVersion !== this.engine.getStateVersion()) return resultWithMeta(failure('STATE_CONFLICT', this.engine.getStateVersion(), 'preview作成後にSandbox状態が変化しています', { previewStateVersion: preview.baseStateVersion, actualStateVersion: this.engine.getStateVersion() }), metadata);
+      if (Date.parse(preview.virtualExpiresAt) <= Date.parse(this.engine.getNow()) || Date.parse(preview.retentionExpiresAt) <= this.now().getTime()) return resultWithMeta(failure('PREVIEW_EXPIRED', this.engine.getStateVersion(), 'previewの有効期限が切れています'), metadata);
       let payload: unknown;
-      try { payload = JSON.parse(preview.payload) as unknown; } catch { payload = undefined; }
-      const expectedHash = fingerprint({ sandboxId: metadata.sandboxId, actorId: metadata.actorId, command: preview.command, mode: 'commit', payload: compactImagePayload(payload) });
-      if (existingCommit.payloadHash !== expectedHash) return resultWithMeta(failure('IDEMPOTENCY_CONFLICT', this.engine.getStateVersion(), '同じ冪等キーで異なるpayloadを再利用できません'), metadata);
-      const saved = parseResult<unknown>(existingCommit.result);
-      if (saved) return resultWithMeta(saved, { ...metadata, operationId: existingCommit.operationId, actorId: existingCommit.actorId, stateVersion: saved.stateVersion });
+      try { payload = JSON.parse(preview.payload) as unknown; } catch { return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), 'preview payloadが壊れています'), metadata); }
+      const validated = this.validate(preview.command, payload, { ...options, actorId: preview.actorId, mode: 'commit' }, 'commit');
+      if ('ok' in validated) return validated as ActionResult<unknown>;
+      const previewPayloadHash = fingerprint({ sandboxId: preview.sandboxId, actorId: preview.actorId, command: preview.command, mode: 'preview', payload: compactImagePayload(payload) });
+      if (!previewPayloadHash || previewPayloadHash !== preview.payloadHash) return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), 'preview payloadのハッシュが一致しません'), metadata);
+      return await this.executeInternal(preview.command, payload, { ...options, mode: 'commit', actorId: preview.actorId }, (engine) => operation(engine, preview.command, payload), previewId);
+    } catch (error) {
+      const code = executorErrorCode(error);
+      return resultWithMeta(failure(code, this.engine.getStateVersion(), code === 'D1_UNAVAILABLE' ? 'previewの確定に必要な永続化が利用できません' : 'previewの確定に失敗しました', { retryable: code === 'D1_UNAVAILABLE' }), metadata);
     }
-    if (preview.status !== 'PENDING') return resultWithMeta(failure('PREVIEW_EXPIRED', this.engine.getStateVersion(), 'previewはすでに確定または期限切れです'), metadata);
-    if (preview.baseStateVersion !== this.engine.getStateVersion()) return resultWithMeta(failure('STATE_CONFLICT', this.engine.getStateVersion(), 'preview作成後にSandbox状態が変化しています', { previewStateVersion: preview.baseStateVersion, actualStateVersion: this.engine.getStateVersion() }), metadata);
-    if (Date.parse(preview.virtualExpiresAt) <= Date.parse(this.engine.getNow()) || Date.parse(preview.retentionExpiresAt) <= this.now().getTime()) return resultWithMeta(failure('PREVIEW_EXPIRED', this.engine.getStateVersion(), 'previewの有効期限が切れています'), metadata);
-    let payload: unknown;
-    try { payload = JSON.parse(preview.payload) as unknown; } catch { return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), 'preview payloadが壊れています'), metadata); }
-    const previewPayloadHash = fingerprint({ sandboxId: preview.sandboxId, actorId: preview.actorId, command: preview.command, mode: 'preview', payload: compactImagePayload(payload) });
-    if (!previewPayloadHash || previewPayloadHash !== preview.payloadHash) return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), 'preview payloadのハッシュが一致しません'), metadata);
-    return this.executeInternal(preview.command, payload, { ...options, mode: 'commit', actorId: preview.actorId }, (engine) => operation(engine, preview.command, payload), previewId);
   }
 }
 
 export const previewOperationFor = (command: PreviewCommand, payload: unknown, actorId: string, engine: SandboxEngine): ActionResult<unknown> => {
-  if (command === 'purchase') {
-    const itemId = payload && typeof payload === 'object' && typeof (payload as { itemId?: unknown }).itemId === 'string' ? String((payload as { itemId: string }).itemId) : '';
-    const started = engine.startPurchase(itemId, { actorId });
-    if (!started.ok) return started;
-    return engine.purchaseItemWithPricing(itemId, payload && typeof payload === 'object' ? (payload as { pricing?: unknown }).pricing as never : undefined, { actorId });
-  }
-  if (command === 'listing.create') return engine.listItem(payload as Partial<MercariItem>, { actorId });
-  if (command === 'wallet.deposit') return payload && typeof payload === 'object' && typeof (payload as { amount?: unknown }).amount === 'number' ? engine.depositWallet(Number((payload as { amount: number }).amount), { actorId }) : failure('INVALID_AMOUNT', engine.getStateVersion(), 'amountが必要です');
-  if (command === 'wallet.withdraw') return payload && typeof payload === 'object' && typeof (payload as { amount?: unknown }).amount === 'number' ? engine.withdrawWallet(Number((payload as { amount: number }).amount), { actorId }) : failure('INVALID_AMOUNT', engine.getStateVersion(), 'amountが必要です');
-  return failure('INVALID_INPUT', engine.getStateVersion(), '未対応のpreview commandです');
+  return applyPreviewOperation(engine, command, payload, { actorId });
 };

@@ -6,7 +6,7 @@ info:
     Furima Sandboxのカタログ、Sandbox状態、出品下書き・出品ライフサイクルAPI。
     このファイルがAPI契約の正本です。GitHub Wikiはチーム向けの読み物として本ファイルへリンクします。
     /api/catalog、/api/catalog/{itemId}、/api/sandbox/state、/api/sandbox/health、/api/sandbox/preview、/api/sandbox/commit、/api/sandbox/reset、/api/sandbox/seed、/api/sandbox/replayは現在のHTTP実装です。
-    /api/listings系はD1 adapter接続前のcontract-first定義で、現時点の実行経路はBrowser APIです。
+    /api/listings、/api/wallet、/api/profile、/api/follows系はplanned contractです。現時点のHTTP runtimeは未実装で、実行経路はBrowser APIです。planned操作にはx-implementation-status: plannedを付けています。
 servers:
   - url: /
     description: Local or deployed application origin
@@ -240,6 +240,7 @@ paths:
         '422': { description: command列の途中で失敗した }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/listings:
+    x-implementation-status: planned
     get:
       tags: [Listings]
       summary: 自分の出品を取得する
@@ -255,6 +256,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
   /api/listings/{itemId}:
+    x-implementation-status: planned
     patch:
       tags: [Listings]
       summary: 出品を更新する
@@ -301,6 +303,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/wallet:
+    x-implementation-status: planned
     get:
       tags: [Wallet]
       summary: 自分のSandboxウォレットと台帳を取得する
@@ -314,6 +317,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
   /api/wallet/deposit:
+    x-implementation-status: planned
     post:
       tags: [Wallet]
       summary: Sandbox残高へ入金する
@@ -335,6 +339,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/wallet/withdraw:
+    x-implementation-status: planned
     post:
       tags: [Wallet]
       summary: 利用可能残高から出金する
@@ -356,6 +361,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/profile:
+    x-implementation-status: planned
     get:
       tags: [Profile]
       summary: 自分の表示プロフィールを取得する
@@ -389,6 +395,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/follows:
+    x-implementation-status: planned
     get:
       tags: [Social]
       summary: 自分のフォロー中・フォロワー一覧を取得する
@@ -408,6 +415,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
   /api/follows/{actorId}:
+    x-implementation-status: planned
     parameters:
       - name: actorId
         in: path
@@ -447,6 +455,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/follows/{actorId}/summary:
+    x-implementation-status: planned
     get:
       tags: [Social]
       summary: 公開フォロー数と自分のフォロー状態を取得する
