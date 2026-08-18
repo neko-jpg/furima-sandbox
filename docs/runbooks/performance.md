@@ -1,6 +1,6 @@
 # Sandbox性能調査
 
-ブラウザ側の読み込みは`tests/e2e/performance.spec.mjs`でNavigation Timing、Resource Timing、転送量を測る。HTTP側は`npm run load:smoke`（PR）と`npm run load:full`（Nightly／提出前）で同じ20 actor・100 req/sシナリオを測る。
+ブラウザ側の読み込みは`tests/e2e/performance.spec.mjs`でNavigation Timing、Resource Timing、転送量を測る。HTTP側は`npm run load:smoke`（main／手動）と`npm run load:full`（Nightly／提出前）で同じ20 actor・100 req/sシナリオを測る。PRの必須CIでは、開発サイクルを遅くしないため負荷試験を実行しない。
 
 Node/VinextのCPUプロファイルは、remote D1へ書き込まないlocal buildで取得する。
 

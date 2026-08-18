@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  full-sandbox-verification:
+  checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -22,8 +22,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: npm ci
-      - run: python -m pip install --disable-pip-version-check --no-cache-dir semgrep==1.173.0
-      - run: npm run build
+      - run: python -m pip install --disable-pip-version-check semgrep==1.173.0
       - run: npm run typecheck
       - run: npm run framework:check
       - run: npx wrangler types worker/generated-env.d.ts --include-runtime=false --check
@@ -31,8 +30,27 @@ jobs:
       - run: npm run docs:check
       - run: npm run qa:matrix
       - run: npm run db:migrate:local
-      - run: npm test
-      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:unit
+      - name: npm audit (advisory)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+  full-sandbox-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate:local
+      - run: npm run build
+      - run: npm run test:rendered
       - run: npm run e2e
       - run: npm run load:full
       - if: always()
