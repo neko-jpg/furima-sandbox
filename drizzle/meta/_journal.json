@@ -29,6 +29,13 @@
       "when": 1786800891080,
       "tag": "0003_nifty_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787402256107,
+      "tag": "0004_sandbox_scoped_command_keys",
+      "breakpoints": true
     }
   ]
 }

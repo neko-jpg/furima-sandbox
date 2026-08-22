@@ -1,7 +1,7 @@
 {
-  "sourceManifestCount": 50,
+  "sourceManifestCount": 1009,
   "catalogCount": 50,
-  "unusedSelectedImageCount": 0,
+  "unusedSelectedImageCount": 959,
   "curation": "manual-balanced-50",
   "keptByCategory": {
     "インテリア・住まい・小物 / インテリア": 2,
@@ -25,5 +25,5 @@
     "家電・スマホ / 生活家電": 4,
     "本・マンガ / 本・雑誌": 3
   },
-  "selectedFolder": "C:\\development\\メルカリUI_kit\\public\\images\\products\\pexels-selected"
+  "selectedFolder": "/images/products/pexels-selected"
 }

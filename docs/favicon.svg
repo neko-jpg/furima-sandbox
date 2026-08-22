@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>Furima Sandbox API</title>
+  <rect width="64" height="64" fill="#f08a70"/>
+  <rect x="5" y="5" width="54" height="54" fill="none" stroke="#171717" stroke-width="6"/>
+  <path d="M20 17h25v7H28v8h15v7H28v8h17v7H20z" fill="#171717"/>
+</svg>

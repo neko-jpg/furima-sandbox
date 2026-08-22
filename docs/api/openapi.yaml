@@ -30,7 +30,7 @@ paths:
           schema: { type: string, maxLength: 200 }
         - name: category
           in: query
-          schema: { type: string, maxLength: 100 }
+          schema: { type: string, maxLength: 200 }
       responses:
         '200':
           description: 商品ページ
@@ -66,7 +66,7 @@ paths:
     get:
       tags: [Sandbox State]
       summary: Sandbox状態を取得する
-      security: [{ bearerAuth: [] }]
+      security: [{ controlBearerAuth: [] }]
       parameters:
         - name: id
           in: query
@@ -90,7 +90,7 @@ paths:
     put:
       tags: [Sandbox State]
       summary: Sandbox状態を楽観的に更新する
-      security: [{ bearerAuth: [] }]
+      security: [{ controlBearerAuth: [] }]
       parameters:
         - name: id
           in: query
@@ -478,12 +478,16 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+    controlBearerAuth:
+      type: http
+      scheme: bearer
+      description: Sandbox全体状態を扱うoperator/control token。通常のAPI tokenでは利用できません。
   parameters:
     ItemId:
       name: itemId
       in: path
       required: true
-      schema: { type: string, minLength: 1, maxLength: 200 }
+      schema: { type: string, minLength: 1, maxLength: 160 }
     Offset:
       name: offset
       in: query

@@ -1,4 +1,4 @@
-import { authConfiguration, authorizationFailure, DEFAULT_SANDBOX_ID, failure, sandboxIdFrom, storeForRequest } from '../runtime.ts';
+import { authConfiguration, authorizationFailure, DEFAULT_SANDBOX_ID, failure, isLocalFixtureRequest, sandboxIdFrom, storageModeForRuntime, storeForRequest } from '../runtime.ts';
 
 export async function GET(request: Request): Promise<Response> {
   const authError = await authorizationFailure(request);
@@ -8,10 +8,10 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const store = await storeForRequest();
     const record = await store.get(id);
-    const storage = store.constructor.name === 'D1SandboxStateStore' ? 'd1' : 'memory';
+    const storage = await storageModeForRuntime();
     const durable = storage === 'd1';
     const auth = await authConfiguration();
-    const local = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(request.url).hostname);
+    const local = await isLocalFixtureRequest(request);
     return Response.json({
       ok: true,
       ready: true,

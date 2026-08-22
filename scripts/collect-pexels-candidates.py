@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,38 @@ from PIL import Image, ImageDraw, ImageOps
 API_URL = "https://api.pexels.com/v1/search"
 DEFAULT_TARGET = 200
 DEFAULT_OUTPUT = Path("public/images/products/pexels-candidates")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+CANDIDATE_MANIFEST_FIELDS = frozenset(
+    {
+        "candidateIndex",
+        "pexelsId",
+        "query",
+        "category",
+        "subcategory",
+        "alt",
+        "photographer",
+        "photographerUrl",
+        "pexelsUrl",
+        "width",
+        "height",
+        "downloadUrl",
+        "filename",
+        "localPath",
+        "sha256",
+        "bytes",
+        "downloadedAt",
+    }
+)
+FORBIDDEN_MANIFEST_FIELDS = frozenset({"absolutePath", "selectedPath", "sourcePath", "sourceFolder"})
+ABSOLUTE_PATH_PATTERN = re.compile(
+    r"(?:^[A-Za-z]:[\\/]|^\\\\|(?:^|[\"'\s])/(?:Users|home|mnt|private|var|tmp|development)(?:[\\/\"'\s]|$))",
+    re.IGNORECASE,
+)
+SECRET_PATTERN = re.compile(
+    r"(?:PEXELS_API_KEY|(?:api[_-]?key|access[_-]?token|authorization|private[_-]?key)\s*[\"']?\s*[:=]|-----BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~+/=-]{12,})",
+    re.IGNORECASE,
+)
 
 QUERY_BUCKETS = [
     {"category": "家電・スマホ", "subcategory": "PC・タブレット", "query": "laptop product photo"},
@@ -147,7 +180,29 @@ def download_image(candidate: dict, output_dir: Path) -> tuple[str, str, int]:
     return filename, digest, destination.stat().st_size
 
 
-def make_contact_sheet(manifest: list[dict], output_path: Path) -> None:
+def public_path_for(path: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to((PROJECT_ROOT / "public").resolve())
+    except ValueError:
+        return None
+    return f"/{relative.as_posix()}"
+
+
+def validate_manifest(entries: list[dict], allowed_fields: frozenset[str], label: str) -> None:
+    for index, entry in enumerate(entries, start=1):
+        unexpected = set(entry) - allowed_fields
+        forbidden = set(entry) & FORBIDDEN_MANIFEST_FIELDS
+        if unexpected or forbidden:
+            fields = sorted(unexpected | forbidden)
+            raise RuntimeError(f"{label} entry {index} contains disallowed fields: {fields}")
+        encoded = json.dumps(entry, ensure_ascii=False)
+        if ABSOLUTE_PATH_PATTERN.search(encoded):
+            raise RuntimeError(f"{label} entry {index} contains a local absolute path")
+        if SECRET_PATTERN.search(encoded):
+            raise RuntimeError(f"{label} entry {index} contains a secret-like value")
+
+
+def make_contact_sheet(manifest: list[dict], output_path: Path, image_dir: Path) -> None:
     columns = 5
     tile_width, tile_height = 240, 210
     rows = math.ceil(len(manifest) / columns)
@@ -155,7 +210,7 @@ def make_contact_sheet(manifest: list[dict], output_path: Path) -> None:
     draw = ImageDraw.Draw(sheet)
 
     for index, item in enumerate(manifest):
-        path = Path(item["absolutePath"])
+        path = image_dir / item["filename"]
         x = (index % columns) * tile_width
         y = (index // columns) * tile_height
         try:
@@ -210,19 +265,21 @@ def main() -> int:
             "candidateIndex": index,
             **candidate,
             "filename": filename,
-            "localPath": f"/images/products/pexels-candidates/{filename}",
-            "absolutePath": str((output_dir / filename).resolve()),
             "sha256": digest,
             "bytes": size,
             "downloadedAt": datetime.now(timezone.utc).isoformat(),
         })
+        local_path = public_path_for(output_dir / filename)
+        if local_path:
+            manifest[-1]["localPath"] = local_path
         if index % 20 == 0 or index == args.target:
             print(f"Downloaded {index}/{args.target}")
 
     manifest_path = output_dir / "manifest.json"
+    validate_manifest(manifest, CANDIDATE_MANIFEST_FIELDS, "candidate manifest")
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     contact_sheet_path = output_dir / "contact-sheet.jpg"
-    make_contact_sheet(manifest, contact_sheet_path)
+    make_contact_sheet(manifest, contact_sheet_path, output_dir)
 
     duplicate_file_hashes = sum(1 for count in duplicate_hashes.values() if count > 1)
     summary = {
@@ -231,8 +288,8 @@ def main() -> int:
         "excludedPexelsIds": len(excluded_ids),
         "duplicateFileHashes": duplicate_file_hashes,
         "categories": {},
-        "contactSheet": str(contact_sheet_path.resolve()),
-        "manifest": str(manifest_path.resolve()),
+        "contactSheet": public_path_for(contact_sheet_path) or contact_sheet_path.name,
+        "manifest": public_path_for(manifest_path) or manifest_path.name,
     }
     for item in manifest:
         key = f"{item['category']} / {item['subcategory']}"

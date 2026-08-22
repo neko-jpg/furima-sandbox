@@ -16,6 +16,8 @@ declare namespace Cloudflare {
     FURIMA_D1_API_TOKEN?: string;
     FURIMA_D1_CONTROL_TOKEN?: string;
     FURIMA_LOCAL_FIXTURE_MODE?: string;
+    FURIMA_STORAGE_MODE?: 'memory' | 'd1';
+    FURIMA_DEPLOYMENT_ENV?: 'development' | 'staging' | 'production';
     IMAGES?: {
       input(stream: ReadableStream): {
         transform(options: Record<string, unknown>): {

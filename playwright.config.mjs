@@ -32,6 +32,11 @@ export default defineConfig({
         url: baseURL,
         reuseExistingServer: true,
         timeout: 120_000,
+        env: {
+          ...process.env,
+          FURIMA_LOCAL_FIXTURE_MODE: 'true',
+          FURIMA_STORAGE_MODE: 'memory',
+        },
         stdout: 'pipe',
         stderr: 'pipe',
       },

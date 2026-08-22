@@ -26,7 +26,7 @@ const hasValidStateEnvelope = (candidate: Record<string, unknown>, sandboxId: st
   && Array.isArray(candidate.pendingFailures);
 
 export async function GET(request: Request): Promise<Response> {
-  const authError = await authorizationFailure(request);
+  const authError = await authorizationFailure(request, { requireControl: true });
   if (authError) return authError;
   const id = sandboxIdFrom(request);
   if (!id) return failure('INVALID_STATE_ID', 400);

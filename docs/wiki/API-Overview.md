@@ -2,7 +2,7 @@
 
 ## 正本と公開先
 
-OpenAPIの正本は [`docs/api/openapi.yaml`](https://github.com/neko-jpg/mercari-ui-kit/blob/main/docs/api/openapi.yaml) です。Pagesはこの正本から生成した公開可能な参照で、Wikiはチーム向けの補足説明です。
+OpenAPIの正本は [`docs/api/openapi.yaml`](https://github.com/neko-jpg/mercari-ui-kit/blob/main/docs/api/openapi.yaml) です。Cloudflare Pagesはこの正本から生成した公開可能な参照で、Browser API・Listing Flow・Error CodesのガイドはPagesと同じMarkdownをWikiへ同期します。
 
 ## 契約の共通項目
 
@@ -17,3 +17,10 @@ OpenAPIの正本は [`docs/api/openapi.yaml`](https://github.com/neko-jpg/mercar
 - Social: フォロー中、フォロワー、公開フォロー概要
 
 API契約を変更するPRでは、先にOpenAPI・Browser API・エラーコードを同じ変更で更新し、`npm run docs:check`を通します。
+
+## APIドキュメントサイト
+
+- [Cloudflare Pages API Reference](https://mercari-ui-kit-api-docs.pages.dev/)
+- [Browser API](Browser-API)
+- [Listing Flow](Listing-Flow)
+- [Error Codes](Error-Codes)

@@ -1,0 +1,46 @@
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    init: true
+    environment:
+      NODE_ENV: development
+      FURIMA_LOCAL_FIXTURE_MODE: "true"
+      FURIMA_STORAGE_MODE: memory
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      WRANGLER_WRITE_LOGS: "false"
+      WRANGLER_LOG_PATH: /workspace/.wrangler/logs
+      MINIFLARE_REGISTRY_PATH: /workspace/.wrangler/registry
+    ports:
+      - "3000:3000"
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+      - type: volume
+        source: node_modules
+        target: /workspace/node_modules
+      - type: volume
+        source: wrangler_state
+        target: /workspace/.wrangler
+    command:
+      - sh
+      - -lc
+      - npm ci --ignore-scripts --no-audit --no-fund && npm run dev -- --hostname 0.0.0.0 --port 3000
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  node_modules:
+  wrangler_state:

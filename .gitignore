@@ -1,4 +1,6 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# agents skills
+/.agents/skills
 
 # dependencies
 /node_modules
@@ -38,6 +40,10 @@ yarn-error.log*
 /dist/
 /.wrangler/
 /.codex-runtime/
+/.openai/
+/.agents/
+/skills-lock.json
+/next-env.d.ts
 /outputs/
 /work/
 *.tsbuildinfo

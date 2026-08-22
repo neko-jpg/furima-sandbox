@@ -15,7 +15,6 @@ const eslintConfig = defineConfig([
     "build/**",
     "output/**",
     "test-results/**",
-    "next-env.d.ts",
     "worker-configuration.d.ts",
   ]),
   eslint.configs.recommended,

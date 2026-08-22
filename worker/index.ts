@@ -2,6 +2,17 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { D1SandboxStateStore } from "../app/domain/sandboxStore.ts";
+import {
+  IMAGE_TRANSFORM_TIMEOUT_MS,
+  MAX_IMAGE_INPUT_BYTES,
+  MAX_IMAGE_OUTPUT_BYTES,
+  hasBlockedImageSignature,
+  isAllowedImageSourcePath,
+  isSafeSourceImageType,
+  readLimitedBody,
+  toArrayBuffer,
+  withTimeout,
+} from './image-security.ts';
 
 type Env = Cloudflare.Env;
 
@@ -51,11 +62,46 @@ const worker = {
         return response;
       }
       try {
+        const sourcePath = url.searchParams.get('url');
+        if (!sourcePath || !isAllowedImageSourcePath(sourcePath)) {
+          const response = withRequestId(Response.json({ ok: false, error: 'IMAGE_SOURCE_FORBIDDEN' }, { status: 400, headers: { 'cache-control': 'no-store' } }), requestId);
+          logWorkerRequest(request, requestId, response.status, startedAt, { errorClass: 'IMAGE_SOURCE_FORBIDDEN' });
+          return response;
+        }
+
+        const source = await assets.fetch(new Request(new URL(sourcePath, request.url)));
+        if (!source.ok) {
+          const response = withRequestId(Response.json({ ok: false, error: 'IMAGE_NOT_FOUND' }, { status: 404, headers: { 'cache-control': 'no-store' } }), requestId);
+          logWorkerRequest(request, requestId, response.status, startedAt, { errorClass: 'IMAGE_NOT_FOUND' });
+          return response;
+        }
+        const contentType = source.headers.get('content-type');
+        const sourceBytes = await readLimitedBody(source.body, MAX_IMAGE_INPUT_BYTES);
+        if (!isSafeSourceImageType(contentType) || !sourceBytes || hasBlockedImageSignature(sourceBytes)) {
+          const response = withRequestId(Response.json({ ok: false, error: 'IMAGE_SOURCE_UNSUPPORTED' }, { status: 400, headers: { 'cache-control': 'no-store' } }), requestId);
+          logWorkerRequest(request, requestId, response.status, startedAt, { errorClass: 'IMAGE_SOURCE_UNSUPPORTED' });
+          return response;
+        }
+
+        const sourceHeaders = new Headers(source.headers);
+        sourceHeaders.delete('content-length');
         const response = withRequestId(await handleImageOptimization(request, {
-        fetchAsset: (path) => assets.fetch(new Request(new URL(path, request.url))),
+        fetchAsset: async (path) => path === sourcePath
+          ? new Response(toArrayBuffer(sourceBytes), { status: source.status, headers: sourceHeaders })
+          : new Response(null, { status: 404 }),
         transformImage: async (body, { width, format, quality }) => {
-          const result = await images.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
-          return result.response();
+          const input = await readLimitedBody(body, MAX_IMAGE_INPUT_BYTES);
+          if (!input || hasBlockedImageSignature(input)) throw new Error('IMAGE_SOURCE_UNSUPPORTED');
+          const result = await withTimeout(images.input(new Response(toArrayBuffer(input)).body as ReadableStream<Uint8Array>).transform(width > 0 ? { width } : {}).output({
+            format: format === 'image/jpeg' || format === 'image/webp' ? format : 'image/webp',
+            quality: Math.min(quality, 85),
+          }), IMAGE_TRANSFORM_TIMEOUT_MS);
+          const transformed = result.response();
+          const output = await readLimitedBody(transformed.body, MAX_IMAGE_OUTPUT_BYTES);
+          if (!output) throw new Error('IMAGE_OUTPUT_TOO_LARGE');
+          const outputHeaders = new Headers(transformed.headers);
+          outputHeaders.set('content-length', String(output.byteLength));
+          return new Response(toArrayBuffer(output), { status: transformed.status, headers: outputHeaders });
         },
         }, allowedImageWidths()), requestId);
         logWorkerRequest(request, requestId, response.status, startedAt);

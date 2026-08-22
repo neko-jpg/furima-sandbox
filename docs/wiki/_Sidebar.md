@@ -4,6 +4,7 @@
 * [Catalog API](Catalog-API)
 * [Sandbox State API](Sandbox-State-API)
 * [Listing Flow](Listing-Flow)
+* [Error Codes](Error-Codes)
 * [Media and Drafts](Media-and-Drafts)
 * [Local Development](Local-Development)
 * [Release Runbook](Release-Runbook)

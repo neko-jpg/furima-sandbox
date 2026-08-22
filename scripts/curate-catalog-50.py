@@ -8,6 +8,7 @@ summary; unused image files can then be removed as a separate, verified step.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -15,6 +16,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "public/images/products/pexels-selected/manifest.json"
 SUMMARY = ROOT / "public/images/products/pexels-selected/summary.json"
+
+PUBLIC_MANIFEST_FIELDS = (
+    "pexelsId",
+    "category",
+    "subcategory",
+    "alt",
+    "photographer",
+    "photographerUrl",
+    "pexelsUrl",
+    "width",
+    "height",
+    "filename",
+    "localPath",
+    "sha256",
+    "bytes",
+)
+FORBIDDEN_MANIFEST_FIELDS = frozenset({"absolutePath", "selectedPath", "sourcePath", "sourceFolder"})
+ABSOLUTE_PATH_PATTERN = re.compile(
+    r"(?:^[A-Za-z]:[\\/]|^\\\\|(?:^|[\"'\s])/(?:Users|home|mnt|private|var|tmp|development)(?:[\\/\"'\s]|$))",
+    re.IGNORECASE,
+)
+SECRET_PATTERN = re.compile(
+    r"(?:PEXELS_API_KEY|(?:api[_-]?key|access[_-]?token|authorization|private[_-]?key)\s*[\"']?\s*[:=]|-----BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~+/=-]{12,})",
+    re.IGNORECASE,
+)
 
 # Deliberately ordered to keep the first home-page rows visually varied while
 # covering the main search and category paths.
@@ -41,6 +67,29 @@ def write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def public_manifest_entry(item: dict) -> dict:
+    filename = str(item.get("filename") or "")
+    if not filename or Path(filename).name != filename or "/" in filename or "\\" in filename:
+        raise SystemExit(f"Invalid Pexels asset filename: {filename!r}")
+    entry: dict = {}
+    for field in PUBLIC_MANIFEST_FIELDS:
+        if field == "filename":
+            entry[field] = filename
+        elif field == "localPath":
+            entry[field] = f"/images/products/pexels-selected/{filename}"
+        elif field in item and item[field] is not None:
+            entry[field] = item[field]
+    unexpected = set(entry) - set(PUBLIC_MANIFEST_FIELDS)
+    if unexpected or set(entry) & FORBIDDEN_MANIFEST_FIELDS:
+        raise SystemExit(f"Selected manifest contains disallowed fields: {sorted(unexpected | (set(entry) & FORBIDDEN_MANIFEST_FIELDS))}")
+    encoded = json.dumps(entry, ensure_ascii=False)
+    if ABSOLUTE_PATH_PATTERN.search(encoded):
+        raise SystemExit("Selected manifest contains a local absolute path")
+    if SECRET_PATTERN.search(encoded):
+        raise SystemExit("Selected manifest contains a secret-like value")
+    return entry
+
+
 def main() -> int:
     source = json.loads(MANIFEST.read_text(encoding="utf-8"))
     by_id = {int(item["pexelsId"]): item for item in source}
@@ -48,7 +97,7 @@ def main() -> int:
     if missing:
         raise SystemExit(f"Selected Pexels IDs are missing from the manifest: {missing}")
 
-    selected = [dict(by_id[pexels_id]) for pexels_id in KEEP_PEXELS_IDS]
+    selected = [public_manifest_entry(by_id[pexels_id]) for pexels_id in KEEP_PEXELS_IDS]
     if len(selected) != 50 or len({int(item["pexelsId"]) for item in selected}) != 50:
         raise SystemExit("The curated catalog must contain exactly 50 unique items")
 
@@ -62,7 +111,7 @@ def main() -> int:
             "unusedSelectedImageCount": len(source) - len(selected),
             "curation": "manual-balanced-50",
             "keptByCategory": dict(sorted(counts.items())),
-            "selectedFolder": str(MANIFEST.parent.resolve()),
+            "selectedFolder": "/images/products/pexels-selected",
         },
     )
     print(json.dumps({"sourceManifestCount": len(source), "catalogCount": len(selected), "keptByCategory": dict(sorted(counts.items()))}, ensure_ascii=False, indent=2))

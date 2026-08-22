@@ -9,7 +9,11 @@ interface RuntimeEnv {
   FURIMA_D1_API_TOKEN?: string;
   FURIMA_D1_CONTROL_TOKEN?: string;
   FURIMA_LOCAL_FIXTURE_MODE?: string;
+  FURIMA_STORAGE_MODE?: string;
+  FURIMA_DEPLOYMENT_ENV?: string;
 }
+
+export type SandboxStorageMode = 'memory' | 'd1';
 
 export const DEFAULT_SANDBOX_ID = 'furima-demo';
 export const MAX_SANDBOX_REQUEST_BYTES = 8 * 1024 * 1024;
@@ -28,16 +32,65 @@ export const LOCAL_SANDBOX_CONTROL_PRINCIPAL: ExecutionPrincipal = createTrusted
   scopes: ['sandbox-control', 'operator'],
 });
 
-const localFixtureHostnames = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const rateLimitBuckets = new Map<string, { windowStartedAt: number; count: number }>();
 const memoryStore = new MemorySandboxStateStore();
-const runtimeEnvPromise: Promise<RuntimeEnv> = import('cloudflare:workers')
+const localFixtureRequests = new WeakSet<Request>();
+
+const processRuntimeEnv = (): RuntimeEnv => {
+  const environment = typeof process === 'undefined' ? undefined : process.env;
+  return {
+    FURIMA_D1_API_TOKEN: environment?.FURIMA_D1_API_TOKEN,
+    FURIMA_D1_CONTROL_TOKEN: environment?.FURIMA_D1_CONTROL_TOKEN,
+    FURIMA_LOCAL_FIXTURE_MODE: environment?.FURIMA_LOCAL_FIXTURE_MODE,
+    FURIMA_STORAGE_MODE: environment?.FURIMA_STORAGE_MODE,
+    FURIMA_DEPLOYMENT_ENV: environment?.FURIMA_DEPLOYMENT_ENV ?? environment?.NODE_ENV,
+  };
+};
+
+const runtimeEnvPromise: Promise<RuntimeEnv | null> = import('cloudflare:workers')
   .then((module) => module.env as RuntimeEnv)
-  .catch(() => ({}));
+  .catch(() => null);
+
+const runtimeEnvForRequest = async (): Promise<RuntimeEnv> => (await runtimeEnvPromise) ?? processRuntimeEnv();
+
+const isLocalFixtureMode = (runtimeEnv: Pick<RuntimeEnv, 'FURIMA_LOCAL_FIXTURE_MODE'>): boolean => runtimeEnv.FURIMA_LOCAL_FIXTURE_MODE === 'true';
+const localFixtureHostnames = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+const isDeployedEnvironment = (value: string | undefined): boolean => value === 'production' || value === 'staging';
+
+const storageModeFor = (runtimeEnv: Pick<RuntimeEnv, 'FURIMA_STORAGE_MODE'>): SandboxStorageMode => {
+  const mode = runtimeEnv.FURIMA_STORAGE_MODE;
+  if (mode === 'memory' || mode === 'd1') return mode;
+  throw new Error('FURIMA_STORAGE_MODE must be set to memory or d1');
+};
+
+const validateRuntimeEnvironment = (runtimeEnv: RuntimeEnv): SandboxStorageMode => {
+  const mode = storageModeFor(runtimeEnv);
+  if (isDeployedEnvironment(runtimeEnv.FURIMA_DEPLOYMENT_ENV) && isLocalFixtureMode(runtimeEnv)) throw new Error('LOCAL_FIXTURE_FORBIDDEN_IN_DEPLOYED_ENV');
+  if (mode === 'memory' && !isLocalFixtureMode(runtimeEnv)) throw new Error('MEMORY_STORAGE_REQUIRES_LOCAL_FIXTURE_MODE');
+  return mode;
+};
+
+export const isLocalFixtureEnabled = async (): Promise<boolean> => isLocalFixtureMode(await runtimeEnvForRequest());
+
+export const isLocalFixtureRequest = async (request: Request): Promise<boolean> => {
+  const runtimeEnv = await runtimeEnvForRequest();
+  return isLocalFixtureMode(runtimeEnv) && localFixtureHostnames.has(new URL(request.url).hostname);
+};
+
+export const storageModeForRuntime = async (): Promise<SandboxStorageMode> => storageModeFor(await runtimeEnvForRequest());
+
+export const storeForEnvironment = (runtimeEnv: RuntimeEnv): SandboxStateStore => {
+  const mode = validateRuntimeEnvironment(runtimeEnv);
+  if (mode === 'memory') {
+    return memoryStore;
+  }
+  if (!runtimeEnv.DB) throw new Error('D1_UNAVAILABLE');
+  return new D1SandboxStateStore(runtimeEnv.DB as never);
+};
 
 export const storeForRequest = async (): Promise<SandboxStateStore> => {
-  const database = (await runtimeEnvPromise).DB;
-  return database ? new D1SandboxStateStore(database as never) : memoryStore;
+  return storeForEnvironment(await runtimeEnvForRequest());
 };
 
 const requestIdFor = (request?: Request): string => {
@@ -47,7 +100,7 @@ const requestIdFor = (request?: Request): string => {
 };
 
 export const authConfiguration = async (): Promise<{ apiConfigured: boolean; controlConfigured: boolean }> => {
-  const runtimeEnv = await runtimeEnvPromise;
+  const runtimeEnv = await runtimeEnvForRequest();
   return { apiConfigured: Boolean(runtimeEnv.FURIMA_D1_API_TOKEN), controlConfigured: Boolean(runtimeEnv.FURIMA_D1_CONTROL_TOKEN) };
 };
 
@@ -71,11 +124,16 @@ const rateLimitFailure = (request: Request, limit: number): Response | null => {
 };
 
 export const authorizationFailure = async (request: Request, options: { requireControl?: boolean } = {}): Promise<Response | null> => {
-  const runtimeEnv = await runtimeEnvPromise;
-  const hostname = new URL(request.url).hostname;
-  const explicitLocalFixture = runtimeEnv.FURIMA_LOCAL_FIXTURE_MODE === 'true';
-  const implicitLocalFixture = localFixtureHostnames.has(hostname) && !runtimeEnv.FURIMA_D1_API_TOKEN && !runtimeEnv.FURIMA_D1_CONTROL_TOKEN && runtimeEnv.FURIMA_LOCAL_FIXTURE_MODE !== 'false';
-  if (localFixtureHostnames.has(hostname) && (explicitLocalFixture || implicitLocalFixture)) return rateLimitFailure(request, options.requireControl ? 30 : 120);
+  const runtimeEnv = await runtimeEnvForRequest();
+  try {
+    validateRuntimeEnvironment(runtimeEnv);
+  } catch {
+    return Response.json({ ok: false, error: 'RUNTIME_MISCONFIGURED', details: { retryable: false } }, { status: 503, headers: { 'cache-control': 'no-store' } });
+  }
+  if (isLocalFixtureMode(runtimeEnv) && localFixtureHostnames.has(new URL(request.url).hostname)) {
+    localFixtureRequests.add(request);
+    return rateLimitFailure(request, options.requireControl ? 30 : 120);
+  }
   const configuredToken = options.requireControl ? runtimeEnv.FURIMA_D1_CONTROL_TOKEN : runtimeEnv.FURIMA_D1_API_TOKEN;
   if (!configuredToken) return Response.json({ ok: false, error: 'AUTH_NOT_CONFIGURED', details: { retryable: false } }, { status: 503, headers: { 'cache-control': 'no-store' } });
   const authorization = request.headers.get('authorization');
@@ -196,11 +254,9 @@ export const stateRecordFor = (sandboxId: string, engine: SandboxEngine, updated
 
 export const statePayloadFor = (engine: SandboxEngine): Record<string, unknown> => JSON.parse(engine.exportState()) as Record<string, unknown>;
 
-export const principalForRequest = (request: Request): ExecutionPrincipal | undefined => {
-  return localFixtureHostnames.has(new URL(request.url).hostname) ? undefined : SANDBOX_CONTROL_PRINCIPAL;
-};
+export const principalForRequest = (request: Request): ExecutionPrincipal | undefined => localFixtureRequests.has(request) ? undefined : SANDBOX_CONTROL_PRINCIPAL;
 
-export const controlPrincipalForRequest = (request: Request): ExecutionPrincipal => localFixtureHostnames.has(new URL(request.url).hostname)
+export const controlPrincipalForRequest = (request: Request): ExecutionPrincipal => localFixtureRequests.has(request)
   ? LOCAL_SANDBOX_CONTROL_PRINCIPAL
   : SANDBOX_CONTROL_PRINCIPAL;
 

@@ -10,6 +10,7 @@
 
 - [API Overview](API-Overview)
 - [Browser API](Browser-API)
+- [Error Codes](Error-Codes)
 - [Sandbox State API](Sandbox-State-API)
 - [Listing Flow](Listing-Flow)
 - [Media and Drafts](Media-and-Drafts)

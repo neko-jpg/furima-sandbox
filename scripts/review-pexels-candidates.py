@@ -18,10 +18,58 @@ from PIL import Image, ImageOps
 from scipy.fftpack import dct
 
 
-ROOT = Path("public/images/products")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ROOT = PROJECT_ROOT / "public/images/products"
 RAW_SOURCES = [ROOT / "pexels-candidates", ROOT / "pexels-candidates-1000"]
 OUTPUT = ROOT / "pexels-selected"
-REVIEW_OUTPUT = Path("docs/reference-assets/pexels-review")
+REVIEW_OUTPUT = PROJECT_ROOT / "docs/reference-assets/pexels-review"
+
+PUBLIC_MANIFEST_FIELDS = (
+    "pexelsId",
+    "category",
+    "subcategory",
+    "alt",
+    "photographer",
+    "photographerUrl",
+    "pexelsUrl",
+    "width",
+    "height",
+    "filename",
+    "localPath",
+    "sha256",
+    "bytes",
+)
+REVIEW_MANIFEST_FIELDS = (
+    "candidateIndex",
+    "pexelsId",
+    "query",
+    "category",
+    "subcategory",
+    "alt",
+    "photographer",
+    "photographerUrl",
+    "pexelsUrl",
+    "width",
+    "height",
+    "filename",
+    "localPath",
+    "sha256",
+    "bytes",
+    "metrics",
+    "score",
+    "keep",
+    "reasons",
+    "phash",
+)
+FORBIDDEN_MANIFEST_FIELDS = frozenset({"absolutePath", "selectedPath", "sourcePath", "sourceFolder"})
+ABSOLUTE_PATH_PATTERN = re.compile(
+    r"(?:^[A-Za-z]:[\\/]|^\\\\|(?:^|[\"'\s])/(?:Users|home|mnt|private|var|tmp|development)(?:[\\/\"'\s]|$))",
+    re.IGNORECASE,
+)
+SECRET_PATTERN = re.compile(
+    r"(?:PEXELS_API_KEY|(?:api[_-]?key|access[_-]?token|authorization|private[_-]?key)\s*[\"']?\s*[:=]|-----BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~+/=-]{12,})",
+    re.IGNORECASE,
+)
 
 GLOBAL_BAD_TERMS = (
     "illustration", "graphic design", "screenshot", "logo", "poster",
@@ -58,6 +106,59 @@ def text_of(item: dict) -> str:
     # Search queries describe the bucket, not the pictured subject. Using them
     # here would make every generic "product photo" result look item-focused.
     return str(item.get("alt", "")).lower()
+
+
+def public_path_for(path: Path) -> str:
+    try:
+        relative = path.resolve().relative_to((PROJECT_ROOT / "public").resolve())
+    except ValueError as error:
+        raise RuntimeError(f"Asset path must stay under public/: {path}") from error
+    return f"/{relative.as_posix()}"
+
+
+def safe_filename(value: object) -> str:
+    filename = str(value or "")
+    if not filename or Path(filename).name != filename or "/" in filename or "\\" in filename:
+        raise RuntimeError(f"Invalid Pexels asset filename: {filename!r}")
+    return filename
+
+
+def public_manifest_entry(item: dict, filename: str, local_path: str) -> dict:
+    filename = safe_filename(filename)
+    entry: dict = {}
+    for field in PUBLIC_MANIFEST_FIELDS:
+        if field == "filename":
+            entry[field] = filename
+        elif field == "localPath":
+            entry[field] = local_path
+        elif field in item and item[field] is not None:
+            entry[field] = item[field]
+    return entry
+
+
+def validate_manifest(entries: list[dict], allowed_fields: tuple[str, ...], label: str) -> None:
+    allowed = set(allowed_fields)
+    for index, entry in enumerate(entries, start=1):
+        unexpected = set(entry) - allowed
+        forbidden = set(entry) & FORBIDDEN_MANIFEST_FIELDS
+        if unexpected or forbidden:
+            fields = sorted(unexpected | forbidden)
+            raise RuntimeError(f"{label} entry {index} contains disallowed fields: {fields}")
+        encoded = json.dumps(entry, ensure_ascii=False)
+        if ABSOLUTE_PATH_PATTERN.search(encoded):
+            raise RuntimeError(f"{label} entry {index} contains a local absolute path")
+        if SECRET_PATTERN.search(encoded):
+            raise RuntimeError(f"{label} entry {index} contains a secret-like value")
+
+
+def review_manifest_entry(item: dict) -> dict:
+    entry = public_manifest_entry(item, item["filename"], public_path_for(Path(item["_sourcePath"])))
+    for field in REVIEW_MANIFEST_FIELDS:
+        if field in entry or field in {"filename", "localPath"}:
+            continue
+        if field in item and item[field] is not None:
+            entry[field] = item[field]
+    return {field: entry[field] for field in REVIEW_MANIFEST_FIELDS if field in entry}
 
 
 def phash(path: Path) -> int:
@@ -165,10 +266,16 @@ def load_items() -> list[dict]:
             if pexels_id in seen:
                 continue
             seen.add(pexels_id)
-            item = dict(item)
-            item["sourceFolder"] = str(source)
-            item["sourcePath"] = str(source / item["filename"])
-            items.append(item)
+            filename = safe_filename(item.get("filename"))
+            source_path = (source / filename).resolve()
+            if source_path.parent != source.resolve() or not source_path.is_file():
+                raise RuntimeError(f"Candidate image is missing or outside its source folder: {filename}")
+            candidate = public_manifest_entry(item, filename, public_path_for(source_path))
+            for field in ("candidateIndex", "query"):
+                if field in item and item[field] is not None:
+                    candidate[field] = item[field]
+            candidate["_sourcePath"] = str(source_path)
+            items.append(candidate)
     return items
 
 
@@ -182,7 +289,8 @@ def make_contact_sheet(items: list[dict], output_path: Path) -> None:
         x = (index % columns) * tile_width
         y = (index // columns) * tile_height
         try:
-            with Image.open(item["selectedPath"]) as source:
+            image_path = item.get("_selectedPath") or item["_sourcePath"]
+            with Image.open(image_path) as source:
                 image = ImageOps.contain(source.convert("RGB"), (tile_width - 10, tile_height - 28))
                 sheet.paste(image, (x + (tile_width - image.width) // 2, y + 4))
         except (OSError, ValueError):
@@ -226,7 +334,7 @@ def main() -> int:
 
     reviewed: list[dict] = []
     for item in items:
-        source_path = Path(item["sourcePath"])
+        source_path = Path(item["_sourcePath"])
         metrics = image_metrics(source_path)
         keep, reasons, score = decision(item, metrics)
         reviewed.append({**item, "metrics": metrics, "score": score, "keep": keep, "reasons": reasons})
@@ -239,7 +347,7 @@ def main() -> int:
     for item in reviewed:
         if not item["keep"]:
             continue
-        digest = phash(Path(item["sourcePath"]))
+        digest = phash(Path(item["_sourcePath"]))
         if any(hamming(digest, previous) <= 4 for previous in kept_hashes):
             item["keep"] = False
             item["reasons"] = [*item["reasons"], "near_duplicate"]
@@ -255,19 +363,25 @@ def main() -> int:
     selected_manifest: list[dict] = []
     for index, item in enumerate(kept, start=1):
         destination = OUTPUT / f"{index:04d}-pexels-{item['pexelsId']}.jpg"
-        shutil.copy2(item["sourcePath"], destination)
+        shutil.copy2(item["_sourcePath"], destination)
         selected_manifest.append({
             **item,
             "selectionIndex": index,
             "filename": destination.name,
-            "localPath": f"/images/products/pexels-selected/{destination.name}",
-            "selectedPath": str(destination.resolve()),
+            "_selectedPath": str(destination.resolve()),
         })
 
     all_manifest_path = REVIEW_OUTPUT / "review-manifest.json"
-    all_manifest_path.write_text(json.dumps(reviewed, ensure_ascii=False, indent=2), encoding="utf-8")
+    review_payload = [review_manifest_entry(item) for item in reviewed]
+    validate_manifest(review_payload, REVIEW_MANIFEST_FIELDS, "review manifest")
+    all_manifest_path.write_text(json.dumps(review_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     selected_manifest_path = OUTPUT / "manifest.json"
-    selected_manifest_path.write_text(json.dumps(selected_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    selected_payload = [
+        public_manifest_entry(item, item["filename"], public_path_for(Path(item["_selectedPath"])))
+        for item in selected_manifest
+    ]
+    validate_manifest(selected_payload, PUBLIC_MANIFEST_FIELDS, "selected manifest")
+    selected_manifest_path.write_text(json.dumps(selected_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     make_contact_sheet(selected_manifest, REVIEW_OUTPUT / "contact-sheet.jpg")
     make_category_sheets(selected_manifest, REVIEW_OUTPUT / "review-sheets")
 
@@ -278,8 +392,8 @@ def main() -> int:
         "rejectedCount": rejected,
         "keptByCategory": {},
         "rejectedReasons": {},
-        "rawSources": [str(source) for source in RAW_SOURCES],
-        "selectedFolder": str(OUTPUT.resolve()),
+        "rawSources": [public_path_for(source) for source in RAW_SOURCES],
+        "selectedFolder": public_path_for(OUTPUT),
     }
     for item in kept:
         key = f"{item['category']} / {item['subcategory']}"

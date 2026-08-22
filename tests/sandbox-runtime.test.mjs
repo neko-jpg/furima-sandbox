@@ -4,6 +4,9 @@ import test from "node:test";
 import { SandboxCommandBus } from "../app/domain/commandBus.ts";
 import { dispatchSandboxCommand } from "../app/domain/sandboxCommandDispatcher.ts";
 import { SandboxEngine } from "../app/domain/sandboxEngine.ts";
+import { configureSandboxRuntimeForTest } from "./helpers/sandbox-runtime-env.mjs";
+
+const runtime = await import("../app/api/sandbox/runtime.ts");
 
 const item = {
   id: "runtime-item",
@@ -44,4 +47,57 @@ test("the same Sandbox seed and command sequence produces the same state", () =>
   assert.equal(first.getSandboxId(), "replay-test");
   assert.deepEqual(JSON.parse(first.exportState()), JSON.parse(second.exportState()));
   assert.deepEqual(first.assertInvariants(), []);
+});
+
+test("fixture authorization requires the explicit flag and does not trust the hostname", async () => {
+  const restore = configureSandboxRuntimeForTest();
+  try {
+    const externalRequest = new Request("https://localhost.example/api/sandbox/state");
+    const externalDenied = await runtime.authorizationFailure(externalRequest);
+    assert.equal(externalDenied?.status, 503);
+    assert.equal((await externalDenied?.json())?.error, "AUTH_NOT_CONFIGURED");
+    assert.equal(runtime.principalForRequest(externalRequest), runtime.SANDBOX_CONTROL_PRINCIPAL);
+
+    const hostSpoofedRequest = new Request("http://localhost/api/sandbox/state");
+    process.env.FURIMA_LOCAL_FIXTURE_MODE = "false";
+    process.env.FURIMA_STORAGE_MODE = "d1";
+    const denied = await runtime.authorizationFailure(hostSpoofedRequest);
+    assert.equal(denied?.status, 503);
+    assert.equal((await denied?.json())?.error, "AUTH_NOT_CONFIGURED");
+    assert.equal(runtime.principalForRequest(hostSpoofedRequest), runtime.SANDBOX_CONTROL_PRINCIPAL);
+  } finally {
+    restore();
+  }
+});
+
+test("fixture mode is rejected for deployed environments", async () => {
+  const restore = configureSandboxRuntimeForTest();
+  try {
+    process.env.FURIMA_DEPLOYMENT_ENV = "production";
+    const response = await runtime.authorizationFailure(new Request("http://127.0.0.1/api/sandbox/health"));
+    assert.equal(response?.status, 503);
+    assert.equal((await response?.json())?.error, "RUNTIME_MISCONFIGURED");
+  } finally {
+    restore();
+  }
+});
+
+test("storage mode is explicit and missing D1 fails closed", async () => {
+  const restore = configureSandboxRuntimeForTest();
+  try {
+    assert.equal(await runtime.isLocalFixtureEnabled(), true);
+    assert.equal(await runtime.storageModeForRuntime(), "memory");
+    assert.equal((await runtime.storeForRequest()).constructor.name, "MemorySandboxStateStore");
+
+    process.env.FURIMA_LOCAL_FIXTURE_MODE = "false";
+    await assert.rejects(runtime.storeForRequest(), /MEMORY_STORAGE_REQUIRES_LOCAL_FIXTURE_MODE/);
+
+    process.env.FURIMA_STORAGE_MODE = "d1";
+    await assert.rejects(runtime.storeForRequest(), /D1_UNAVAILABLE/);
+
+    delete process.env.FURIMA_STORAGE_MODE;
+    await assert.rejects(runtime.storageModeForRuntime(), /FURIMA_STORAGE_MODE/);
+  } finally {
+    restore();
+  }
 });

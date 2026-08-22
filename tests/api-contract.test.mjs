@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import YAML from 'yaml';
+
+process.env.FURIMA_LOCAL_FIXTURE_MODE = 'true';
+process.env.FURIMA_STORAGE_MODE = 'memory';
 
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
+const execFileAsync = promisify(execFile);
 
 test('catalog HTTP handlers support pagination, item lookup, and ETag revalidation', async () => {
   const catalog = await import(new URL('../app/api/catalog/route.ts', import.meta.url).href);
@@ -16,6 +22,10 @@ test('catalog HTTP handlers support pagination, item lookup, and ETag revalidati
   assert.equal(Array.isArray(firstItems), true);
   assert.equal(firstItems.length, 2);
   assert.equal(first.headers.get('x-catalog-limit'), '2');
+  assert.equal(catalog.GET(new Request('http://localhost/api/catalog?limit=0')).status, 400);
+  assert.equal(catalog.GET(new Request('http://localhost/api/catalog?limit=41')).status, 400);
+  assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=-1')).status, 400);
+  assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=not-an-integer')).status, 400);
   const etag = first.headers.get('etag');
   assert.ok(etag);
 
@@ -54,6 +64,50 @@ test('HTTP sandbox routes and OpenAPI stay in one-to-one contract', async () => 
   assert.match(runtime, /authorizationFailure/);
   assert.match(openapiText, /sandboxId/);
   assert.match(openapiText, /stateVersion/);
+  assert.deepEqual(openapi.paths['/api/sandbox/state'].get.security, [{ controlBearerAuth: [] }]);
+  assert.deepEqual(openapi.paths['/api/sandbox/state'].put.security, [{ controlBearerAuth: [] }]);
+  assert.ok(openapi.components.securitySchemes.controlBearerAuth);
+});
+
+test('Sandbox state GET requires control authorization before resolving an arbitrary sandbox', async () => {
+  const route = await read('app/api/sandbox/state/route.ts');
+  const runtimeSource = await read('app/api/sandbox/runtime.ts');
+  assert.match(runtimeSource, /configuredToken = options\.requireControl \? runtimeEnv\.FURIMA_D1_CONTROL_TOKEN/);
+  assert.match(route, /authorizationFailure\(request, \{ requireControl: true \}\)/);
+
+  const moduleUrl = new URL('../app/api/sandbox/runtime.ts', import.meta.url).href;
+  const script = `
+    import { authorizationFailure } from ${JSON.stringify(moduleUrl)};
+    const cases = [
+      { name: 'missing', authorization: undefined },
+      { name: 'api-token', authorization: 'Bearer api-test-token' },
+      { name: 'control-token', authorization: 'Bearer control-test-token' },
+    ];
+    const results = [];
+    for (const candidate of cases) {
+      const headers = candidate.authorization ? { authorization: candidate.authorization } : {};
+      const response = await authorizationFailure(
+        new Request('https://api.example.test/api/sandbox/state?id=other-sandbox', { headers }),
+        { requireControl: true },
+      );
+      results.push({ name: candidate.name, status: response?.status ?? null });
+    }
+    console.log(JSON.stringify(results));
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], {
+    env: {
+      ...process.env,
+      FURIMA_LOCAL_FIXTURE_MODE: 'false',
+      FURIMA_STORAGE_MODE: 'd1',
+      FURIMA_D1_API_TOKEN: 'api-test-token',
+      FURIMA_D1_CONTROL_TOKEN: 'control-test-token',
+    },
+  });
+  assert.deepEqual(JSON.parse(stdout.trim()), [
+    { name: 'missing', status: 401 },
+    { name: 'api-token', status: 403 },
+    { name: 'control-token', status: null },
+  ]);
 });
 
 test('D1 schema, state adapter, and API size/auth error contracts are present', async () => {

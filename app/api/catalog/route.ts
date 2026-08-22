@@ -30,10 +30,15 @@ const CATALOG_INDEX = CATALOG_ITEMS.map((item) => ({
  */
 export function GET(request: Request): Response {
   const url = new URL(request.url);
-  const requestedLimit = Number(url.searchParams.get('limit') ?? DEFAULT_PAGE_SIZE);
-  const requestedOffset = Number(url.searchParams.get('offset') ?? 0);
-  const limit = Number.isInteger(requestedLimit) ? Math.min(MAX_PAGE_SIZE, Math.max(1, requestedLimit)) : DEFAULT_PAGE_SIZE;
-  const offset = Number.isInteger(requestedOffset) ? Math.max(0, requestedOffset) : 0;
+  const rawLimit = url.searchParams.get('limit');
+  const rawOffset = url.searchParams.get('offset');
+  const requestedLimit = rawLimit === null ? DEFAULT_PAGE_SIZE : Number(rawLimit);
+  const requestedOffset = rawOffset === null ? 0 : Number(rawOffset);
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > MAX_PAGE_SIZE || !Number.isSafeInteger(requestedOffset) || requestedOffset < 0) {
+    return Response.json({ ok: false, error: 'INVALID_INPUT', message: 'limitは1〜40、offsetは0以上の整数で指定してください' }, { status: 400, headers: { 'cache-control': 'no-store' } });
+  }
+  const limit = requestedLimit;
+  const offset = requestedOffset;
   const query = normalize(url.searchParams.get('q') ?? '');
   const category = normalize(url.searchParams.get('category') ?? '');
   if (query.length > 200 || category.length > 200) return Response.json({ ok: false, error: 'INVALID_INPUT', message: 'qとcategoryは200文字以内で指定してください' }, { status: 400, headers: { 'cache-control': 'no-store' } });
