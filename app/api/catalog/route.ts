@@ -36,6 +36,9 @@ export function GET(request: Request): Response {
   }
   const rawLimit = url.searchParams.get('limit');
   const rawOffset = url.searchParams.get('offset');
+  if ([rawLimit, rawOffset].some((value) => value !== null && value.trim() === '')) {
+    return Response.json({ ok: false, error: 'INVALID_INPUT', message: 'limitは1〜40、offsetは0以上の整数で指定してください' }, { status: 400, headers: { 'cache-control': 'no-store' } });
+  }
   const requestedLimit = rawLimit === null ? DEFAULT_PAGE_SIZE : Number(rawLimit);
   const requestedOffset = rawOffset === null ? 0 : Number(rawOffset);
   if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > MAX_PAGE_SIZE || !Number.isSafeInteger(requestedOffset) || requestedOffset < 0) {

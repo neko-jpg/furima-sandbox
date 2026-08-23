@@ -29,6 +29,7 @@ test('catalog HTTP handlers support pagination, item lookup, and ETag revalidati
   assert.equal(catalog.GET(new Request('http://localhost/api/catalog?limit=41')).status, 400);
   assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=-1')).status, 400);
   assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=not-an-integer')).status, 400);
+  assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=')).status, 400);
   const etag = first.headers.get('etag');
   assert.ok(etag);
 
@@ -174,6 +175,12 @@ test('HTTP preview/commit/health share the durable command contract', async () =
   }));
   assert.equal(repeatedResponse.status, 200);
   assert.deepEqual(await repeatedResponse.json(), commitResult);
+  const insufficientFunds = await preview.POST(new Request('http://localhost/api/sandbox/preview', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer api-test-token' },
+    body: JSON.stringify({ sandboxId: 'http-contract', command: 'wallet.withdraw', payload: { amount: 1000000 }, idempotencyKey: 'http-preview-insufficient-funds' }),
+  }));
+  assert.equal(insufficientFunds.status, 409);
   const healthResponse = await health.GET(new Request('http://localhost/api/sandbox/health?sandboxId=http-contract', { headers: { authorization: 'Bearer api-test-token' } }));
   assert.equal(healthResponse.status, 200);
   const healthResult = await healthResponse.json();

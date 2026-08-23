@@ -17,7 +17,7 @@ const statusFor = (error: string): number => {
   if (error === 'AUTH_REQUIRED') return 401;
   if (error === 'FORBIDDEN') return 403;
   if (error === 'PREVIEW_NOT_FOUND' || error === 'STATE_NOT_FOUND') return 404;
-  if (error === 'STATE_CONFLICT' || error === 'IDEMPOTENCY_CONFLICT' || error === 'PREVIEW_EXPIRED') return 409;
+  if (error === 'STATE_CONFLICT' || error === 'IDEMPOTENCY_CONFLICT' || error === 'PREVIEW_EXPIRED' || error === 'INSUFFICIENT_FUNDS') return 409;
   if (error === 'PAYLOAD_TOO_LARGE') return 413;
   if (error === 'D1_UNAVAILABLE') return 503;
   return 400;
