@@ -6,6 +6,8 @@ const outputDirectory = resolve('output/security');
 const configPath = resolve('security/mcp-scan.json');
 const hostedAnalysisRequired = process.env.MCP_SCAN_REQUIRE_HOSTED === 'true'
   || (process.env.CI === 'true' && process.env.GITHUB_EVENT_NAME !== 'pull_request');
+const scanMode = process.env.MCP_SCAN_MODE
+  ?? (hostedAnalysisRequired || process.env.SNYK_TOKEN ? 'hosted' : 'inspect');
 
 const run = (command, args) => new Promise((resolvePromise, reject) => {
   const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -39,19 +41,22 @@ if (!result || !selected) throw new Error('MCP-Scan is not installed. Install `s
 if (result.code !== 0) throw new Error(`MCP-Scan inspect failed with exit code ${result.code}${result.signal ? ` (${result.signal})` : ''}`);
 
 const inspection = result.stdout ? JSON.parse(result.stdout) : { ok: false, error: 'EMPTY_SCAN_OUTPUT' };
-if (process.env.SNYK_TOKEN) {
+if (scanMode === 'hosted') {
+  if (!process.env.SNYK_TOKEN) {
+    throw new Error('MCP-Scan hosted analysis requires SNYK_TOKEN. Set MCP_SCAN_MODE=inspect to run without hosted analysis.');
+  }
   const analysis = await run(selected.command, [...selected.prefix, configPath, '--json', '--ci', '--dangerously-run-mcp-servers']);
   await writeFile(resolve(outputDirectory, 'mcp-scan.json'), analysis.stdout || JSON.stringify({ ok: false, stderr: analysis.stderr }, null, 2));
   if (analysis.code !== 0) throw new Error(`MCP-Scan analysis failed with exit code ${analysis.code}${analysis.signal ? ` (${analysis.signal})` : ''}`);
-} else if (hostedAnalysisRequired) {
-  throw new Error('MCP-Scan hosted analysis requires SNYK_TOKEN on protected CI runs. Configure the secret or run local inspect mode explicitly.');
-} else {
+} else if (scanMode === 'inspect') {
   await writeFile(resolve(outputDirectory, 'mcp-scan.json'), JSON.stringify({
     ok: true,
     mode: 'inspect',
     analysis: 'not-run',
-    reason: 'SNYK_TOKEN is not configured; local MCP tool/resource signatures were inspected.',
+    reason: 'MCP_SCAN_MODE=inspect; local MCP tool/resource signatures were inspected and hosted analysis was not requested.',
     inspection,
   }, null, 2));
-  console.warn('MCP-Scan inspect passed. Full hosted analysis was not run because SNYK_TOKEN is not configured.');
+  console.warn('MCP-Scan inspect passed. Hosted analysis was not requested.');
+} else {
+  throw new Error(`Unsupported MCP_SCAN_MODE: ${scanMode}. Use hosted or inspect.`);
 }

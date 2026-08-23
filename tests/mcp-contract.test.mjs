@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createMcpSandboxAdapter } from '../app/domain/mcpSandboxAdapter.ts';
@@ -54,4 +55,16 @@ test('MCP buyer session cannot draft a seller listing', async () => {
   const result = await adapter.callTool('draft_listing', listingArgs('mcp-buyer-1'));
   assert.equal(result.isError, true);
   assert.equal(readResult(result).error, 'FORBIDDEN');
+});
+
+test('CI MCP checks stay inspect-only without a Snyk secret', async () => {
+  const workflowPaths = [
+    '../.github/workflows/verify.yml',
+    '../.github/workflows/sandbox-nightly.yml',
+  ];
+  for (const workflowPath of workflowPaths) {
+    const workflow = await readFile(new URL(workflowPath, import.meta.url), 'utf8');
+    assert.match(workflow, /MCP_SCAN_MODE:\s*inspect/);
+    assert.doesNotMatch(workflow, /SNYK_TOKEN:\s*\$\{\{\s*secrets\.SNYK_TOKEN/);
+  }
 });

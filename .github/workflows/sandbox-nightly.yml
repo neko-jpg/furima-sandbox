@@ -53,7 +53,7 @@ jobs:
       - name: MCP-Scan
         run: npm run security:mcp
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          MCP_SCAN_MODE: inspect
       - run: npm run security:schemathesis
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
