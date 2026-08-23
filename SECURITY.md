@@ -11,7 +11,9 @@
 
 ## 依存関係の注意
 
-現行の `vinext` が間接的に利用する画像処理依存には、upstream の修正版が提供されるまで継続監視が必要な advisory があります。更新時は `npm audit --omit=dev` と `npm audit` の結果を確認し、画像最適化の境界テストを再実行してください。修正版がない状態で外部公開する場合は、platform maintainer がリスク受容者と再確認日をリリース記録へ登録します。
+監査時点では `npm audit --audit-level=high` は0件です。依存更新時は `npm audit --omit=dev` と `npm audit` を再実行し、画像最適化の境界テストも再実行してください。High/Criticalが再発した場合は、修正版の適用またはリスク受容者・再確認日をリリース記録へ登録してから外部公開します。
+
+MCPをデモ経路で使う場合、`npm run security:mcp`のローカルtokenなし実行はMCP server定義のinspectだけです。protected CIのpush/nightlyでは`SNYK_TOKEN`を必須とし、hosted analysisが未実行ならジョブを成功扱いにしません。
 
 ## 報告
 

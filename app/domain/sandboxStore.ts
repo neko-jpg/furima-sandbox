@@ -214,7 +214,9 @@ export class MemorySandboxStateStore implements SandboxStateStore {
     const actualStateVersion = existingState?.stateVersion ?? 0;
     if (actualStateVersion !== expectedStateVersion) return { ok: false, error: 'CONFLICT', actualStateVersion };
     if (!existingPreview) this.previews.set(this.commandKey(preview.sandboxId, preview.previewId), { ...preview });
-    this.records.set(state.id, { ...state });
+    // A preview is read-only for the sandbox aggregate. Keep the persisted
+    // timestamp stable even when the caller built a fresh transient record.
+    this.records.set(state.id, { ...state, updatedAt: existingState?.updatedAt ?? state.updatedAt });
     this.commands.set(this.commandKey(command.sandboxId, idempotencyKey), { ...command });
     return { ok: true, record: { ...command } };
   }
@@ -459,7 +461,7 @@ export class D1SandboxStateStore implements SandboxStateStore {
       const commandInsert = this.database.prepare(`INSERT INTO sandbox_command_records (operation_id, sandbox_id, actor_id, command, mode, idempotency_key, request_id, command_id, payload_hash, state_version_before, state_version_after, status, result_json, created_at, expires_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15 WHERE EXISTS (SELECT 1 FROM sandbox_states WHERE id = ?16 AND state_version = ?17) AND NOT EXISTS (SELECT 1 FROM sandbox_command_records WHERE sandbox_id = ?18 AND idempotency_key = ?19)`).bind(command.operationId, command.sandboxId, command.actorId, command.command, command.mode, idempotencyKey, command.requestId ?? null, command.commandId ?? null, command.payloadHash, command.stateVersionBefore, command.stateVersionAfter, command.status, command.result, command.createdAt, command.expiresAt, state.id, expectedStateVersion, command.sandboxId, idempotencyKey);
       statements.push(commandInsert);
       const commandIndex = statements.length - 1;
-      statements.push(this.database.prepare(`INSERT INTO sandbox_states (id, scenario_id, seed, state_version, virtual_now, payload, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(id) DO UPDATE SET scenario_id = excluded.scenario_id, seed = excluded.seed, state_version = excluded.state_version, virtual_now = excluded.virtual_now, payload = excluded.payload, updated_at = excluded.updated_at WHERE sandbox_states.state_version = ?8 AND EXISTS (SELECT 1 FROM sandbox_command_records WHERE operation_id = ?9 AND sandbox_id = ?10 AND idempotency_key = ?11)`).bind(state.id, state.scenarioId, state.seed, state.stateVersion, state.virtualNow, state.payload, state.updatedAt, expectedStateVersion, command.operationId, command.sandboxId, idempotencyKey));
+      statements.push(this.database.prepare(`INSERT INTO sandbox_states (id, scenario_id, seed, state_version, virtual_now, payload, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(id) DO UPDATE SET scenario_id = excluded.scenario_id, seed = excluded.seed, state_version = excluded.state_version, virtual_now = excluded.virtual_now, payload = excluded.payload, updated_at = excluded.updated_at WHERE sandbox_states.state_version = ?8 AND EXISTS (SELECT 1 FROM sandbox_command_records WHERE operation_id = ?9 AND sandbox_id = ?10 AND idempotency_key = ?11)`).bind(state.id, state.scenarioId, state.seed, state.stateVersion, state.virtualNow, state.payload, existingState?.updatedAt ?? state.updatedAt, expectedStateVersion, command.operationId, command.sandboxId, idempotencyKey));
       if (!this.database.batch) return { ok: false, error: 'UNAVAILABLE' };
       const results = await this.database.batch(statements);
       if (results[commandIndex]?.meta?.changes === 0) {

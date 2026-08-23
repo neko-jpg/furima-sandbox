@@ -28,3 +28,40 @@ rules:
     paths:
       include:
         - /app/components/**/*.tsx
+
+  - id: furima-agent-surface-no-control-capabilities
+    languages: [generic]
+    message: The browser agent surface must not expose sandbox-control operations such as actor switching, state import/export, reset, or fault injection.
+    severity: ERROR
+    pattern-regex: '(?s)const apiDefinition: MercariAgentAPI = \{.*?\n\s*(switchActor|setActor|loadScenario|advanceClock|injectFailure|injectFault|fault|resetScenario|exportState|importState):'
+    paths:
+      include:
+        - /app/context/MercariContext.tsx
+
+  - id: furima-agent-surface-no-platform-privilege
+    languages: [generic]
+    message: The browser agent surface must not receive platform or sandbox-control privileges.
+    severity: ERROR
+    pattern-regex: '(?s)const apiDefinition: MercariAgentAPI = \{(?:(?!latestAgentApiRef\.current = apiDefinition).)*(SANDBOX_CONTROL_OPTIONS|(?:roles|scopes?)\s*:\s*\[[^\]]*(?:platform|sandbox-control))'
+    paths:
+      include:
+        - /app/context/MercariContext.tsx
+
+  - id: furima-no-browser-control-token
+    languages: [generic]
+    message: Browser code must never read the sandbox control token.
+    severity: ERROR
+    pattern-regex: 'FURIMA_D1_CONTROL_TOKEN'
+    paths:
+      include:
+        - /app/context/**/*.tsx
+        - /app/components/**/*.tsx
+
+  - id: furima-agent-surface-no-control-bridge
+    languages: [generic]
+    message: Do not attach sandbox-control options or control capabilities to the browser API bridge.
+    severity: ERROR
+    pattern-regex: '(?m)window\.__SHOP_API__\s*=\s*[^;\n]*(SANDBOX_CONTROL_OPTIONS|switchActor|setActor|loadScenario|advanceClock|injectFailure|injectFault|fault|resetScenario|exportState|importState)'
+    paths:
+      include:
+        - /app/context/MercariContext.tsx

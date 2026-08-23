@@ -44,6 +44,27 @@ test('durable preview and commit survive a new executor and replay the same resu
   assert.equal((await store.listCommands('executor-test')).length >= 2, true);
 });
 
+test('preview persistence keeps the existing durable timestamp', async () => {
+  const store = new MemorySandboxStateStore();
+  const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'preview-timestamp-test', seed: 'preview-timestamp-seed' });
+  const persisted = stateRecord(engine);
+  await store.put(persisted);
+  const preview = {
+    previewId: 'preview-timestamp-1', sandboxId: persisted.id, actorId: 'buyer_01', command: 'wallet.deposit',
+    payload: JSON.stringify({ amount: 1 }), payloadHash: 'preview-hash-1', baseStateVersion: persisted.stateVersion,
+    summary: '{}', status: 'PENDING', createdAt: '2026-01-01T00:00:01.000Z', virtualExpiresAt: '2026-01-01T00:05:00.000Z',
+    retentionExpiresAt: '2026-01-02T00:00:00.000Z',
+  };
+  const command = {
+    operationId: 'preview-timestamp-command-1', sandboxId: persisted.id, actorId: 'buyer_01', command: 'wallet.deposit', mode: 'preview',
+    idempotencyKey: 'preview-timestamp-command-1', payloadHash: 'preview-hash-1', stateVersionBefore: persisted.stateVersion,
+    stateVersionAfter: persisted.stateVersion, status: 'SUCCEEDED', result: '{}', createdAt: '2026-01-01T00:00:01.000Z', expiresAt: '2026-01-02T00:00:00.000Z',
+  };
+  const result = await store.putPreviewAndCommand(preview, command, { ...persisted, updatedAt: '2026-01-01T00:00:02.000Z' }, persisted.stateVersion);
+  assert.equal(result.ok, true);
+  assert.equal((await store.get(persisted.id))?.updatedAt, persisted.updatedAt);
+});
+
 test('two executors using the same state version cannot lose an update', async () => {
   const store = new MemorySandboxStateStore();
   const firstEngine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'cas-test', seed: 'cas-seed' });

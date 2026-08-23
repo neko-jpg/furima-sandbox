@@ -56,7 +56,7 @@ test("fixture authorization requires the explicit flag and does not trust the ho
     const externalDenied = await runtime.authorizationFailure(externalRequest);
     assert.equal(externalDenied?.status, 503);
     assert.equal((await externalDenied?.json())?.error, "AUTH_NOT_CONFIGURED");
-    assert.equal(runtime.principalForRequest(externalRequest), runtime.SANDBOX_CONTROL_PRINCIPAL);
+    assert.equal(runtime.principalForRequest(externalRequest), undefined);
 
     const hostSpoofedRequest = new Request("http://localhost/api/sandbox/state");
     process.env.FURIMA_LOCAL_FIXTURE_MODE = "false";
@@ -64,7 +64,7 @@ test("fixture authorization requires the explicit flag and does not trust the ho
     const denied = await runtime.authorizationFailure(hostSpoofedRequest);
     assert.equal(denied?.status, 503);
     assert.equal((await denied?.json())?.error, "AUTH_NOT_CONFIGURED");
-    assert.equal(runtime.principalForRequest(hostSpoofedRequest), runtime.SANDBOX_CONTROL_PRINCIPAL);
+    assert.equal(runtime.principalForRequest(hostSpoofedRequest), undefined);
   } finally {
     restore();
   }

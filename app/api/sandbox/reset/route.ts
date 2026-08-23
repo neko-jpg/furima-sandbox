@@ -8,21 +8,26 @@ import {
   readJson,
   sandboxIdFrom,
   controlPrincipalForRequest,
+  hasOnlyKeys,
   statePayloadFor,
   stateRecordFor,
   storeForRequest,
+  isSandboxScenario,
 } from '../runtime.ts';
 import { SandboxCommandExecutor } from '../../../domain/commandExecutor.ts';
 
 export async function POST(request: Request): Promise<Response> {
   const authError = await authorizationFailure(request, { requireControl: true });
   if (authError) return authError;
-  if (!hasJsonContentType(request)) return failure('INVALID_INPUT', 415, { message: 'Content-Typeはapplication/jsonで指定してください' });
+  const contentLength = Number(request.headers.get('content-length') ?? 0);
+  if (contentLength > 0 && !hasJsonContentType(request)) return failure('INVALID_INPUT', 415, { message: 'Content-Typeはapplication/jsonで指定してください' });
   const body = await readJson(request);
-  if (request.headers.get('content-length') && !body) return failure('INVALID_INPUT', 400, { message: 'JSON bodyが不正です' });
+  if (contentLength > 0 && !body) return failure('INVALID_INPUT', 400, { message: 'JSON bodyが不正です' });
+  if (body && !hasOnlyKeys(body, ['id', 'sandboxId', 'scenarioId', 'seed', 'expectedStateVersion'])) return failure('INVALID_INPUT', 400, { message: '未対応のbody fieldです' });
   const id = sandboxIdFrom(request, body ?? undefined);
   if (!id) return failure('INVALID_STATE_ID', 400);
   const scenarioId = typeof body?.scenarioId === 'string' ? body.scenarioId : 'catalog_default';
+  if (!isSandboxScenario(scenarioId)) return failure('UNKNOWN_SCENARIO', 400);
   const seed = typeof body?.seed === 'string' && body.seed.trim() ? body.seed.trim() : `${scenarioId}-seed-v1`;
   try {
     const store = await storeForRequest();

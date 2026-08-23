@@ -18,15 +18,15 @@ const previewCommands = new Set<PreviewCommand>(['purchase', 'listing.create', '
 const statusFor = (error: string): number => {
   if (error === 'AUTH_REQUIRED') return 401;
   if (error === 'FORBIDDEN') return 403;
-  if (error === 'PREVIEW_NOT_FOUND' || error === 'STATE_NOT_FOUND') return 404;
-  if (error === 'STATE_CONFLICT' || error === 'IDEMPOTENCY_CONFLICT' || error === 'PREVIEW_EXPIRED') return 409;
+  if (error === 'PREVIEW_NOT_FOUND' || error === 'STATE_NOT_FOUND' || error === 'ITEM_NOT_FOUND') return 404;
+  if (error === 'STATE_CONFLICT' || error === 'IDEMPOTENCY_CONFLICT' || error === 'PREVIEW_EXPIRED' || error === 'INSUFFICIENT_FUNDS') return 409;
   if (error === 'PAYLOAD_TOO_LARGE') return 413;
   if (error === 'D1_UNAVAILABLE') return 503;
   return 400;
 };
 
 export async function POST(request: Request): Promise<Response> {
-  const authError = await authorizationFailure(request, { requireControl: true });
+  const authError = await authorizationFailure(request);
   if (authError) return authError;
   if (!hasJsonContentType(request)) return actionFailure(request, undefined, 'preview', 'INVALID_INPUT', 415, 0, { message: 'Content-Typeはapplication/jsonで指定してください' });
   const contentLength = Number(request.headers.get('content-length') ?? 0);
@@ -49,4 +49,8 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return actionFailure(request, body, 'preview', 'D1_UNAVAILABLE', 503, 0, { retryable: true });
   }
+}
+
+export function PUT(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'POST', 'cache-control': 'no-store' } });
 }

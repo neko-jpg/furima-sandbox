@@ -58,9 +58,11 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
   assert.match(context, /if \(!REMOTE_STATE_ENABLED\) return;/);
   assert.match(context, /sandboxEngine\.importState\(serialized, SANDBOX_CONTROL_OPTIONS\)/);
   assert.match(context, /catalogLoadRef\.current/);
-  assert.match(context, /serializedDigest/);
+  assert.doesNotMatch(context, /serializedDigest/);
+  assert.doesNotMatch(context, /importState:\s*\(/);
   assert.match(context, /compactImagePayloadForFingerprint/);
-  assert.match(context, /Sandbox stateのバックアップ/);
+  assert.doesNotMatch(context, /Sandbox stateのバックアップ/);
+  assert.doesNotMatch(context, /exportState:\s*\(/);
   assert.match(context, /furima-sandbox-state-v2/);
   assert.match(context, /viewsCount: \(item\.viewsCount \?\? 0\) \+ 1/);
   assert.match(engine, /CONFIRMATION_REQUIRED/);

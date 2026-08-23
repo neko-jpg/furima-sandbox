@@ -47,6 +47,7 @@ paths:
                 items: { $ref: '#/components/schemas/MercariItem' }
         '304':
           description: If-None-Matchに一致したため変更なし
+        '400': { $ref: '#/components/responses/BadRequest' }
   /api/catalog/{itemId}:
     get:
       tags: [Catalog]
@@ -64,13 +65,14 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
   /api/sandbox/state:
     get:
+      operationId: getSandboxState
       tags: [Sandbox State]
       summary: Sandbox状態を取得する
       security: [{ controlBearerAuth: [] }]
       parameters:
         - name: id
           in: query
-          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+          schema: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
         - name: If-None-Match
           in: header
           schema: { type: string }
@@ -83,18 +85,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxState' }
         '304': { description: 変更なし }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/Unavailable' }
     put:
+      operationId: putSandboxState
       tags: [Sandbox State]
       summary: Sandbox状態を楽観的に更新する
       security: [{ controlBearerAuth: [] }]
       parameters:
         - name: id
           in: query
-          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+          schema: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
         - name: If-Match-State-Version
           in: header
           required: false
@@ -118,6 +122,7 @@ paths:
                   stateVersion: { type: integer, minimum: 0 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
         '413': { description: 状態が8MiBを超えた }
   /api/sandbox/health:
@@ -128,7 +133,7 @@ paths:
       parameters:
         - name: sandboxId
           in: query
-          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+          schema: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
       responses:
         '200':
           description: Sandbox health
@@ -136,9 +141,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxHealth' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/sandbox/preview:
     post:
+      operationId: previewSandboxAction
       tags: [Sandbox State]
       summary: Sandboxコピー上でcommandをシミュレーションする
       security: [{ bearerAuth: [] }]
@@ -153,6 +161,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ActionResultPreview' }
+          links:
+            CommitSandboxPreview:
+              operationId: commitSandboxPreview
+              requestBody:
+                sandboxId: $request.body#/sandboxId
+                previewId: $response.body#/data/previewId
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -162,6 +176,7 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/sandbox/commit:
     post:
+      operationId: commitSandboxPreview
       tags: [Sandbox State]
       summary: 未使用・未期限切れのpreviewを確定する
       security: [{ bearerAuth: [] }]
@@ -184,9 +199,10 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/sandbox/reset:
     post:
+      operationId: resetSandbox
       tags: [Sandbox State]
       summary: Sandboxをシナリオ初期状態へ戻す
-      security: [{ bearerAuth: [] }]
+      security: [{ controlBearerAuth: [] }]
       requestBody:
         required: false
         content:
@@ -199,13 +215,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxOperationResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { description: JSON bodyのContent-Typeが必要 }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/sandbox/seed:
     post:
+      operationId: seedSandbox
       tags: [Sandbox State]
       summary: 決定的なseedとシナリオでSandboxを作成する
-      security: [{ bearerAuth: [] }]
+      security: [{ controlBearerAuth: [] }]
       requestBody:
         required: true
         content:
@@ -218,12 +238,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxOperationResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { description: JSON bodyのContent-Typeが必要 }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/sandbox/replay:
     post:
+      operationId: replaySandbox
       tags: [Sandbox State]
       summary: Sandbox command列を決定的に再生する
-      security: [{ bearerAuth: [] }]
+      security: [{ controlBearerAuth: [] }]
       requestBody:
         required: true
         content:
@@ -236,6 +261,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxReplayResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { description: JSON bodyのContent-Typeが必要 }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { description: command列の途中で失敗した }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -487,11 +515,11 @@ components:
       name: itemId
       in: path
       required: true
-      schema: { type: string, minLength: 1, maxLength: 160 }
+      schema: { type: string, minLength: 1, maxLength: 160, example: demo-000001 }
     Offset:
       name: offset
       in: query
-      schema: { type: integer, minimum: 0, default: 0 }
+      schema: { type: integer, minimum: 0, maximum: 9007199254740991, default: 0 }
     Limit:
       name: limit
       in: query
@@ -670,7 +698,7 @@ components:
         shippingSize: { type: string }
         isAnonymousShipping: { type: boolean }
         inventoryPolicy: { type: string, enum: [SINGLE, MULTI] }
-        inventoryQuantity: { type: integer, minimum: 1 }
+        inventoryQuantity: { type: integer, minimum: 0 }
     ListingUpdate:
       type: object
       minProperties: 1
@@ -728,31 +756,70 @@ components:
         mode: { type: string, enum: [preview, commit] }
     SandboxPreviewInput:
       type: object
+      additionalProperties: false
       required: [command, payload]
       properties:
-        sandboxId: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
-        actorId: { type: string }
+        sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
         command: { type: string, enum: [purchase, listing.create, wallet.deposit, wallet.withdraw] }
-        payload: {}
+        payload: { type: object }
         stateVersion: { type: integer, minimum: 0 }
         expectedStateVersion: { type: integer, minimum: 0 }
-        operationId: { type: string, maxLength: 200 }
-        commandId: { type: string, maxLength: 200 }
-        requestId: { type: string, maxLength: 200 }
-        idempotencyKey: { type: string, maxLength: 200 }
+        operationId: { type: string, minLength: 1, maxLength: 200 }
+        commandId: { type: string, minLength: 1, maxLength: 200 }
+        requestId: { type: string, minLength: 1, maxLength: 200 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+      allOf:
+        - if:
+            properties: { command: { const: purchase } }
+            required: [command]
+          then:
+            properties:
+              payload:
+                type: object
+                additionalProperties: false
+                required: [itemId]
+                properties:
+                  itemId: { type: string, minLength: 1, maxLength: 160, example: demo-000001 }
+                  pricing: { type: object, additionalProperties: true }
+        - if:
+            properties: { command: { const: listing.create } }
+            required: [command]
+          then:
+            properties:
+              payload:
+                type: object
+                required: [title, price, category]
+                properties:
+                  title: { type: string, minLength: 1, maxLength: 200, example: MCP security demo listing }
+                  description: { type: string, maxLength: 1000 }
+                  price: { type: integer, minimum: 300, maximum: 9999999, example: 1800 }
+                  category: { type: array, minItems: 1, items: { type: string }, example: [その他] }
+                  condition: { type: string }
+                  imageRefs: { type: array, maxItems: 20, items: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' } }
+        - if:
+            properties: { command: { enum: [wallet.deposit, wallet.withdraw] } }
+            required: [command]
+          then:
+            properties:
+              payload:
+                type: object
+                additionalProperties: false
+                required: [amount]
+                properties:
+                  amount: { type: integer, minimum: 1, maximum: 1000000, example: 1000 }
     SandboxCommitInput:
       type: object
+      additionalProperties: false
       required: [previewId, idempotencyKey]
       properties:
-        sandboxId: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
-        actorId: { type: string }
-        previewId: { type: string, maxLength: 200 }
+        sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
+        previewId: { type: string, minLength: 1, maxLength: 200 }
         stateVersion: { type: integer, minimum: 0 }
         expectedStateVersion: { type: integer, minimum: 0 }
-        operationId: { type: string, maxLength: 200 }
-        commandId: { type: string, maxLength: 200 }
-        requestId: { type: string, maxLength: 200 }
-        idempotencyKey: { type: string, maxLength: 200 }
+        operationId: { type: string, minLength: 1, maxLength: 200 }
+        commandId: { type: string, minLength: 1, maxLength: 200 }
+        requestId: { type: string, minLength: 1, maxLength: 200 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
     ActionResultPreview:
       allOf:
         - $ref: '#/components/schemas/ActionResult'
@@ -768,9 +835,11 @@ components:
         capabilities: { type: object, additionalProperties: { type: boolean } }
     SandboxSeedInput:
       type: object
+      additionalProperties: false
       properties:
-        id: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
-        scenarioId: { type: string }
+        id: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
+        sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
+        scenarioId: { type: string, enum: [catalog_default, purchase_happy_path, already_sold, multi_inventory, auction_outbid, listing_policy_blocked, zero_search_results, payment_timeout, delivery_delay], default: catalog_default }
         seed: { type: string, maxLength: 160 }
         expectedStateVersion: { type: integer, minimum: 0 }
     SandboxOperationResponse:
@@ -786,25 +855,30 @@ components:
         state: { $ref: '#/components/schemas/SandboxState' }
     SandboxReplayInput:
       type: object
+      additionalProperties: false
       required: [actions]
       properties:
-        id: { type: string, pattern: '^[A-Za-z0-9_-]{1,80}$' }
-        scenarioId: { type: string }
+        id: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
+        sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
+        scenarioId: { type: string, enum: [catalog_default, purchase_happy_path, already_sold, multi_inventory, auction_outbid, listing_policy_blocked, zero_search_results, payment_timeout, delivery_delay], default: catalog_default }
         seed: { type: string, maxLength: 160 }
         baseState: { type: string, maxLength: 8388608 }
-        fromStored: { type: boolean }
+        fromStored:
+          type: boolean
+          description: 保存済みSandboxを現在のreplay基準にする場合はtrue。seed/reset直後の状態へ続けて操作する場合に指定する。
         expectedStateVersion: { type: integer, minimum: 0 }
         actions:
           type: array
+          minItems: 1
           maxItems: 200
           items:
             type: object
+            additionalProperties: false
             required: [command]
             properties:
-              command: { type: string }
-              payload: {}
-              actorId: { type: string }
-              idempotencyKey: { type: string }
+              command: { type: string, enum: [listItem, createListingDraft, updateListingDraft, deleteListingDraft, submitListing, startPurchase, confirmPurchase, purchaseItem, buyItem, placeBid, closeAuction, shipOrder, markDelivered, reviewOrder, cancelOrder, resolveCancellation, reviewListing, requestReturn, confirmReturnReceived, sendTransactionMessage, createSupportTicket, reportTransaction, updateListing, pauseListing, resumeListing, relistItem, updateProfile, getFollowList, getFollowSummary, followUser, unfollowUser, depositWallet, withdrawWallet, switchActor, loadScenario, resetScenario, advanceClock, injectFailure, importState] }
+              payload: { type: object, additionalProperties: true }
+              idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
     SandboxReplayResponse:
       type: object
       required: [ok, operation, sandboxId, stateVersion, results, trace, state]

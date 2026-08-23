@@ -9,7 +9,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : undefined,
+  // WebKit becomes timing-sensitive under the default host parallelism.
+  // Keep local runs aligned with CI so `npm run e2e` is reproducible.
+  workers: 2,
   reporter: [
     ['list'],
     ['html', { outputFolder: 'output/playwright/report', open: 'never' }],
@@ -28,14 +30,19 @@ export default defineConfig({
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER === '1'
     ? undefined
     : {
-        command: 'npm run start -- --host 127.0.0.1 --port 3001',
+        command: 'npm run build && npm run start -- --host 127.0.0.1 --port 3001',
         url: baseURL,
-        reuseExistingServer: true,
+        reuseExistingServer: false,
         timeout: 120_000,
         env: {
           ...process.env,
           FURIMA_LOCAL_FIXTURE_MODE: 'true',
+          FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH: 'false',
+          FURIMA_D1_API_TOKEN: 'playwright-api-token',
+          FURIMA_D1_API_ACTOR_ID: 'buyer_01',
+          FURIMA_D1_CONTROL_TOKEN: 'playwright-control-token',
           FURIMA_STORAGE_MODE: 'memory',
+          VITE_ENABLE_SANDBOX_INSPECTOR: 'true',
         },
         stdout: 'pipe',
         stderr: 'pipe',

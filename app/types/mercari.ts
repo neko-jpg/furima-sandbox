@@ -682,16 +682,10 @@ export interface MercariAgentAPI {
     list: (input?: CatalogListInput, options?: AgentActionOptions) => ActionResult<CatalogListResult>;
     get: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
   };
-  switchActor: (actorId: string, options?: AgentActionOptions) => ActionResult<SandboxActor>;
-  loadScenario: (scenarioId: ScenarioId, options?: AgentActionOptions) => ActionResult<{ scenarioId: ScenarioId; seed: string; now: string }>;
-  advanceClock: (milliseconds: number, options?: AgentActionOptions) => ActionResult<{ now: string; expiredPurchaseIntentIds: string[] }>;
-  injectFailure: (failure: string, options?: AgentActionOptions) => ActionResult<{ pendingFailures: string[] }>;
   getCapabilities: () => { apiVersion: '1'; scenarios: ScenarioId[]; actors: SandboxActor[]; commands: string[]; errorCodes: AgentErrorCode[] };
   getSandboxSnapshot: () => SandboxSnapshot;
   getTransactions: (actorId?: string) => TransactionRecord[];
   getDomainEvents: () => DomainEvent[];
-  exportState: (options?: AgentActionOptions) => ActionResult<string>;
-  importState: (serialized: string, options?: AgentActionOptions) => ActionResult<{ stateVersion: number }>;
   getSnapshot: () => MercariAgentSnapshot;
   getItems: () => MercariItem[];
   getItem: (itemId: string) => ActionResult<MercariItem>;
@@ -708,7 +702,6 @@ export interface MercariAgentAPI {
   getWallet: (options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
   depositWallet: (amount: number, options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
   withdrawWallet: (amount: number, options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
-  resetScenario: (options?: AgentActionOptions & { scenarioId?: ScenarioId }) => ActionResult<undefined>;
   previewAction: (command: PreviewCommand, payload: unknown, options?: AgentActionOptions) => ActionResult<ActionPreview>;
   commitPreview: (previewId: string, options?: AgentActionOptions) => ActionResult<unknown>;
   subscribe: (handler: (event: DomainEvent) => void) => () => void;

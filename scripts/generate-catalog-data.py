@@ -523,7 +523,7 @@ export const CATALOG_VARIANTS: ProductVariant[] = Array.from(new Map(CATALOG_SEE
 export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({{
   id: seed.id,
   sku: seed.sku,
-  title: `${{seed.title}} デモ出品 #${{seed.id.replace('demo-', '')}}`,
+  title: `${{seed.title}} デモ出品 #${{seed.id.replace('demo-', '')}}`.slice(0, 40),
   price: seed.price,
   images: [seed.image],
   isSold: seed.isSold,

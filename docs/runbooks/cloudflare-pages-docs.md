@@ -10,6 +10,8 @@
 - Scalar: 本番では閲覧専用。Test RequestとAgentは無効。
 - Wiki: チーム向けの内部運用資料
 
+Pagesのcanonical hostnameにCloudflare Accessを設定していても、個別のdeployment URL（`*.pages.dev`）やPreview hostnameの公開状態が自動で同じになるとは限りません。監査ではcanonical hostnameと、最新deployment URL・Preview URLの両方を未認証で確認します。個別URLが200を返す場合は、Accessの適用範囲を見直すまで「招待者限定」として案内しません。
+
 ## 初回構築
 
 1. Cloudflare MCPの`cloudflare-api`でPagesプロジェクトの存在を確認する。
@@ -22,7 +24,7 @@
 8. AllowポリシーのIncludeに、チームから受け取った招待メールだけを登録する。全員許可やドメイン全体許可は設定しない。
 9. 未招待アカウントで拒否されることを確認する。
 10. 招待アカウントでトップページと`api/openapi.yaml`を確認する。
-11. Accessと本番ホスト保護の確認後に初回デプロイを行う。
+11. Accessとdeployment/Preview URLの保護を確認してから初回デプロイを行う。
 
 Access許可メール一覧やAPIトークンは、リポジトリ、Wiki、Issue、ログへ保存しません。
 
@@ -40,7 +42,7 @@ Scalarは`output/docs-site/index.html`、`assets/scalar.js`、`assets/scalar.css
 
 ## CIデプロイ
 
-`.github/workflows/docs-cloudflare-pages.yml`は、API関連ファイルが`main`へ入った場合だけ実行されます。
+`.github/workflows/docs-cloudflare-pages.yml`は、`main`へのpushに対する`verify` workflowが成功した後に同じコミットをcheckoutして実行されます。手動実行時もこのworkflow自身のdocs検証を通過してからdeployします。
 
 必要なGitHub Environment Secrets:
 
@@ -64,7 +66,7 @@ npx wrangler pages deployment list --project-name mercari-ui-kit-api-docs
 - OpenAPI YAMLが取得できる
 - Access未認証では拒否される
 - 招待済みユーザーでは閲覧できる
-- Preview URLが公開されていない
+- 最新deployment URLとPreview URLも未認証では拒否される、または公開を許容する非機密ドキュメントとして明示されている
 
 ## 障害対応
 
@@ -77,8 +79,6 @@ npx wrangler pages deployment list --project-name mercari-ui-kit-api-docs
 
 リポジトリ側のAPI正本を巻き戻す場合は、先にPRまたはコミット単位で影響範囲を確認します。Cloudflareリソースの削除は行わず、まず前回deploymentへの復旧を優先します。
 
-## GitHub Pages復旧
+## GitHub Pages
 
-Cloudflare Pagesが利用できない場合だけ、停止したGitHub Pages workflowを復旧します。
-
-復旧後もAPI正本はリポジトリ内の`docs/api/openapi.yaml`とし、GitHub Pages URLをチームへ再案内します。復旧作業が完了したら、Cloudflare側の原因と再移行条件を記録します。
+このリポジトリにはGitHub Pages workflowを置いていません。Cloudflare Pagesが利用できない場合に別ホスティングへ切り替えるときは、公開範囲・Access相当の認証・URLを先に決め、RunbookとWikiを同じ変更で更新します。

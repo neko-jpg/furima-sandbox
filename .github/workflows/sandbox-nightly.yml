@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 22.13.0
           cache: npm
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -31,9 +31,36 @@ jobs:
       - run: npm run qa:matrix
       - run: npm run db:migrate:local
       - run: npm run test:unit
-      - name: npm audit (advisory)
-        continue-on-error: true
-        run: npm audit --omit=dev --audit-level=high
+      - name: npm audit (high and critical)
+        run: npm run security:audit
+
+  security-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: checks
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - run: npm ci
+      - run: python -m pip install --disable-pip-version-check schemathesis==4.25.0 snyk-agent-scan==0.6.0
+      - run: npm run build
+      - name: MCP-Scan
+        run: npm run security:mcp
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - run: npm run security:schemathesis
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sandbox-nightly-security-artifacts
+          path: output/security
+          if-no-files-found: ignore
 
   full-sandbox-verification:
     runs-on: ubuntu-latest
@@ -45,7 +72,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 22.13.0
           cache: npm
       - run: npm ci
       - run: npm run db:migrate:local

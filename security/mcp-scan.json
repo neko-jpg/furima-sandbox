@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "furima-sandbox": {
+      "command": "node",
+      "args": ["--experimental-strip-types", "scripts/mcp-server.ts"],
+      "env": {
+        "FURIMA_MCP_ACTOR_ID": "seller_01"
+      }
+    }
+  }
+}

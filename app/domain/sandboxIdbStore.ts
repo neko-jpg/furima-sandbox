@@ -256,7 +256,9 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
       const actualStateVersion = existingState?.stateVersion ?? 0;
       if (actualStateVersion !== expectedStateVersion) { transaction.abort(); return { ok: false, error: 'CONFLICT', actualStateVersion }; }
       if (!existingPreview) previewStore.add({ ...preview, key: previewKey });
-      stateStore.put({ ...state });
+      // A preview records a command candidate but must not change durable
+      // aggregate metadata such as the HTTP ETag timestamp.
+      stateStore.put({ ...state, updatedAt: existingState?.updatedAt ?? state.updatedAt });
       commandStore.put({ ...command, key: commandKey });
       await transactionResult(transaction);
       return { ok: true, record: { ...command }, durability: 'persistent' };

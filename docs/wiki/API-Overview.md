@@ -2,7 +2,7 @@
 
 ## 正本と公開先
 
-OpenAPIの正本は [`docs/api/openapi.yaml`](https://github.com/neko-jpg/mercari-ui-kit/blob/main/docs/api/openapi.yaml) です。Cloudflare Pagesはこの正本から生成した公開可能な参照で、Browser API・Listing Flow・Error CodesのガイドはPagesと同じMarkdownをWikiへ同期します。
+OpenAPIの正本は [`docs/api/openapi.yaml`](https://github.com/neko-jpg/furima-sandbox/blob/main/docs/api/openapi.yaml) です。Cloudflare Pagesはこの正本から生成した参照で、Browser API・Listing Flow・Error CodesのガイドはPagesと同じMarkdownをWikiへ同期します。
 
 ## 契約の共通項目
 

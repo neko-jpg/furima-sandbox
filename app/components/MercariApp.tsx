@@ -116,7 +116,7 @@ export const MercariApp: React.FC = () => {
 
         <BuyModal />
         <LoginPromptModal />
-        {!isListingFlowOpen && !isBlockingModalOpen && mainTab !== 'sell' && <SandboxInspector />}
+        {!isListingFlowOpen && mainTab !== 'sell' && <SandboxInspector />}
         {!isSandboxReady && (
           <div className="absolute inset-0 z-[100] flex items-center justify-center bg-[var(--shop-bg)]/90 px-6 text-center" role="status" aria-live="polite">
             <p className="rounded-2xl border border-white/10 bg-black/30 px-5 py-4 text-sm text-white/80">Sandbox状態を復元しています…</p>

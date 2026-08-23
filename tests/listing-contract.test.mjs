@@ -88,7 +88,7 @@ test('mobile navigation stays in the viewport and does not sit under the inspect
   assert.match(context, /ITEM_ROUTE_PREFIX/);
   assert.match(context, /window\.history\.back\(\)/);
   assert.match(app, /onClose=\{closeItem\}/);
-  assert.match(app, /!isListingFlowOpen && !isBlockingModalOpen && mainTab !== 'sell' && <SandboxInspector \/>/);
+  assert.match(app, /!isListingFlowOpen && mainTab !== 'sell' && <SandboxInspector \/>/);
   assert.match(detail, /\$\{isDeviceFrame \? 'absolute' : 'fixed'\}/);
   assert.match(detail, /document\.body\.style\.overflow = 'hidden'/);
   assert.match(myPage, /出品した商品/);

@@ -7,6 +7,9 @@ import YAML from 'yaml';
 
 process.env.FURIMA_LOCAL_FIXTURE_MODE = 'true';
 process.env.FURIMA_STORAGE_MODE = 'memory';
+process.env.FURIMA_D1_API_TOKEN = 'api-test-token';
+process.env.FURIMA_D1_API_ACTOR_ID = 'buyer_01';
+process.env.FURIMA_D1_CONTROL_TOKEN = 'control-test-token';
 
 const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
@@ -26,6 +29,7 @@ test('catalog HTTP handlers support pagination, item lookup, and ETag revalidati
   assert.equal(catalog.GET(new Request('http://localhost/api/catalog?limit=41')).status, 400);
   assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=-1')).status, 400);
   assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=not-an-integer')).status, 400);
+  assert.equal(catalog.GET(new Request('http://localhost/api/catalog?offset=')).status, 400);
   const etag = first.headers.get('etag');
   assert.ok(etag);
 
@@ -66,6 +70,10 @@ test('HTTP sandbox routes and OpenAPI stay in one-to-one contract', async () => 
   assert.match(openapiText, /stateVersion/);
   assert.deepEqual(openapi.paths['/api/sandbox/state'].get.security, [{ controlBearerAuth: [] }]);
   assert.deepEqual(openapi.paths['/api/sandbox/state'].put.security, [{ controlBearerAuth: [] }]);
+  assert.deepEqual(openapi.paths['/api/sandbox/reset'].post.security, [{ controlBearerAuth: [] }]);
+  assert.deepEqual(openapi.paths['/api/sandbox/preview'].post.security, [{ bearerAuth: [] }]);
+  assert.equal(openapi.components.schemas.SandboxPreviewInput.properties.actorId, undefined);
+  assert.equal(openapi.components.schemas.SandboxCommitInput.properties.actorId, undefined);
   assert.ok(openapi.components.securitySchemes.controlBearerAuth);
 });
 
@@ -136,23 +144,24 @@ test('HTTP preview/commit/health share the durable command contract', async () =
   ]);
   const resetResponse = await reset.POST(new Request('http://localhost/api/sandbox/reset', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: 'Bearer control-test-token' },
     body: JSON.stringify({ sandboxId: 'http-contract', scenarioId: 'catalog_default', seed: 'http-contract-seed' }),
   }));
   assert.equal(resetResponse.status, 200);
   const previewResponse = await preview.POST(new Request('http://localhost/api/sandbox/preview', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sandboxId: 'http-contract', actorId: 'buyer_01', command: 'wallet.deposit', payload: { amount: 1000 }, idempotencyKey: 'http-preview-1' }),
+    headers: { 'content-type': 'application/json', authorization: 'Bearer api-test-token' },
+    body: JSON.stringify({ sandboxId: 'http-contract', actorId: 'seller_01', command: 'wallet.deposit', payload: { amount: 1000 }, idempotencyKey: 'http-preview-1' }),
   }));
   assert.equal(previewResponse.status, 200);
   const previewResult = await previewResponse.json();
   assert.equal(previewResult.ok, true);
   assert.equal(previewResult.meta.mode, 'preview');
-  const commitBody = { sandboxId: 'http-contract', actorId: 'buyer_01', previewId: previewResult.data.previewId, idempotencyKey: 'http-commit-1' };
+  assert.equal(previewResult.meta.actorId, 'buyer_01');
+  const commitBody = { sandboxId: 'http-contract', actorId: 'seller_01', previewId: previewResult.data.previewId, idempotencyKey: 'http-commit-1' };
   const commitResponse = await commit.POST(new Request('http://localhost/api/sandbox/commit', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: 'Bearer api-test-token' },
     body: JSON.stringify(commitBody),
   }));
   assert.equal(commitResponse.status, 200);
@@ -161,19 +170,25 @@ test('HTTP preview/commit/health share the durable command contract', async () =
   assert.equal(commitResult.meta.mode, 'commit');
   const repeatedResponse = await commit.POST(new Request('http://localhost/api/sandbox/commit', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: 'Bearer api-test-token' },
     body: JSON.stringify(commitBody),
   }));
   assert.equal(repeatedResponse.status, 200);
   assert.deepEqual(await repeatedResponse.json(), commitResult);
-  const healthResponse = await health.GET(new Request('http://localhost/api/sandbox/health?sandboxId=http-contract'));
+  const insufficientFunds = await preview.POST(new Request('http://localhost/api/sandbox/preview', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer api-test-token' },
+    body: JSON.stringify({ sandboxId: 'http-contract', command: 'wallet.withdraw', payload: { amount: 1000000 }, idempotencyKey: 'http-preview-insufficient-funds' }),
+  }));
+  assert.equal(insufficientFunds.status, 409);
+  const healthResponse = await health.GET(new Request('http://localhost/api/sandbox/health?sandboxId=http-contract', { headers: { authorization: 'Bearer api-test-token' } }));
   assert.equal(healthResponse.status, 200);
   const healthResult = await healthResponse.json();
   assert.equal(healthResult.ok, true);
   assert.equal(healthResult.capabilities.idempotency, true);
   const malformed = await preview.POST(new Request('http://localhost/api/sandbox/preview', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: 'Bearer api-test-token' },
     body: '{malformed',
   }));
   assert.equal(malformed.status, 400);
