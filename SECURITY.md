@@ -13,7 +13,7 @@
 
 監査時点では `npm audit --audit-level=high` は0件です。依存更新時は `npm audit --omit=dev` と `npm audit` を再実行し、画像最適化の境界テストも再実行してください。High/Criticalが再発した場合は、修正版の適用またはリスク受容者・再確認日をリリース記録へ登録してから外部公開します。
 
-MCPをデモ経路で使う場合、`npm run security:mcp`のローカルtokenなし実行はMCP server定義のinspectだけです。protected CIのpush/nightlyでは`SNYK_TOKEN`を必須とし、hosted analysisが未実行ならジョブを成功扱いにしません。
+MCPをデモ経路で使う場合、`npm run security:mcp`はMCP server定義のinspectを実行します。push/nightly CIも`MCP_SCAN_MODE=inspect`で動作し、SnykへのHosted Analysisや`SNYK_TOKEN`は使用しません。Hosted Analysisを任意で有効化する場合だけ、秘密管理された`SNYK_TOKEN`と`MCP_SCAN_MODE=hosted`を設定してください。
 
 ## 報告
 

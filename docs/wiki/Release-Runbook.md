@@ -2,7 +2,7 @@
 
 1. 変更対象を確認し、画像Blob・secret・参考assetを公開対象へ混ぜない。
 2. `npm run typecheck`、`npm run lint`、`npm run docs:check`、`npm run qa:matrix`、`npm test`、`npm run security:audit`、`npm run qa:static`、`npm run security:schemathesis`、`npm run e2e:pr`、`npm run load:smoke`を通す。
-   MCPをデモ経路で使う場合は、ローカルのinspectだけで完了扱いにせず、保護CIで`SNYK_TOKEN`を設定したMCP-Scan hosted analysisも成功させる。push/nightly CIはsecret未設定時に停止する。
+   MCPをデモ経路で使う場合は、CIの`MCP_SCAN_MODE=inspect`でMCP定義の検査を成功させる。Snyk Hosted Analysisは任意で、実行する場合だけ秘密管理した`SNYK_TOKEN`と`MCP_SCAN_MODE=hosted`を設定する。
 3. Cloudflare PagesはDirect Uploadで`main`だけへdeployし、`verify` workflow成功後に`docs-cloudflare-pages.yml`が動くこと、Pages側のAccess policyで本番ホストを保護したことを確認してから、Actions実行結果と公開URLを確認する。
 4. Wikiは`docs/wiki`を正本として`npm run docs:wiki:check`後にWikiへ同期する。
 5. 失敗時はCloudflare Pagesの直前成功deploymentへ戻し、必要ならWikiは直前のコミットへrevertする。
