@@ -723,6 +723,8 @@ export class SandboxEngine {
       .map((transaction) => transaction.id));
     return {
       ...snapshot,
+      seed: 'redacted',
+      actors: [clone(actor)],
       currentActor: clone(actor),
       purchaseIntents: snapshot.purchaseIntents.filter((intent) => intent.buyerId === actor.id),
       transactions: snapshot.transactions.filter((transaction) => visibleTransactionIds.has(transaction.id)),
@@ -2138,6 +2140,15 @@ export class SandboxEngine {
     }
     try {
       const candidate = JSON.parse(serialized) as Partial<SandboxEngineState>;
+      const allowedStateKeys = new Set<keyof SandboxEngineState>([
+        'version', 'sandboxId', 'scenarioId', 'seed', 'now', 'stateVersion', 'uiRevision', 'idCounter', 'currentActorId',
+        'actors', 'items', 'purchaseIntents', 'transactions', 'payments', 'shipments', 'bids', 'reviews', 'returns',
+        'messages', 'supportTickets', 'profiles', 'inventoryMovements', 'events', 'notifications', 'wallets', 'follows',
+        'drafts', 'draftOwners', 'draftUpdatedAt', 'pendingFailures',
+      ]);
+      if (Object.keys(candidate).some((key) => !allowedStateKeys.has(key as keyof SandboxEngineState))) {
+        return resultError('INVALID_INPUT', this.state.stateVersion, 'Sandbox stateに未知のフィールドがあります');
+      }
       const migrated = {
         ...candidate,
         sandboxId: candidate.sandboxId ?? this.sandboxId,
@@ -2150,6 +2161,13 @@ export class SandboxEngine {
         draftUpdatedAt: candidate.draftUpdatedAt ?? {},
       };
       const requiredArrays = [migrated.actors, migrated.items, migrated.purchaseIntents, migrated.transactions, migrated.payments, migrated.shipments, migrated.bids, migrated.reviews, migrated.inventoryMovements, migrated.events, migrated.notifications, migrated.wallets, migrated.returns, migrated.messages, migrated.supportTickets, migrated.profiles, migrated.follows];
+      const existingActorIdentity = new Map(this.state.actors.map((actor) => [actor.id, { role: actor.role, authenticated: actor.authenticated }]));
+      const actorIdentityIsStable = Array.isArray(migrated.actors)
+        && migrated.actors.length === existingActorIdentity.size
+        && migrated.actors.every((actor) => {
+          const existing = existingActorIdentity.get(actor?.id);
+          return Boolean(existing && existing.role === actor?.role && existing.authenticated === actor?.authenticated);
+        });
       const valid = migrated.version === '1'
         && migrated.sandboxId === this.sandboxId
         && SCENARIOS.includes(migrated.scenarioId as ScenarioId)
@@ -2160,6 +2178,7 @@ export class SandboxEngine {
         && Number.isInteger(migrated.idCounter) && (migrated.idCounter ?? -1) >= 0
         && typeof migrated.currentActorId === 'string'
         && requiredArrays.every(Array.isArray)
+        && actorIdentityIsStable
         && (migrated.actors ?? []).some((actor) => actor && actor.id === migrated.currentActorId)
         && isRecord(migrated.drafts ?? {})
         && isRecord(migrated.draftOwners ?? {})

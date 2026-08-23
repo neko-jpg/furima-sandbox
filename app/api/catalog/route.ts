@@ -2,6 +2,7 @@ import { CATALOG_ITEMS } from '../../data/catalogData.ts';
 
 const DEFAULT_PAGE_SIZE = 24;
 const MAX_PAGE_SIZE = 40;
+const CATALOG_QUERY_KEYS = new Set(['offset', 'limit', 'q', 'category']);
 
 const normalize = (value: string): string => value.normalize('NFKC').toLocaleLowerCase('ja-JP').trim();
 const hashText = (value: string): string => {
@@ -30,6 +31,9 @@ const CATALOG_INDEX = CATALOG_ITEMS.map((item) => ({
  */
 export function GET(request: Request): Response {
   const url = new URL(request.url);
+  if ([...url.searchParams.keys()].some((key) => !CATALOG_QUERY_KEYS.has(key))) {
+    return Response.json({ ok: false, error: 'INVALID_INPUT', message: '未対応のquery parameterです' }, { status: 400, headers: { 'cache-control': 'no-store' } });
+  }
   const rawLimit = url.searchParams.get('limit');
   const rawOffset = url.searchParams.get('offset');
   const requestedLimit = rawLimit === null ? DEFAULT_PAGE_SIZE : Number(rawLimit);
@@ -57,4 +61,12 @@ export function GET(request: Request): Response {
   const ifNoneMatch = request.headers.get('if-none-match');
   if (ifNoneMatch?.split(',').some((candidate) => candidate.trim() === etag)) return new Response(null, { status: 304, headers });
   return Response.json(page, { headers });
+}
+
+export function TRACE(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'GET', 'cache-control': 'no-store' } });
+}
+
+export function PUT(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'GET', 'cache-control': 'no-store' } });
 }

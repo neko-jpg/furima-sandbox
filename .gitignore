@@ -51,6 +51,7 @@ yarn-error.log*
 
 # local browser / QA artifacts
 /.playwright-cli/
+/.schemathesis/
 /output/
 /output/playwright/
 /test-results/

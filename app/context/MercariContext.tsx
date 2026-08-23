@@ -202,16 +202,6 @@ const createInitialInventoryMovements = (): InventoryMovement[] => INITIAL_CATAL
     at: importedAt,
   }];
 });
-const digestText = (value: string): string => {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-};
-
-
 const stripImagePayloadsForPersistence = (serialized: string): string => {
   if (!serialized.includes('data:image/') && !serialized.includes('blob:')) return serialized;
   const isMediaField = (key: string): boolean => /^(?:images?|avatar|thumbnail|preview|imageData|sourceFile)$/iu.test(key) || /(?:image|avatar|thumbnail|blob)/iu.test(key);
@@ -395,7 +385,6 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const persistTimerRef = useRef<number | null>(null);
   const localPersistedStateVersionRef = useRef<number | null>(null);
   const readyWaitersRef = useRef<Array<{ resolve: (result: ActionResult<{ sandboxId: string; stateVersion: number }>) => void; timeoutId: number }>>([]);
-  const listingDraftsRef = useRef(new Map<string, Partial<MercariItem>>());
   const [initialInventoryMovements] = useState<InventoryMovement[]>(createInitialInventoryMovements);
   const inventoryMovementsRef = useRef<InventoryMovement[]>(initialInventoryMovements);
   const stateRef = useRef<MercariAgentSnapshot | null>(null);
@@ -1390,7 +1379,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       listItem: (item, options) => runAgentAction('listItem', item, options, () => { const result = sandboxEngine.listItem(item, options); if (result.ok) syncFromEngine(); return result; }),
       createListingDraft: (item, options) => runAgentAction('createListingDraft', item, options, () => { const result = sandboxEngine.createListingDraft(item, options); if (result.ok) syncFromEngine(); return result; }),
       updateListingDraft: (draftId, item, options) => runAgentAction('updateListingDraft', { draftId, item }, options, () => { const result = sandboxEngine.updateListingDraft(draftId, item, options); if (result.ok) syncFromEngine(); return result; }),
-      getListingDrafts: (options) => runAgentAction('getListingDrafts', {}, options, () => success(sandboxEngine.getListingDrafts(options?.actorId), sandboxEngine.getStateVersion())),
+      getListingDrafts: (options) => runAgentAction('getListingDrafts', {}, options, () => success(sandboxEngine.getListingDrafts(sandboxEngine.getCurrentActor().id), sandboxEngine.getStateVersion())),
       saveListingDraft: (item: SaveListingDraftInput, options) => runAgentAction('saveListingDraft', item, options, () => {
         if (!item || typeof item !== 'object') return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '出品下書きの形式が不正です');
         const { draftId, ...fields } = item;
@@ -1403,7 +1392,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       startPurchase: (itemId, options) => runAgentAction('startPurchase', { itemId }, options, () => { const result = sandboxEngine.startPurchase(itemId, options); if (result.ok) { setBuyingItemId(itemId); syncFromEngine(); } return result; }),
       confirmPurchase: (purchaseIntentId, options) => runAgentAction('confirmPurchase', { purchaseIntentId }, options, () => { const result = sandboxEngine.confirmPurchase(purchaseIntentId, options); if (result.ok) syncFromEngine(); return result; }),
       placeBid: (itemId, amount, options) => runAgentAction('placeBid', { itemId, amount }, options, () => { const result = sandboxEngine.placeBid(itemId, amount, options); if (result.ok) syncFromEngine(); return result; }),
-      closeAuction: (itemId, options) => runAgentAction('closeAuction', { itemId }, options, () => { const result = sandboxEngine.closeAuction(itemId, SANDBOX_CONTROL_OPTIONS); if (result.ok) syncFromEngine(); return result; }),
+      closeAuction: (itemId, options) => runAgentAction('closeAuction', { itemId }, options, () => { const result = sandboxEngine.closeAuction(itemId, options); if (result.ok) syncFromEngine(); return result; }),
       buyItem: (itemId, options) => runAgentAction('buyItem', { itemId }, options, () => { const result = sandboxEngine.startPurchase(itemId, options); if (result.ok) { setBuyingItemId(itemId); syncFromEngine(); } return result; }),
       shipOrder: (transactionId, options) => runAgentAction('shipOrder', { transactionId }, options, () => { const result = sandboxEngine.shipOrder(transactionId, options); if (result.ok) syncFromEngine(); return result; }),
       markDelivered: (transactionId, options) => runAgentAction('markDelivered', { transactionId }, options, () => { const result = sandboxEngine.markDelivered(transactionId, options); if (result.ok) syncFromEngine(); return result; }),
@@ -1421,7 +1410,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       resumeListing: (itemId, options) => runAgentAction('resumeListing', { itemId }, options, () => { const result = sandboxEngine.resumeListing(itemId, options); if (result.ok) syncFromEngine(); return result; }),
       relistItem: (itemId, options) => runAgentAction('relistItem', { itemId }, options, () => { const result = sandboxEngine.relistItem(itemId, options); if (result.ok) syncFromEngine(); return result; }),
       listOwnListings: (options) => runAgentAction('listOwnListings', {}, options, () => {
-        const actor = sandboxEngine.getSnapshot().actors.find((candidate) => candidate.id === (options?.actorId ?? sandboxEngine.getCurrentActor().id));
+        const actor = sandboxEngine.getCurrentActor();
         if (!actor?.authenticated) return failure('AUTH_REQUIRED', sandboxEngine.getStateVersion());
         if (actor.role !== 'seller' && actor.role !== 'admin' && actor.role !== 'platform') return failure('FORBIDDEN', sandboxEngine.getStateVersion(), '自分の出品一覧を取得できるのはsellerまたは運営です');
         return success(sandboxEngine.getItems().filter((item) => actor.role === 'admin' || actor.role === 'platform' || item.sellerId === actor.id), sandboxEngine.getStateVersion());
@@ -1444,39 +1433,26 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
           return item ? success(item, sandboxEngine.getStateVersion()) : failure('ITEM_NOT_FOUND', sandboxEngine.getStateVersion());
         }),
       },
-      switchActor: (actorId) => runAgentAction('switchActor', { actorId }, SANDBOX_CONTROL_OPTIONS, () => { const result = sandboxEngine.switchActor(actorId, SANDBOX_CONTROL_OPTIONS); if (result.ok) { setActiveActorId(actorId); syncFromEngine(); } return result; }),
-      loadScenario: (scenarioId) => runAgentAction('loadScenario', { scenarioId }, SANDBOX_CONTROL_OPTIONS, () => { const result = sandboxEngine.loadScenario(scenarioId, SANDBOX_CONTROL_OPTIONS); if (result.ok) { setActiveActorId(sandboxEngine.getCurrentActor().id); setMainTab('home'); setHomeTab('recommend'); setCategoryName(null); setIsSearchOpenState(false); setSelectedItemId(null); setBuyingItemId(null); setSearchQuery(''); setSearchHistory([...INITIAL_SEARCH_HISTORY]); setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]); setSavedItemIds([]); setActiveNotificationId(null); syncFromEngine(); } return result; }),
-      advanceClock: (milliseconds) => runAgentAction('advanceClock', { milliseconds }, SANDBOX_CONTROL_OPTIONS, () => { const result = sandboxEngine.advanceClock(milliseconds, SANDBOX_CONTROL_OPTIONS); if (result.ok) syncFromEngine(); return result; }),
-      injectFailure: (failureName) => runAgentAction('injectFailure', { failure: failureName }, SANDBOX_CONTROL_OPTIONS, () => { const result = sandboxEngine.injectFailure(failureName, SANDBOX_CONTROL_OPTIONS); if (result.ok) syncFromEngine(); return result; }),
-      getCapabilities: () => sandboxEngine.getCapabilities(),
+      getCapabilities: () => {
+        const capabilities = sandboxEngine.getCapabilities();
+        const controlCommands = new Set(['switchActor', 'loadScenario', 'advanceClock', 'injectFailure', 'resetScenario', 'exportState', 'importState']);
+        return {
+          ...capabilities,
+          scenarios: [],
+          actors: [sandboxEngine.getCurrentActor()],
+          commands: capabilities.commands.filter((command) => !controlCommands.has(command)),
+        };
+      },
       getSandboxSnapshot: () => sandboxEngine.getScopedSnapshot(),
-      getTransactions: (actorId) => sandboxEngine.getVisibleTransactions(actorId),
+      getTransactions: () => sandboxEngine.getVisibleTransactions(),
       getDomainEvents: () => sandboxEngine.getVisibleDomainEvents(),
-       exportState: () => runAgentAction('exportState', {}, SANDBOX_CONTROL_OPTIONS, () => {
-         const actor = sandboxEngine.getSnapshot().actors.find((candidate) => candidate.id === SANDBOX_CONTROL_PRINCIPAL.actorId);
-         if (!actor || (actor.role !== 'admin' && actor.role !== 'platform')) return failure('FORBIDDEN', sandboxEngine.getStateVersion(), 'Sandbox stateのバックアップはadmin/platformのsandbox-control scopeからのみ実行できます');
-          return success(stripImagePayloadsForPersistence(sandboxEngine.exportState()), sandboxEngine.getStateVersion());
-       }),
-       importState: (serialized) => runAgentAction('importState', {
-         serializedType: typeof serialized,
-         serializedLength: typeof serialized === 'string' ? serialized.length : 0,
-         serializedDigest: typeof serialized === 'string' ? digestText(serialized) : null,
-       }, SANDBOX_CONTROL_OPTIONS, () => { const result = sandboxEngine.importState(serialized, SANDBOX_CONTROL_OPTIONS); if (result.ok) syncFromEngine(); return result; }),
       getSnapshot,
       getItems: () => sandboxEngine.getItems(),
       getItem: (itemId) => { if (typeof itemId !== 'string' || itemId.length > 200) return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '商品IDの形式が不正です'); const item = sandboxEngine.getItem(itemId); return item ? success(item, sandboxEngine.getStateVersion()) : failure('ITEM_NOT_FOUND', sandboxEngine.getStateVersion()); },
       searchItems,
       getState: getSnapshot,
       getActionTrace: () => commandBus.getTrace(),
-       getInventoryMovements: (itemId, options) => {
-         const currentActor = sandboxEngine.getCurrentActor();
-         const isTrustedControl = Boolean(options?.principal && options.principal === SANDBOX_CONTROL_PRINCIPAL);
-         const requestedActorId = isTrustedControl ? options?.targetActorId ?? options?.actorId ?? currentActor.id : currentActor.id;
-         if (requestedActorId !== currentActor.id && !isTrustedControl) return [];
-         const requestedActor = sandboxEngine.getSnapshot().actors.find((actor) => actor.id === requestedActorId);
-         if (isTrustedControl && requestedActor && (requestedActor.role === 'admin' || requestedActor.role === 'platform')) return sandboxEngine.getInventoryMovements(itemId);
-         return sandboxEngine.getVisibleInventoryMovements(requestedActorId, itemId);
-       },
+      getInventoryMovements: (itemId) => sandboxEngine.getVisibleInventoryMovements(sandboxEngine.getCurrentActor().id, itemId),
       getProfile: (actorId) => {
         const viewer = sandboxEngine.getCurrentActor();
         const targetId = actorId ?? viewer.id;
@@ -1493,40 +1469,6 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       withdrawWallet: (amount, options) => runAgentAction('withdrawWallet', { amount }, options, () => { const result = sandboxEngine.withdrawWallet(amount, options); if (result.ok) syncFromEngine(); return result; }),
       previewAction,
       commitPreview,
-      resetScenario: (options) => runAgentAction('resetScenario', {}, SANDBOX_CONTROL_OPTIONS, () => {
-        const scenarioId = (options as AgentActionOptions & { scenarioId?: ScenarioId } | undefined)?.scenarioId ?? 'catalog_default';
-        const result = sandboxEngine.resetScenario({ ...SANDBOX_CONTROL_OPTIONS, scenarioId });
-        if (!result.ok) return result;
-        setActiveActorId(sandboxEngine.getCurrentActor().id);
-        setMainTab('home');
-        setHomeTab('recommend');
-        setCategoryName(null);
-        setIsSearchOpenState(false);
-        setSearchQuery('');
-        setSearchHistory([...INITIAL_SEARCH_HISTORY]);
-        setActiveNotificationId(null);
-        setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]);
-        setSavedItemIds([]);
-        setSelectedItemId(null);
-        setBuyingItemId(null);
-        listingDraftsRef.current.clear();
-        if (typeof window !== 'undefined') {
-          window.localStorage.removeItem(INVENTORY_STORAGE_KEY);
-          window.localStorage.removeItem(PREFERENCES_STORAGE_KEY);
-          window.localStorage.removeItem(scopedStorageKey(INVENTORY_STORAGE_KEY, sandboxEngine.getCurrentActor().id));
-          window.localStorage.removeItem(scopedStorageKey(PREFERENCES_STORAGE_KEY, sandboxEngine.getCurrentActor().id));
-          window.localStorage.removeItem(SANDBOX_STATE_STORAGE_KEY);
-        }
-        commandBus.clear();
-        durableCommandCacheRef.current.clear();
-        localPersistedStateVersionRef.current = null;
-        localPersistChainRef.current = localPersistChainRef.current.then(() => browserSandboxStore.clear(REMOTE_SANDBOX_STATE_ID)).catch(() => undefined);
-        previewCacheRef.current.clear();
-        pendingPreviewRecordsRef.current.clear();
-        previewCounterRef.current = 0;
-        syncFromEngine();
-        return success(undefined, result.stateVersion);
-      }),
       subscribe: (handler) => sandboxEngine.subscribe(handler),
     };
     latestAgentApiRef.current = apiDefinition;

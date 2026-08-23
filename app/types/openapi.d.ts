@@ -46,6 +46,7 @@ export interface paths {
                     };
                     content?: never;
                 };
+                400: components["responses"]["BadRequest"];
             };
         };
         put?: never;
@@ -104,86 +105,9 @@ export interface paths {
             cookie?: never;
         };
         /** Sandbox状態を取得する */
-        get: {
-            parameters: {
-                query?: {
-                    id?: string;
-                };
-                header?: {
-                    "If-None-Match"?: string;
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Sandbox状態 */
-                200: {
-                    headers: {
-                        ETag: components["headers"]["ETag"];
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["SandboxState"];
-                    };
-                };
-                /** @description 変更なし */
-                304: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                401: components["responses"]["Unauthorized"];
-                403: components["responses"]["Forbidden"];
-                404: components["responses"]["NotFound"];
-                503: components["responses"]["Unavailable"];
-            };
-        };
+        get: operations["getSandboxState"];
         /** Sandbox状態を楽観的に更新する */
-        put: {
-            parameters: {
-                query?: {
-                    id?: string;
-                };
-                header?: {
-                    "If-Match-State-Version"?: number;
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SandboxState"];
-                };
-            };
-            responses: {
-                /** @description 保存済み状態 */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            /** @constant */
-                            ok: true;
-                            id: string;
-                            stateVersion: number;
-                        };
-                    };
-                };
-                401: components["responses"]["Unauthorized"];
-                403: components["responses"]["Forbidden"];
-                409: components["responses"]["Conflict"];
-                /** @description 状態が8MiBを超えた */
-                413: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
+        put: operations["putSandboxState"];
         post?: never;
         delete?: never;
         options?: never;
@@ -219,7 +143,9 @@ export interface paths {
                         "application/json": components["schemas"]["SandboxHealth"];
                     };
                 };
+                400: components["responses"]["BadRequest"];
                 401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
                 503: components["responses"]["Unavailable"];
             };
         };
@@ -241,43 +167,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Sandboxコピー上でcommandをシミュレーションする */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SandboxPreviewInput"];
-                };
-            };
-            responses: {
-                /** @description preview結果 */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ActionResultPreview"];
-                    };
-                };
-                400: components["responses"]["BadRequest"];
-                401: components["responses"]["Unauthorized"];
-                403: components["responses"]["Forbidden"];
-                404: components["responses"]["NotFound"];
-                409: components["responses"]["Conflict"];
-                /** @description payloadが8MiBを超えた */
-                413: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                503: components["responses"]["Unavailable"];
-            };
-        };
+        post: operations["previewSandboxAction"];
         delete?: never;
         options?: never;
         head?: never;
@@ -294,36 +184,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** 未使用・未期限切れのpreviewを確定する */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SandboxCommitInput"];
-                };
-            };
-            responses: {
-                /** @description commit結果 */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ActionResult"];
-                    };
-                };
-                400: components["responses"]["BadRequest"];
-                401: components["responses"]["Unauthorized"];
-                403: components["responses"]["Forbidden"];
-                404: components["responses"]["NotFound"];
-                409: components["responses"]["Conflict"];
-                503: components["responses"]["Unavailable"];
-            };
-        };
+        post: operations["commitSandboxPreview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -340,33 +201,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Sandboxをシナリオ初期状態へ戻す */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: {
-                content: {
-                    "application/json": components["schemas"]["SandboxSeedInput"];
-                };
-            };
-            responses: {
-                /** @description リセット済みSandbox */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["SandboxOperationResponse"];
-                    };
-                };
-                400: components["responses"]["BadRequest"];
-                409: components["responses"]["Conflict"];
-                503: components["responses"]["Unavailable"];
-            };
-        };
+        post: operations["resetSandbox"];
         delete?: never;
         options?: never;
         head?: never;
@@ -383,32 +218,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** 決定的なseedとシナリオでSandboxを作成する */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SandboxSeedInput"];
-                };
-            };
-            responses: {
-                /** @description seed済みSandbox */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["SandboxOperationResponse"];
-                    };
-                };
-                400: components["responses"]["BadRequest"];
-                503: components["responses"]["Unavailable"];
-            };
-        };
+        post: operations["seedSandbox"];
         delete?: never;
         options?: never;
         head?: never;
@@ -425,40 +235,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Sandbox command列を決定的に再生する */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SandboxReplayInput"];
-                };
-            };
-            responses: {
-                /** @description 再生後のSandbox */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["SandboxReplayResponse"];
-                    };
-                };
-                400: components["responses"]["BadRequest"];
-                409: components["responses"]["Conflict"];
-                /** @description command列の途中で失敗した */
-                422: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                503: components["responses"]["Unavailable"];
-            };
-        };
+        post: operations["replaySandbox"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1099,21 +876,21 @@ export interface components {
             mode: "preview" | "commit";
         };
         SandboxPreviewInput: {
+            /** @example schemathesis */
             sandboxId?: string;
-            actorId?: string;
             /** @enum {string} */
             command: "purchase" | "listing.create" | "wallet.deposit" | "wallet.withdraw";
-            payload: unknown;
+            payload: Record<string, never>;
             stateVersion?: number;
             expectedStateVersion?: number;
             operationId?: string;
             commandId?: string;
             requestId?: string;
             idempotencyKey?: string;
-        };
+        } & (unknown & unknown & unknown);
         SandboxCommitInput: {
+            /** @example schemathesis */
             sandboxId?: string;
-            actorId?: string;
             previewId: string;
             stateVersion?: number;
             expectedStateVersion?: number;
@@ -1136,8 +913,15 @@ export interface components {
             };
         };
         SandboxSeedInput: {
+            /** @example schemathesis */
             id?: string;
-            scenarioId?: string;
+            /** @example schemathesis */
+            sandboxId?: string;
+            /**
+             * @default catalog_default
+             * @enum {string}
+             */
+            scenarioId: "catalog_default" | "purchase_happy_path" | "already_sold" | "multi_inventory" | "auction_outbid" | "listing_policy_blocked" | "zero_search_results" | "payment_timeout" | "delivery_delay";
             seed?: string;
             expectedStateVersion?: number;
         };
@@ -1153,16 +937,26 @@ export interface components {
             state: components["schemas"]["SandboxState"];
         };
         SandboxReplayInput: {
+            /** @example schemathesis */
             id?: string;
-            scenarioId?: string;
+            /** @example schemathesis */
+            sandboxId?: string;
+            /**
+             * @default catalog_default
+             * @enum {string}
+             */
+            scenarioId: "catalog_default" | "purchase_happy_path" | "already_sold" | "multi_inventory" | "auction_outbid" | "listing_policy_blocked" | "zero_search_results" | "payment_timeout" | "delivery_delay";
             seed?: string;
             baseState?: string;
+            /** @description 保存済みSandboxを現在のreplay基準にする場合はtrue。seed/reset直後の状態へ続けて操作する場合に指定する。 */
             fromStored?: boolean;
             expectedStateVersion?: number;
             actions: {
-                command: string;
-                payload?: unknown;
-                actorId?: string;
+                /** @enum {string} */
+                command: "listItem" | "createListingDraft" | "updateListingDraft" | "deleteListingDraft" | "submitListing" | "startPurchase" | "confirmPurchase" | "purchaseItem" | "buyItem" | "placeBid" | "closeAuction" | "shipOrder" | "markDelivered" | "reviewOrder" | "cancelOrder" | "resolveCancellation" | "reviewListing" | "requestReturn" | "confirmReturnReceived" | "sendTransactionMessage" | "createSupportTicket" | "reportTransaction" | "updateListing" | "pauseListing" | "resumeListing" | "relistItem" | "updateProfile" | "getFollowList" | "getFollowSummary" | "followUser" | "unfollowUser" | "depositWallet" | "withdrawWallet" | "switchActor" | "loadScenario" | "resetScenario" | "advanceClock" | "injectFailure" | "importState";
+                payload?: {
+                    [key: string]: unknown;
+                };
                 idempotencyKey?: string;
             }[];
         };
@@ -1254,4 +1048,268 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export type operations = Record<string, never>;
+export interface operations {
+    getSandboxState: {
+        parameters: {
+            query?: {
+                id?: string;
+            };
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sandbox状態 */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxState"];
+                };
+            };
+            /** @description 変更なし */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    putSandboxState: {
+        parameters: {
+            query?: {
+                id?: string;
+            };
+            header?: {
+                "If-Match-State-Version"?: number;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxState"];
+            };
+        };
+        responses: {
+            /** @description 保存済み状態 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        id: string;
+                        stateVersion: number;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description 状態が8MiBを超えた */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSandboxAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxPreviewInput"];
+            };
+        };
+        responses: {
+            /** @description preview結果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResultPreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description payloadが8MiBを超えた */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    commitSandboxPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxCommitInput"];
+            };
+        };
+        responses: {
+            /** @description commit結果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    resetSandbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SandboxSeedInput"];
+            };
+        };
+        responses: {
+            /** @description リセット済みSandbox */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxOperationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description JSON bodyのContent-Typeが必要 */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    seedSandbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxSeedInput"];
+            };
+        };
+        responses: {
+            /** @description seed済みSandbox */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxOperationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description JSON bodyのContent-Typeが必要 */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    replaySandbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxReplayInput"];
+            };
+        };
+        responses: {
+            /** @description 再生後のSandbox */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxReplayResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description JSON bodyのContent-Typeが必要 */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description command列の途中で失敗した */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: components["responses"]["Unavailable"];
+        };
+    };
+}

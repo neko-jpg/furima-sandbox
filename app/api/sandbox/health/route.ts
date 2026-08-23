@@ -35,3 +35,7 @@ export async function GET(request: Request): Promise<Response> {
     return failure('D1_UNAVAILABLE', 503, { retryable: true });
   }
 }
+
+export function PUT(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'GET', 'cache-control': 'no-store' } });
+}

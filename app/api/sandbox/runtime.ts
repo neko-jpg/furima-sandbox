@@ -7,8 +7,10 @@ import type { AgentActionOptions, ExecutionPrincipal } from '../../types/mercari
 interface RuntimeEnv {
   DB?: unknown;
   FURIMA_D1_API_TOKEN?: string;
+  FURIMA_D1_API_ACTOR_ID?: string;
   FURIMA_D1_CONTROL_TOKEN?: string;
   FURIMA_LOCAL_FIXTURE_MODE?: string;
+  FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH?: string;
   FURIMA_STORAGE_MODE?: string;
   FURIMA_DEPLOYMENT_ENV?: string;
 }
@@ -25,23 +27,19 @@ export const SANDBOX_CONTROL_PRINCIPAL: ExecutionPrincipal = createTrustedPrinci
   scopes: ['sandbox-control', 'operator'],
 });
 export const SANDBOX_CONTROL_OPTIONS = { principal: SANDBOX_CONTROL_PRINCIPAL } as const;
-export const LOCAL_SANDBOX_CONTROL_PRINCIPAL: ExecutionPrincipal = createTrustedPrincipal({
-  subjectId: 'localhost-sandbox-control',
-  actorId: 'platform',
-  roles: ['platform'],
-  scopes: ['sandbox-control', 'operator'],
-});
 
 const rateLimitBuckets = new Map<string, { windowStartedAt: number; count: number }>();
 const memoryStore = new MemorySandboxStateStore();
-const localFixtureRequests = new WeakSet<Request>();
+const requestPrincipals = new WeakMap<Request, ExecutionPrincipal>();
 
 const processRuntimeEnv = (): RuntimeEnv => {
   const environment = typeof process === 'undefined' ? undefined : process.env;
   return {
     FURIMA_D1_API_TOKEN: environment?.FURIMA_D1_API_TOKEN,
+    FURIMA_D1_API_ACTOR_ID: environment?.FURIMA_D1_API_ACTOR_ID,
     FURIMA_D1_CONTROL_TOKEN: environment?.FURIMA_D1_CONTROL_TOKEN,
     FURIMA_LOCAL_FIXTURE_MODE: environment?.FURIMA_LOCAL_FIXTURE_MODE,
+    FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH: environment?.FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH,
     FURIMA_STORAGE_MODE: environment?.FURIMA_STORAGE_MODE,
     FURIMA_DEPLOYMENT_ENV: environment?.FURIMA_DEPLOYMENT_ENV ?? environment?.NODE_ENV,
   };
@@ -51,7 +49,24 @@ const runtimeEnvPromise: Promise<RuntimeEnv | null> = import('cloudflare:workers
   .then((module) => module.env as RuntimeEnv)
   .catch(() => null);
 
-const runtimeEnvForRequest = async (): Promise<RuntimeEnv> => (await runtimeEnvPromise) ?? processRuntimeEnv();
+const runtimeEnvForRequest = async (): Promise<RuntimeEnv> => {
+  const processEnv = processRuntimeEnv();
+  const bindingEnv = await runtimeEnvPromise;
+  if (!bindingEnv) return processEnv;
+  // The local vinext Worker shim may omit variables that are present in
+  // process.env. Merge only defined binding values so an omitted security
+  // switch cannot silently disable the process-level setting.
+  return {
+    ...processEnv,
+    ...Object.fromEntries(Object.entries(bindingEnv).filter(([, value]) => value !== undefined)),
+  } as RuntimeEnv;
+};
+
+// vinext's local Worker shim can expose a snapshot of `cloudflare:workers.env`
+// without newly-added process variables. Keep the local-only auth gate
+// effective in both runtimes; deployed requests still use the binding env.
+const localFixtureAuthRequired = (runtimeEnv: RuntimeEnv): boolean => runtimeEnv.FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH === 'true'
+  || (typeof process !== 'undefined' && process.env.FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH === 'true');
 
 const isLocalFixtureMode = (runtimeEnv: Pick<RuntimeEnv, 'FURIMA_LOCAL_FIXTURE_MODE'>): boolean => runtimeEnv.FURIMA_LOCAL_FIXTURE_MODE === 'true';
 const localFixtureHostnames = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -130,9 +145,10 @@ export const authorizationFailure = async (request: Request, options: { requireC
   } catch {
     return Response.json({ ok: false, error: 'RUNTIME_MISCONFIGURED', details: { retryable: false } }, { status: 503, headers: { 'cache-control': 'no-store' } });
   }
-  if (isLocalFixtureMode(runtimeEnv) && localFixtureHostnames.has(new URL(request.url).hostname)) {
-    localFixtureRequests.add(request);
-    return rateLimitFailure(request, options.requireControl ? 30 : 120);
+  const isLocalFixtureRequest = isLocalFixtureMode(runtimeEnv) && localFixtureHostnames.has(new URL(request.url).hostname);
+  if (isLocalFixtureRequest && !options.requireControl && !localFixtureAuthRequired(runtimeEnv)) {
+    requestPrincipals.set(request, apiPrincipalFor(runtimeEnv));
+    return rateLimitFailure(request, 120);
   }
   const configuredToken = options.requireControl ? runtimeEnv.FURIMA_D1_CONTROL_TOKEN : runtimeEnv.FURIMA_D1_API_TOKEN;
   if (!configuredToken) return Response.json({ ok: false, error: 'AUTH_NOT_CONFIGURED', details: { retryable: false } }, { status: 503, headers: { 'cache-control': 'no-store' } });
@@ -144,7 +160,19 @@ export const authorizationFailure = async (request: Request, options: { requireC
   const length = Math.max(authorization.length, expected.length);
   for (let index = 0; index < length; index += 1) difference |= (authorization.charCodeAt(index) || 0) ^ (expected.charCodeAt(index) || 0);
   if (difference !== 0) return Response.json({ ok: false, error: 'FORBIDDEN', requestId, details: { retryable: false } }, { status: 403, headers: { 'cache-control': 'no-store', 'x-request-id': requestId } });
-  return rateLimitFailure(request, options.requireControl ? 30 : 120);
+  requestPrincipals.set(request, options.requireControl ? SANDBOX_CONTROL_PRINCIPAL : apiPrincipalFor(runtimeEnv));
+  const limit = localFixtureAuthRequired(runtimeEnv) ? 10_000 : options.requireControl ? 30 : 120;
+  return rateLimitFailure(request, limit);
+};
+
+const apiPrincipalFor = (runtimeEnv: Pick<RuntimeEnv, 'FURIMA_D1_API_ACTOR_ID'>): ExecutionPrincipal => {
+  const actorId = runtimeEnv.FURIMA_D1_API_ACTOR_ID === 'seller_01' ? 'seller_01' : 'buyer_01';
+  return createTrustedPrincipal({
+    subjectId: `sandbox-api:${actorId}`,
+    actorId,
+    roles: [actorId === 'seller_01' ? 'seller' : 'buyer'],
+    scopes: ['user'],
+  });
 };
 
 export const failure = (message: string, status: number, details?: unknown): Response => {
@@ -155,6 +183,11 @@ export const failure = (message: string, status: number, details?: unknown): Res
 export const hasJsonContentType = (request: Request): boolean => {
   const contentType = request.headers.get('content-type');
   return Boolean(contentType && /^application\/json(?:\s*;|$)/iu.test(contentType));
+};
+
+export const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean => {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
 };
 
 export const sandboxIdFrom = (request: Request, body?: Record<string, unknown>): string | null => {
@@ -221,6 +254,8 @@ export const readJson = async (request: Request): Promise<Record<string, unknown
 
 export const scenarioFrom = (value: unknown): string => typeof value === 'string' && SANDBOX_SCENARIOS.includes(value as never) ? value : 'catalog_default';
 
+export const isSandboxScenario = (value: unknown): boolean => typeof value === 'string' && SANDBOX_SCENARIOS.includes(value as never);
+
 export const createSeededEngine = (sandboxId: string, scenarioId = 'catalog_default', seed = `${scenarioId}-seed-v1`): SandboxEngine => {
   const engine = new SandboxEngine(CATALOG_ITEMS, { sandboxId, seed, notifications: INITIAL_NOTIFICATIONS });
   if (scenarioId !== 'catalog_default' || seed !== 'catalog_default-seed-v1') {
@@ -254,17 +289,14 @@ export const stateRecordFor = (sandboxId: string, engine: SandboxEngine, updated
 
 export const statePayloadFor = (engine: SandboxEngine): Record<string, unknown> => JSON.parse(engine.exportState()) as Record<string, unknown>;
 
-export const principalForRequest = (request: Request): ExecutionPrincipal | undefined => localFixtureRequests.has(request) ? undefined : SANDBOX_CONTROL_PRINCIPAL;
+export const principalForRequest = (request: Request): ExecutionPrincipal | undefined => requestPrincipals.get(request);
 
-export const controlPrincipalForRequest = (request: Request): ExecutionPrincipal => localFixtureRequests.has(request)
-  ? LOCAL_SANDBOX_CONTROL_PRINCIPAL
-  : SANDBOX_CONTROL_PRINCIPAL;
+export const controlPrincipalForRequest = (request: Request): ExecutionPrincipal => requestPrincipals.get(request) ?? SANDBOX_CONTROL_PRINCIPAL;
 
 export const actionOptionsFor = (input: Record<string, unknown>, actorId?: string, principal?: ExecutionPrincipal): AgentActionOptions => ({
-  // actorId in a remote JSON body is untrusted. A local fixture may retain the
-  // legacy selector for tests and development, while production is bound to
-  // the principal established by authorizationFailure.
-  actorId: principal?.actorId ?? (typeof input.actorId === 'string' ? input.actorId : actorId),
+  // Actor, role, and scope are established by the authenticated adapter. Never
+  // allow an action body to select a different identity or privilege boundary.
+  actorId: principal?.actorId ?? actorId,
   principal,
   idempotencyKey: typeof input.idempotencyKey === 'string' ? input.idempotencyKey : undefined,
   requestId: typeof input.requestId === 'string' ? input.requestId : undefined,
@@ -275,5 +307,7 @@ export const actionOptionsFor = (input: Record<string, unknown>, actorId?: strin
     ? Number(input.expectedStateVersion)
     : Number.isInteger(input.stateVersion) ? Number(input.stateVersion) : undefined,
   sandboxId: typeof input.sandboxId === 'string' ? input.sandboxId : undefined,
-  scope: principal ? 'sandbox-control' : input.scope === 'sandbox-control' || input.scope === 'operator' ? input.scope : 'user',
+  scope: principal?.scopes.includes('sandbox-control')
+    ? 'sandbox-control'
+    : principal?.scopes.includes('operator') ? 'operator' : 'user',
 });

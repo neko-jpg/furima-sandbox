@@ -17,15 +17,37 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - type: bind
-        source: .
-        target: /workspace
       - type: volume
         source: node_modules
         target: /workspace/node_modules
       - type: volume
         source: wrangler_state
         target: /workspace/.wrangler
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /workspace
+          initial_sync: true
+          ignore:
+            - .git/
+            - .next/
+            - .vinext/
+            - .wrangler/
+            - .env*
+            - coverage/
+            - dist/
+            - node_modules/
+            - out/
+            - output/
+            - package-lock.json
+            - package.json
+            - test-results/
+            - docs/reference-assets/
+        - action: rebuild
+          path: package.json
+        - action: rebuild
+          path: package-lock.json
     command:
       - sh
       - -lc
@@ -35,7 +57,7 @@ services:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:3000').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        - "Promise.all(['http://127.0.0.1:3000/', 'http://127.0.0.1:3000/api/sandbox/health'].map((url) => fetch(url))).then((responses) => process.exit(responses.every((response) => response.ok) ? 0 : 1)).catch(() => process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 12

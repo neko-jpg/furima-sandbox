@@ -22,10 +22,16 @@ npm run dev
 
 ### DockerでUI/fixtureを起動する
 
-Docker経路も同じUI/fixture開発を目的にしています。初回または依存関係を更新した後に次を実行します。
+Docker経路も同じUI/fixture開発を目的にしています。通常起動はイメージへソースを含めるため、初回または依存関係・ソースを更新した後に次を実行します。
 
 ~~~powershell
 docker compose up --build
+~~~
+
+編集中のソースを自動同期してHMRを使う場合は、Compose Watchを有効にします（Docker Compose 2.22以降）。
+
+~~~powershell
+docker compose up --build --watch
 ~~~
 
 <http://localhost:3000>を確認し、停止するときは`Ctrl+C`または次を実行します。
@@ -34,7 +40,7 @@ docker compose up --build
 docker compose down
 ~~~
 
-Composeは`FURIMA_LOCAL_FIXTURE_MODE=true`と`FURIMA_STORAGE_MODE=memory`を設定し、依存関係をコンテナ内へ`npm ci`で用意します。HMRのためにソースをbind mountし、`.wrangler`と`node_modules`は名前付きvolumeにします。
+Composeは`FURIMA_LOCAL_FIXTURE_MODE=true`と`FURIMA_STORAGE_MODE=memory`を設定し、依存関係をコンテナ内へ`npm ci`で用意します。通常起動ではイメージ内のソースを使い、`--watch`を付けた場合だけCompose Watchでソースをコンテナへ同期します。`.wrangler`と`node_modules`は名前付きvolumeにします。ホストのbind mountを使わないため、Windowsでも起動時のファイルシステム差異を避けられます。
 
 ## アーキテクチャと実行モード
 
@@ -94,7 +100,8 @@ npm run types:worker
 - 開発者向け手順: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - AIコーディングエージェント向け運用ルール: [`AGENTS.md`](AGENTS.md)
 
-API関連の変更が`main`へ入ると、GitHub Actionsの`.github/workflows/docs-cloudflare-pages.yml`が検証後にCloudflare Pagesへデプロイします。Cloudflare Accessの招待や本番デプロイは、このREADMEのDocker手順とは別の運用です。
+`main`への変更でverify workflowが成功すると、GitHub Actionsの`.github/workflows/docs-cloudflare-pages.yml`が同じコミットを検証してからCloudflare Pagesへデプロイします。Cloudflare Accessの招待や本番デプロイは、このREADMEのDocker手順とは別の運用です。
+個別のPages deployment URL（`*.pages.dev`）がcanonical URLと同じAccess保護になるとは限らないため、未認証確認が済むまでdeployment/Preview URLを共有しません。
 
 ## Agent API
 

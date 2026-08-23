@@ -1,14 +1,14 @@
 import { expect, test } from '@playwright/test';
-import { assertNoPageErrors, installPageGuards, resetSandbox } from './_sandbox.mjs';
+import { assertNoPageErrors, installPageGuards, resetSandbox, setSandboxActor } from './_sandbox.mjs';
 
 test('Browser API preview is read-only and commit is idempotent', async ({ page }) => {
   const errors = await installPageGuards(page);
   await page.goto('/');
   await resetSandbox(page, 'preview');
+  await setSandboxActor(page, 'buyer_01');
   const result = await page.evaluate(() => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
-    api.switchActor('buyer_01', { actorId: 'platform', scope: 'sandbox-control', operationId: 'preview-buyer' });
     const target = api.getItems().find((item) => !item.isSold && item.listingStatus === 'ACTIVE');
     if (!target) return { ok: false, error: 'NO_AVAILABLE_ITEM' };
     const before = api.getSnapshot();
@@ -33,10 +33,10 @@ test('Browser API preview is read-only and commit is idempotent', async ({ page 
 test('stale preview is rejected after the sandbox version changes', async ({ page }) => {
   await page.goto('/');
   await resetSandbox(page, 'preview-stale');
+  await setSandboxActor(page, 'buyer_01');
   const result = await page.evaluate(() => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
-    api.switchActor('buyer_01', { actorId: 'platform', scope: 'sandbox-control', operationId: 'stale-buyer' });
     const target = api.getItems().find((item) => !item.isSold && item.listingStatus === 'ACTIVE');
     if (!target) return { ok: false, error: 'NO_AVAILABLE_ITEM' };
     const preview = api.previewAction('purchase', { itemId: target.id }, { actorId: 'buyer_01', operationId: 'preview-stale-1' });

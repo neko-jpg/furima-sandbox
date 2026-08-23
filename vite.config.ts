@@ -13,7 +13,10 @@ function loadHostingConfig(): { d1?: string; r2?: string } {
     return { d1: "DB" };
   }
   try {
-    return JSON.parse(readFileSync(hostingPath, "utf8")) as { d1?: string; r2?: string };
+    return JSON.parse(readFileSync(hostingPath, "utf8")) as {
+      d1?: string;
+      r2?: string;
+    };
   } catch {
     return { d1: "DB" };
   }
@@ -28,6 +31,11 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  vars: {
+    FURIMA_LOCAL_FIXTURE_MODE: "true",
+    FURIMA_STORAGE_MODE: "memory",
+    FURIMA_DEPLOYMENT_ENV: "development",
+  },
   d1_databases: d1
     ? [
         {
@@ -59,7 +67,10 @@ export default defineConfig(async () => {
 
   return {
     define: {
-      __FURIMA_ENABLE_SANDBOX_INSPECTOR__: JSON.stringify(process.env.NODE_ENV !== "production" || process.env.VITE_ENABLE_SANDBOX_INSPECTOR === "true"),
+      __FURIMA_ENABLE_SANDBOX_INSPECTOR__: JSON.stringify(
+        process.env.NODE_ENV !== "production" ||
+          process.env.VITE_ENABLE_SANDBOX_INSPECTOR === "true",
+      ),
     },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }

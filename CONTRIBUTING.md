@@ -5,7 +5,7 @@
 - Nodeはルートの`.nvmrc`に固定し、npmは`package.json`の`packageManager`に合わせます。依存関係は`npm install`ではなく`npm ci`でlockfileから再現してください。
 - `npm run check:shared`: 固定Nodeと共有用コンテナファイルの最小チェックです。変更前後に実行します。
 - `npm run dev`: 軽量UI開発。ローカルfixtureで起動し、通常の編集/HMRに使います。既定URLは<http://localhost:3000>です。
-- `docker compose up --build`: Node版UI/fixtureを起動します。Dockerは本番Cloudflare Workerと同じruntimeではありません。
+- `docker compose up --build`: Node版UI/fixtureを起動します。編集中のソースを自動同期する場合は`docker compose up --build --watch`を使います。Dockerは本番Cloudflare Workerと同じruntimeではありません。
 - `npm run dev:edge`: WranglerでCloudflare Worker/D1相当を確認します。UI/fixture用Composeとは別経路です。
 - `npm run build`: `dist`と`.next`を削除してからクリーンビルドします。
 
@@ -24,7 +24,7 @@
 7. npm run assets:audit
 8. npm audit --omit=dev
 
-`npm audit`全体では、現行`vinext`が固定する`image-size`のhigh advisoryが残ります。これはビルド時の開発依存で、`npm audit fix --force`はvinextの破壊的な置換を伴うため実行しません。更新時にvinext側の修正版を再確認してください。
+監査時点の`npm audit --audit-level=high`は0件です。依存更新時は同じ監査を再実行し、High/Criticalが出た場合は内容を確認してから対応します。`npm audit fix --force`のような破壊的な置換は、影響を確認せず実行しません。
 
 出品画面を変更した場合は、390x844と1440x900で次も確認します。
 

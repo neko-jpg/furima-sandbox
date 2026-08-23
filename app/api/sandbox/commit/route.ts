@@ -24,7 +24,7 @@ const statusFor = (error: string): number => {
 };
 
 export async function POST(request: Request): Promise<Response> {
-  const authError = await authorizationFailure(request, { requireControl: true });
+  const authError = await authorizationFailure(request);
   if (authError) return authError;
   if (!hasJsonContentType(request)) return actionFailure(request, undefined, 'commit', 'INVALID_INPUT', 415, 0, { message: 'Content-Typeはapplication/jsonで指定してください' });
   const contentLength = Number(request.headers.get('content-length') ?? 0);
@@ -46,4 +46,8 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return actionFailure(request, body, 'commit', 'D1_UNAVAILABLE', 503, 0, { retryable: true });
   }
+}
+
+export function PUT(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'POST', 'cache-control': 'no-store' } });
 }

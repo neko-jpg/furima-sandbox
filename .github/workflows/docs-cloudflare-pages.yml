@@ -1,19 +1,9 @@
 name: docs-cloudflare-pages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'docs/api/**'
-      - 'docs/scalar-entry.js'
-      - 'scripts/build-docs-site.mjs'
-      - 'scripts/validate-docs-public.mjs'
-      - 'scripts/validate-api-docs.mjs'
-      - 'scripts/validate-test-matrix.mjs'
-      - 'app/types/mercari.ts'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/docs-cloudflare-pages.yml'
+  workflow_run:
+    workflows: [verify]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -25,16 +15,19 @@ concurrency:
 
 jobs:
   verify-and-deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
       name: cloudflare-pages
       url: https://mercari-ui-kit-api-docs.pages.dev
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          node-version: 22
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.13.0
           cache: npm
       - run: npm ci
       - run: npm run docs:check

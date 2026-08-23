@@ -12,6 +12,7 @@ const publicRoot = fileURLToPath(new URL("../public/", import.meta.url));
 test("the curated catalog contains 50 fully classified items", () => {
   assert.equal(CATALOG_ITEMS.length, 50);
   for (const item of CATALOG_ITEMS) {
+    assert.ok([...item.title].length <= 40, `${item.id} title must stay within the API contract`);
     assert.ok(item.category.length >= 3, `${item.id} needs a three-level category path`);
     assert.ok(item.productFamilyId, `${item.id} needs a product family`);
     assert.ok(item.variantId, `${item.id} needs a product variant`);

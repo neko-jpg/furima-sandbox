@@ -113,20 +113,20 @@ export class SandboxCommandExecutor {
     this.now = options.now ?? (() => new Date());
   }
 
-  private context(): { sandboxId: string; actorId: string; stateVersion: number } {
+  private context(options?: AgentActionOptions): { sandboxId: string; actorId: string; stateVersion: number } {
     return {
       sandboxId: this.engine.getSandboxId(),
-      actorId: this.engine.getCurrentActor().id,
+      actorId: options?.principal?.actorId ?? options?.actorId ?? this.engine.getCurrentActor().id,
       stateVersion: this.engine.getStateVersion(),
     };
   }
 
   private metadata(command: string, options: AgentActionOptions | undefined, mode: 'preview' | 'commit', stateVersion: number): ActionMetadata {
-    const context = this.context();
+    const context = this.context(options);
     const operationId = options?.operationId ?? options?.idempotencyKey ?? options?.requestId ?? options?.commandId ?? `${context.sandboxId}:${command}:${uniqueId('op')}:${++this.sequence}`;
     return {
       sandboxId: context.sandboxId,
-      actorId: options?.principal?.actorId ?? options?.actorId ?? context.actorId,
+      actorId: context.actorId,
       stateVersion,
       operationId,
       ...(options?.commandId ? { commandId: options.commandId } : {}),
@@ -137,7 +137,7 @@ export class SandboxCommandExecutor {
   }
 
   private validate(command: string, payload: unknown, options: AgentActionOptions | undefined, mode: 'preview' | 'commit'): { metadata: ActionMetadata; payloadHash: string } | ActionResult<never> {
-    const context = this.context();
+    const context = this.context(options);
     const metadata = this.metadata(command, options, mode, context.stateVersion);
     const originalHash = fingerprint({ sandboxId: context.sandboxId, actorId: metadata.actorId, command, mode, payload });
     const compacted = compactImagePayload(payload);
@@ -194,7 +194,7 @@ export class SandboxCommandExecutor {
       const before = this.engine.getStateVersion();
       const working = cloneEngine(this.engine);
       if (!working) return resultWithMeta(failure('INVALID_STATE', before, 'Sandboxの作業コピーを作成できませんでした'), metadata);
-      const bus = new SandboxCommandBus({ getContext: () => ({ sandboxId: working.getSandboxId(), actorId: working.getCurrentActor().id, stateVersion: working.getStateVersion() }) });
+      const bus = new SandboxCommandBus({ getContext: () => ({ sandboxId: working.getSandboxId(), actorId: metadata.actorId, stateVersion: working.getStateVersion() }) });
       const result = bus.execute(command, payload, { ...options, mode }, () => operation(working));
       // Failed commands are observational only at the persistence boundary.
       // Some domain failure paths deliberately consume an injected fault on a
@@ -277,7 +277,11 @@ export class SandboxCommandExecutor {
       };
       const commandResult = resultWithMeta({ ok: true, data: preview, stateVersion: this.engine.getStateVersion() }, metadata);
       const record = this.commandRecord(commandResult, command, payloadHash, previewOptions, metadata, this.engine.getStateVersion(), now);
-      const commandWrite = await this.store.putPreviewAndCommand(storedPreview, record, stateRecordFor(metadata.sandboxId, this.engine, now.toISOString()), this.engine.getStateVersion());
+      // A preview records an immutable command candidate, not a state change.
+      // Preserve the durable state's timestamp as well so an HTTP ETag does
+      // not change merely because a read-only preview was created.
+      const persistedState = await this.store.get(metadata.sandboxId);
+      const commandWrite = await this.store.putPreviewAndCommand(storedPreview, record, stateRecordFor(metadata.sandboxId, this.engine, persistedState?.updatedAt ?? now.toISOString()), this.engine.getStateVersion());
       if (!commandWrite.ok) return resultWithMeta(failure(commandWrite.error === 'UNAVAILABLE' ? 'D1_UNAVAILABLE' : commandWrite.error === 'IDEMPOTENCY_CONFLICT' ? 'IDEMPOTENCY_CONFLICT' : 'STATE_CONFLICT', this.engine.getStateVersion(), 'preview commandを記録できませんでした'), metadata);
       return commandResult;
     } catch (error) {

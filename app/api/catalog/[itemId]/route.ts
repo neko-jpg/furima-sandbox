@@ -30,3 +30,11 @@ export function GET(request: Request): Response {
   if (request.headers.get('if-none-match')?.split(',').some((candidate) => candidate.trim() === etag)) return new Response(null, { status: 304, headers });
   return Response.json(item, { headers });
 }
+
+export function TRACE(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'GET', 'cache-control': 'no-store' } });
+}
+
+export function PUT(): Response {
+  return new Response(null, { status: 405, headers: { allow: 'GET', 'cache-control': 'no-store' } });
+}

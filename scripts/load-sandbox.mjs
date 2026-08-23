@@ -48,6 +48,9 @@ const localFixtureHostnames = new Set([
 ]);
 const baseHostname = new URL(baseUrl).hostname;
 const useLocalFixtureLoadSources = localFixtureHostnames.has(baseHostname);
+const apiToken = process.env.FURIMA_D1_API_TOKEN ?? "load-api-token";
+const controlToken =
+  process.env.FURIMA_D1_CONTROL_TOKEN ?? "load-control-token";
 const runId = `load-${Date.now()}-${randomUUID()}`;
 
 const sleep = (milliseconds) =>
@@ -164,6 +167,7 @@ const requestJson = async (
     // separate client without sending a synthetic identity to remote origins.
     const headers = {
       accept: "application/json",
+      authorization: `Bearer ${apiToken}`,
       ...(useLocalFixtureLoadSources && Number.isInteger(actor?.index)
         ? { "x-forwarded-for": `198.51.100.${(actor.index % 254) + 1}` }
         : {}),
@@ -283,6 +287,10 @@ const startLocalServer = async () => {
       NODE_ENV: "test",
       FURIMA_LOCAL_FIXTURE_MODE: "true",
       FURIMA_STORAGE_MODE: "memory",
+      FURIMA_DEPLOYMENT_ENV: "development",
+      FURIMA_D1_API_TOKEN: apiToken,
+      FURIMA_D1_CONTROL_TOKEN: controlToken,
+      FURIMA_D1_API_ACTOR_ID: "buyer_01",
     },
     detached: process.platform !== "win32",
     stdio: ["ignore", "ignore", "ignore"],
@@ -375,13 +383,11 @@ const setupActor = async (actor) => {
       sandboxId: actor.sandboxId,
       scenarioId: "catalog_default",
       seed: `${runId}-seed-${actor.index}`,
-      actorId: "platform",
-      scope: "sandbox-control",
-      idempotencyKey: `${runId}-reset-${actor.index}`,
     },
     "setup",
     actor,
     false,
+    { authorization: `Bearer ${controlToken}` },
   );
   if (!reset.ok)
     throw new Error(
@@ -449,6 +455,8 @@ const runState = async (actor) => {
     undefined,
     "state",
     actor,
+    true,
+    { authorization: `Bearer ${controlToken}` },
   );
   if (result.ok) checkState(result.body, actor);
   return result;
