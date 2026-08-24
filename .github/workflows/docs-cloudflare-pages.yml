@@ -14,8 +14,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-and-deploy:
+  detect_changes:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') }}
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.paths.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+      - name: Detect API docs deployment changes
+        id: paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base_sha="$(git rev-parse "${HEAD_SHA}^" 2>/dev/null || true)"
+          if [[ -z "$base_sha" ]]; then
+            echo "Unable to resolve the parent commit; enabling the fail-safe deployment path."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$base_sha" "$HEAD_SHA" -- \
+            docs/api \
+            docs/scalar-entry.js \
+            docs/site-entry.js \
+            docs/favicon.svg \
+            scripts/build-docs-site.mjs \
+            package.json \
+            package-lock.json; then
+            echo "No API docs deployment source changed."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "An API docs deployment source changed."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify-and-deploy:
+    needs: detect_changes
+    if: ${{ needs.detect_changes.outputs.deploy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:

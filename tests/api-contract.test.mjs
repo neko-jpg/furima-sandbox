@@ -15,6 +15,26 @@ const root = new URL('../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
 const execFileAsync = promisify(execFile);
 
+test('Cloudflare docs CD deploys only for API docs source changes', async () => {
+  const workflow = await read('.github/workflows/docs-cloudflare-pages.yml');
+
+  assert.match(workflow, /detect_changes:/);
+  assert.match(workflow, /fetch-depth:\s*2/);
+  for (const sourcePath of [
+    'docs/api',
+    'docs/scalar-entry.js',
+    'docs/site-entry.js',
+    'docs/favicon.svg',
+    'scripts/build-docs-site.mjs',
+    'package.json',
+    'package-lock.json',
+  ]) {
+    assert.match(workflow, new RegExp(sourcePath.replaceAll('.', '\\.'), 'u'));
+  }
+  assert.match(workflow, /needs:\s*detect_changes/);
+  assert.match(workflow, /needs\.detect_changes\.outputs\.deploy == 'true'/);
+});
+
 test('catalog HTTP handlers support pagination, item lookup, and ETag revalidation', async () => {
   const catalog = await import(new URL('../app/api/catalog/route.ts', import.meta.url).href);
   const itemRoute = await import(new URL('../app/api/catalog/[itemId]/route.ts', import.meta.url).href);
