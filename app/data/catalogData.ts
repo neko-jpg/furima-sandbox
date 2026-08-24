@@ -51,7 +51,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000001",
     "sku": "FBS-000001",
-    "image": "/images/products/pexels-selected/0001-pexels-1432236.jpg",
+    "image": "/images/products/pexels-selected/0001-pexels-1432236.webp",
     "category": "家電・スマホ",
     "subcategory": "オーディオ",
     "categoryPath": [
@@ -115,7 +115,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000002",
     "sku": "FBS-000002",
-    "image": "/images/products/pexels-selected/0013-pexels-3394656.jpg",
+    "image": "/images/products/pexels-selected/0013-pexels-3394656.webp",
     "category": "家電・スマホ",
     "subcategory": "オーディオ",
     "categoryPath": [
@@ -179,7 +179,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000003",
     "sku": "FBS-000003",
-    "image": "/images/products/pexels-selected/0049-pexels-7772548.jpg",
+    "image": "/images/products/pexels-selected/0049-pexels-7772548.webp",
     "category": "家電・スマホ",
     "subcategory": "オーディオ",
     "categoryPath": [
@@ -243,7 +243,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000004",
     "sku": "FBS-000004",
-    "image": "/images/products/pexels-selected/0008-pexels-7772524.jpg",
+    "image": "/images/products/pexels-selected/0008-pexels-7772524.webp",
     "category": "家電・スマホ",
     "subcategory": "カメラ",
     "categoryPath": [
@@ -306,7 +306,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000005",
     "sku": "FBS-000005",
-    "image": "/images/products/pexels-selected/0048-pexels-8539298.jpg",
+    "image": "/images/products/pexels-selected/0048-pexels-8539298.webp",
     "category": "家電・スマホ",
     "subcategory": "カメラ",
     "categoryPath": [
@@ -371,7 +371,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000006",
     "sku": "FBS-000006",
-    "image": "/images/products/pexels-selected/0100-pexels-37546205.jpg",
+    "image": "/images/products/pexels-selected/0100-pexels-37546205.webp",
     "category": "家電・スマホ",
     "subcategory": "カメラ",
     "categoryPath": [
@@ -435,7 +435,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000007",
     "sku": "FBS-000007",
-    "image": "/images/products/pexels-selected/0014-pexels-3850236.jpg",
+    "image": "/images/products/pexels-selected/0014-pexels-3850236.webp",
     "category": "家電・スマホ",
     "subcategory": "スマートフォン",
     "categoryPath": [
@@ -498,7 +498,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000008",
     "sku": "FBS-000008",
-    "image": "/images/products/pexels-selected/0035-pexels-7068406.jpg",
+    "image": "/images/products/pexels-selected/0035-pexels-7068406.webp",
     "category": "家電・スマホ",
     "subcategory": "スマートフォン",
     "categoryPath": [
@@ -561,7 +561,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000009",
     "sku": "FBS-000009",
-    "image": "/images/products/pexels-selected/0030-pexels-3945679.jpg",
+    "image": "/images/products/pexels-selected/0030-pexels-3945679.webp",
     "category": "家電・スマホ",
     "subcategory": "スマートフォン",
     "categoryPath": [
@@ -627,7 +627,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000010",
     "sku": "FBS-000010",
-    "image": "/images/products/pexels-selected/0052-pexels-3585032.jpg",
+    "image": "/images/products/pexels-selected/0052-pexels-3585032.webp",
     "category": "家電・スマホ",
     "subcategory": "PC・タブレット",
     "categoryPath": [
@@ -698,7 +698,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000011",
     "sku": "FBS-000011",
-    "image": "/images/products/pexels-selected/0074-pexels-265136.jpg",
+    "image": "/images/products/pexels-selected/0074-pexels-265136.webp",
     "category": "家電・スマホ",
     "subcategory": "PC・タブレット",
     "categoryPath": [
@@ -769,7 +769,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000012",
     "sku": "FBS-000012",
-    "image": "/images/products/pexels-selected/0113-pexels-7610532.jpg",
+    "image": "/images/products/pexels-selected/0113-pexels-7610532.webp",
     "category": "家電・スマホ",
     "subcategory": "PC・タブレット",
     "categoryPath": [
@@ -839,7 +839,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000013",
     "sku": "FBS-000013",
-    "image": "/images/products/pexels-selected/0004-pexels-30238385.jpg",
+    "image": "/images/products/pexels-selected/0004-pexels-30238385.webp",
     "category": "家電・スマホ",
     "subcategory": "生活家電",
     "categoryPath": [
@@ -902,7 +902,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000014",
     "sku": "FBS-000014",
-    "image": "/images/products/pexels-selected/0161-pexels-30946801.jpg",
+    "image": "/images/products/pexels-selected/0161-pexels-30946801.webp",
     "category": "家電・スマホ",
     "subcategory": "生活家電",
     "categoryPath": [
@@ -966,7 +966,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000015",
     "sku": "FBS-000015",
-    "image": "/images/products/pexels-selected/0180-pexels-38317221.jpg",
+    "image": "/images/products/pexels-selected/0180-pexels-38317221.webp",
     "category": "家電・スマホ",
     "subcategory": "生活家電",
     "categoryPath": [
@@ -1029,7 +1029,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000016",
     "sku": "FBS-000016",
-    "image": "/images/products/pexels-selected/0312-pexels-30946800.jpg",
+    "image": "/images/products/pexels-selected/0312-pexels-30946800.webp",
     "category": "家電・スマホ",
     "subcategory": "生活家電",
     "categoryPath": [
@@ -1093,7 +1093,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000017",
     "sku": "FBS-000017",
-    "image": "/images/products/pexels-selected/0002-pexels-925709.jpg",
+    "image": "/images/products/pexels-selected/0002-pexels-925709.webp",
     "category": "インテリア・住まい・小物",
     "subcategory": "家具",
     "categoryPath": [
@@ -1157,7 +1157,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000018",
     "sku": "FBS-000018",
-    "image": "/images/products/pexels-selected/0435-pexels-36777527.jpg",
+    "image": "/images/products/pexels-selected/0435-pexels-36777527.webp",
     "category": "インテリア・住まい・小物",
     "subcategory": "家具",
     "categoryPath": [
@@ -1221,7 +1221,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000019",
     "sku": "FBS-000019",
-    "image": "/images/products/pexels-selected/0059-pexels-7796691.jpg",
+    "image": "/images/products/pexels-selected/0059-pexels-7796691.webp",
     "category": "インテリア・住まい・小物",
     "subcategory": "インテリア",
     "categoryPath": [
@@ -1285,7 +1285,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000020",
     "sku": "FBS-000020",
-    "image": "/images/products/pexels-selected/0133-pexels-4498916.jpg",
+    "image": "/images/products/pexels-selected/0133-pexels-4498916.webp",
     "category": "インテリア・住まい・小物",
     "subcategory": "インテリア",
     "categoryPath": [
@@ -1350,7 +1350,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000021",
     "sku": "FBS-000021",
-    "image": "/images/products/pexels-selected/0039-pexels-15626318.jpg",
+    "image": "/images/products/pexels-selected/0039-pexels-15626318.webp",
     "category": "インテリア・住まい・小物",
     "subcategory": "照明",
     "categoryPath": [
@@ -1413,7 +1413,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000022",
     "sku": "FBS-000022",
-    "image": "/images/products/pexels-selected/0050-pexels-34991783.jpg",
+    "image": "/images/products/pexels-selected/0050-pexels-34991783.webp",
     "category": "インテリア・住まい・小物",
     "subcategory": "照明",
     "categoryPath": [
@@ -1476,7 +1476,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000023",
     "sku": "FBS-000023",
-    "image": "/images/products/pexels-selected/0086-pexels-36111405.jpg",
+    "image": "/images/products/pexels-selected/0086-pexels-36111405.webp",
     "category": "キッチン用品",
     "subcategory": "調理器具",
     "categoryPath": [
@@ -1539,7 +1539,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000024",
     "sku": "FBS-000024",
-    "image": "/images/products/pexels-selected/0662-pexels-8286629.jpg",
+    "image": "/images/products/pexels-selected/0662-pexels-8286629.webp",
     "category": "キッチン用品",
     "subcategory": "調理器具",
     "categoryPath": [
@@ -1601,7 +1601,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000025",
     "sku": "FBS-000025",
-    "image": "/images/products/pexels-selected/0663-pexels-15569114.jpg",
+    "image": "/images/products/pexels-selected/0663-pexels-15569114.webp",
     "category": "キッチン用品",
     "subcategory": "調理器具",
     "categoryPath": [
@@ -1663,7 +1663,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000026",
     "sku": "FBS-000026",
-    "image": "/images/products/pexels-selected/0003-pexels-21875758.jpg",
+    "image": "/images/products/pexels-selected/0003-pexels-21875758.webp",
     "category": "ゲーム・おもちゃ・グッズ",
     "subcategory": "ゲーム",
     "categoryPath": [
@@ -1726,7 +1726,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000027",
     "sku": "FBS-000027",
-    "image": "/images/products/pexels-selected/0033-pexels-32713615.jpg",
+    "image": "/images/products/pexels-selected/0033-pexels-32713615.webp",
     "category": "ゲーム・おもちゃ・グッズ",
     "subcategory": "ゲーム",
     "categoryPath": [
@@ -1791,7 +1791,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000028",
     "sku": "FBS-000028",
-    "image": "/images/products/pexels-selected/0121-pexels-14642108.jpg",
+    "image": "/images/products/pexels-selected/0121-pexels-14642108.webp",
     "category": "ゲーム・おもちゃ・グッズ",
     "subcategory": "ゲーム",
     "categoryPath": [
@@ -1856,7 +1856,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000029",
     "sku": "FBS-000029",
-    "image": "/images/products/pexels-selected/0029-pexels-19679301.jpg",
+    "image": "/images/products/pexels-selected/0029-pexels-19679301.webp",
     "category": "ゲーム・おもちゃ・グッズ",
     "subcategory": "おもちゃ",
     "categoryPath": [
@@ -1918,7 +1918,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000030",
     "sku": "FBS-000030",
-    "image": "/images/products/pexels-selected/0665-pexels-6990411.jpg",
+    "image": "/images/products/pexels-selected/0665-pexels-6990411.webp",
     "category": "ゲーム・おもちゃ・グッズ",
     "subcategory": "おもちゃ",
     "categoryPath": [
@@ -1982,7 +1982,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000031",
     "sku": "FBS-000031",
-    "image": "/images/products/pexels-selected/0066-pexels-7154760.jpg",
+    "image": "/images/products/pexels-selected/0066-pexels-7154760.webp",
     "category": "スポーツ・レジャー",
     "subcategory": "スポーツ用品",
     "categoryPath": [
@@ -2045,7 +2045,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000032",
     "sku": "FBS-000032",
-    "image": "/images/products/pexels-selected/0658-pexels-14629572.jpg",
+    "image": "/images/products/pexels-selected/0658-pexels-14629572.webp",
     "category": "スポーツ・レジャー",
     "subcategory": "スポーツ用品",
     "categoryPath": [
@@ -2108,7 +2108,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000033",
     "sku": "FBS-000033",
-    "image": "/images/products/pexels-selected/0009-pexels-27046143.jpg",
+    "image": "/images/products/pexels-selected/0009-pexels-27046143.webp",
     "category": "レディース",
     "subcategory": "バッグ",
     "categoryPath": [
@@ -2172,7 +2172,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000034",
     "sku": "FBS-000034",
-    "image": "/images/products/pexels-selected/0559-pexels-17792786.jpg",
+    "image": "/images/products/pexels-selected/0559-pexels-17792786.webp",
     "category": "レディース",
     "subcategory": "バッグ",
     "categoryPath": [
@@ -2235,7 +2235,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000035",
     "sku": "FBS-000035",
-    "image": "/images/products/pexels-selected/0592-pexels-19895960.jpg",
+    "image": "/images/products/pexels-selected/0592-pexels-19895960.webp",
     "category": "レディース",
     "subcategory": "トップス",
     "categoryPath": [
@@ -2300,7 +2300,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000036",
     "sku": "FBS-000036",
-    "image": "/images/products/pexels-selected/0830-pexels-19034219.jpg",
+    "image": "/images/products/pexels-selected/0830-pexels-19034219.webp",
     "category": "レディース",
     "subcategory": "トップス",
     "categoryPath": [
@@ -2365,7 +2365,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000037",
     "sku": "FBS-000037",
-    "image": "/images/products/pexels-selected/0023-pexels-14703446.jpg",
+    "image": "/images/products/pexels-selected/0023-pexels-14703446.webp",
     "category": "メンズ",
     "subcategory": "靴",
     "categoryPath": [
@@ -2429,7 +2429,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000038",
     "sku": "FBS-000038",
-    "image": "/images/products/pexels-selected/0056-pexels-30707531.jpg",
+    "image": "/images/products/pexels-selected/0056-pexels-30707531.webp",
     "category": "メンズ",
     "subcategory": "靴",
     "categoryPath": [
@@ -2493,7 +2493,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000039",
     "sku": "FBS-000039",
-    "image": "/images/products/pexels-selected/0114-pexels-18972408.jpg",
+    "image": "/images/products/pexels-selected/0114-pexels-18972408.webp",
     "category": "メンズ",
     "subcategory": "靴",
     "categoryPath": [
@@ -2556,7 +2556,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000040",
     "sku": "FBS-000040",
-    "image": "/images/products/pexels-selected/0404-pexels-36743233.jpg",
+    "image": "/images/products/pexels-selected/0404-pexels-36743233.webp",
     "category": "メンズ",
     "subcategory": "トップス",
     "categoryPath": [
@@ -2623,7 +2623,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000041",
     "sku": "FBS-000041",
-    "image": "/images/products/pexels-selected/0477-pexels-3944693.jpg",
+    "image": "/images/products/pexels-selected/0477-pexels-3944693.webp",
     "category": "メンズ",
     "subcategory": "トップス",
     "categoryPath": [
@@ -2690,7 +2690,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000042",
     "sku": "FBS-000042",
-    "image": "/images/products/pexels-selected/0015-pexels-27174554.jpg",
+    "image": "/images/products/pexels-selected/0015-pexels-27174554.webp",
     "category": "ファッション",
     "subcategory": "靴・アクセサリー",
     "categoryPath": [
@@ -2755,7 +2755,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000043",
     "sku": "FBS-000043",
-    "image": "/images/products/pexels-selected/0064-pexels-37008332.jpg",
+    "image": "/images/products/pexels-selected/0064-pexels-37008332.webp",
     "category": "ファッション",
     "subcategory": "靴・アクセサリー",
     "categoryPath": [
@@ -2822,7 +2822,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000044",
     "sku": "FBS-000044",
-    "image": "/images/products/pexels-selected/0011-pexels-31779444.jpg",
+    "image": "/images/products/pexels-selected/0011-pexels-31779444.webp",
     "category": "ホビー",
     "subcategory": "コレクション",
     "categoryPath": [
@@ -2886,7 +2886,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000045",
     "sku": "FBS-000045",
-    "image": "/images/products/pexels-selected/0465-pexels-12361140.jpg",
+    "image": "/images/products/pexels-selected/0465-pexels-12361140.webp",
     "category": "ホビー",
     "subcategory": "コレクション",
     "categoryPath": [
@@ -2950,7 +2950,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000046",
     "sku": "FBS-000046",
-    "image": "/images/products/pexels-selected/0007-pexels-28912830.jpg",
+    "image": "/images/products/pexels-selected/0007-pexels-28912830.webp",
     "category": "本・マンガ",
     "subcategory": "本・雑誌",
     "categoryPath": [
@@ -3016,7 +3016,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000047",
     "sku": "FBS-000047",
-    "image": "/images/products/pexels-selected/0085-pexels-5124971.jpg",
+    "image": "/images/products/pexels-selected/0085-pexels-5124971.webp",
     "category": "本・マンガ",
     "subcategory": "本・雑誌",
     "categoryPath": [
@@ -3082,7 +3082,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000048",
     "sku": "FBS-000048",
-    "image": "/images/products/pexels-selected/0598-pexels-6344228.jpg",
+    "image": "/images/products/pexels-selected/0598-pexels-6344228.webp",
     "category": "本・マンガ",
     "subcategory": "本・雑誌",
     "categoryPath": [
@@ -3148,7 +3148,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000049",
     "sku": "FBS-000049",
-    "image": "/images/products/pexels-selected/0290-pexels-35723203.jpg",
+    "image": "/images/products/pexels-selected/0290-pexels-35723203.webp",
     "category": "ベビー・キッズ",
     "subcategory": "子ども用品",
     "categoryPath": [
@@ -3214,7 +3214,7 @@ const CATALOG_SEEDS: CatalogSeed[] = [
   {
     "id": "demo-000050",
     "sku": "FBS-000050",
-    "image": "/images/products/pexels-selected/0872-pexels-9483507.jpg",
+    "image": "/images/products/pexels-selected/0872-pexels-9483507.webp",
     "category": "ベビー・キッズ",
     "subcategory": "子ども用品",
     "categoryPath": [

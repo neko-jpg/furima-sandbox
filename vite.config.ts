@@ -27,6 +27,7 @@ const { d1 = "DB", r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const devSourcemapsEnabled = process.env.FURIMA_DEV_SOURCEMAPS === "true";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
@@ -55,22 +56,55 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= "false";
   process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
   process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
 
-  // Wrangler snapshots its log path while the Cloudflare plugin is imported.
-  const { cloudflare } = await import("@cloudflare/vite-plugin");
+  // The ordinary dev server uses Vinext's lightweight Node runtime. Loading
+  // Miniflare here adds tens of seconds on Windows and is unnecessary for the
+  // in-memory local fixture. Edge binding work remains available via dev:edge,
+  // while production builds still use the Cloudflare plugin.
+  if (command === "serve") {
+    process.env.FURIMA_LOCAL_FIXTURE_MODE ??= "true";
+    process.env.FURIMA_STORAGE_MODE ??= "memory";
+    process.env.FURIMA_DEPLOYMENT_ENV ??= "development";
+  }
+  const cloudflarePlugin = command === "build"
+    ? (await import("@cloudflare/vite-plugin")).cloudflare({
+        viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        config: localBindingConfig,
+      })
+    : null;
 
   return {
-    define: {
-      __FURIMA_ENABLE_SANDBOX_INSPECTOR__: JSON.stringify(
-        process.env.NODE_ENV !== "production" ||
-          process.env.VITE_ENABLE_SANDBOX_INSPECTOR === "true",
-      ),
+    optimizeDeps: {
+      // Vinext already declares its React runtime dependencies. Avoid scanning
+      // every app route on cold start: that needlessly traverses Worker-only
+      // API modules and makes the first page request compete with the scanner.
+      noDiscovery: true,
+      holdUntilCrawlEnd: false,
+      include: ["lucide-react", "next/image"],
+    },
+    environments: {
+      // Vite 8 generates development sourcemaps separately for all three
+      // Vinext environments. Keep the fast path lean and allow opt-in maps
+      // when a server or hydration stack needs source-level debugging.
+      rsc: {
+        dev: {
+          sourcemap: devSourcemapsEnabled,
+          preTransformRequests: true,
+        },
+      },
+      ssr: {
+        dev: {
+          sourcemap: devSourcemapsEnabled,
+          preTransformRequests: true,
+        },
+      },
+      client: { dev: { sourcemap: devSourcemapsEnabled } },
     },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
@@ -78,10 +112,7 @@ export default defineConfig(async () => {
     plugins: [
       vinext(),
       sites(),
-      cloudflare({
-        viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        config: localBindingConfig,
-      }),
+      cloudflarePlugin,
     ],
   };
 });

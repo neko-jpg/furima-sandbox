@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 API_URL = "https://api.pexels.com/v1/search"
 DEFAULT_TARGET = 200
-DEFAULT_OUTPUT = Path("public/images/products/pexels-candidates")
+DEFAULT_OUTPUT = Path("outputs/pexels-candidates")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CANDIDATE_MANIFEST_FIELDS = frozenset(

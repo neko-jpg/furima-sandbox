@@ -14,6 +14,12 @@ const controlOptions = {
   principal: createTrustedPrincipal({ subjectId: 'security-test-control', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] }),
 };
 
+const buyerOptions = (idempotencyKey) => ({
+  principal: createTrustedPrincipal({ subjectId: `security-test:${idempotencyKey}`, actorId: 'buyer_01', roles: ['buyer'], scopes: ['user'] }),
+  actorId: 'buyer_01',
+  idempotencyKey,
+});
+
 const stateRecord = (engine) => {
   const snapshot = engine.getSnapshot();
   return {
@@ -41,6 +47,17 @@ test('buyer cannot perform seller listing operations', () => {
   assert.equal(engine.getStateVersion(), 0);
 });
 
+test('trusted guest identity reaches domain authentication checks without gaining privileges', () => {
+  const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'security-guest-principal' });
+  const switched = engine.switchActor('guest', controlOptions);
+  assert.equal(switched.ok, true);
+  const guest = createTrustedPrincipal({ subjectId: 'guest-session', actorId: 'guest', roles: ['guest'], scopes: ['user'] });
+  const wallet = engine.getWallet({ principal: guest, actorId: 'guest' });
+  assert.equal(wallet.ok, false);
+  if (!wallet.ok) assert.equal(wallet.error, 'AUTH_REQUIRED');
+  assert.equal(engine.switchActor('seller_01', { principal: guest }).error, 'FORBIDDEN');
+});
+
 test('untrusted agent options cannot reach control operations', () => {
   const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'security-controls' });
   assert.equal(engine.switchActor('seller_01', { actorId: 'buyer_01', scope: 'sandbox-control' }).error, 'FORBIDDEN');
@@ -58,7 +75,7 @@ test('preview leaves live and durable state unchanged', async () => {
   const beforePayload = engine.exportState();
   const beforeVersion = engine.getStateVersion();
   const beforeUpdatedAt = (await store.get('security-preview')).updatedAt;
-  const preview = await executor.preview('wallet.deposit', { amount: 1000 }, { actorId: 'buyer_01', idempotencyKey: 'security-preview-1' }, (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
+  const preview = await executor.preview('wallet.deposit', { amount: 1000 }, buyerOptions('security-preview-1'), (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
   assert.equal(preview.ok, true);
   assert.equal(engine.exportState(), beforePayload);
   assert.equal(engine.getStateVersion(), beforeVersion);
@@ -71,13 +88,72 @@ test('same idempotency key applies a side effect only once', async () => {
   const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'security-idempotency' });
   await store.put(stateRecord(engine));
   const executor = new SandboxCommandExecutor({ engine, store });
-  const options = { actorId: 'buyer_01', idempotencyKey: 'security-deposit-1' };
+  const options = buyerOptions('security-deposit-1');
   const first = await executor.execute('wallet.deposit', { amount: 1000 }, options, (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
   const second = await executor.execute('wallet.deposit', { amount: 1000 }, options, (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
   assert.equal(first.ok, true);
   assert.deepEqual(second, first);
   assert.equal(engine.getSnapshot().wallets.find((wallet) => wallet.actorId === 'buyer_01')?.availableBalance, 201000);
   assert.equal((await store.listCommands('security-idempotency')).filter((command) => command.idempotencyKey === options.idempotencyKey).length, 1);
+});
+
+test('parallel retries with the same idempotency key commit one transition and return one result', async () => {
+  const store = new MemorySandboxStateStore();
+  const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'security-idempotency-parallel' });
+  await store.put(stateRecord(engine));
+  const executor = new SandboxCommandExecutor({ engine, store });
+  const options = buyerOptions('security-deposit-parallel-1');
+  const execute = () => executor.execute('wallet.deposit', { amount: 1000 }, options, (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
+  const [first, second] = await Promise.all([execute(), execute()]);
+
+  assert.equal(first.ok, true);
+  assert.deepEqual(second, first);
+  assert.equal(engine.getSnapshot().wallets.find((wallet) => wallet.actorId === 'buyer_01')?.availableBalance, 201000);
+  assert.equal((await store.get('security-idempotency-parallel')).stateVersion, 1);
+  assert.equal((await store.listCommands('security-idempotency-parallel')).filter((command) => command.idempotencyKey === options.idempotencyKey).length, 1);
+});
+
+test('shared executor rejects actor self-reporting without an adapter principal', async () => {
+  const store = new MemorySandboxStateStore();
+  const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'security-missing-principal' });
+  await store.put(stateRecord(engine));
+  const before = engine.exportState();
+  let operationCalled = false;
+  const executor = new SandboxCommandExecutor({ engine, store });
+  const result = await executor.execute('wallet.deposit', { amount: 1000 }, { actorId: 'buyer_01', idempotencyKey: 'forged-actor' }, (working) => {
+    operationCalled = true;
+    return working.depositWallet(1000, { actorId: 'buyer_01' });
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error, 'FORBIDDEN');
+  assert.equal(operationCalled, false);
+  assert.equal(engine.exportState(), before);
+  assert.equal((await store.listCommands('security-missing-principal')).length, 0);
+});
+
+test('shared executor rejects empty, control-character, and oversized action identifiers before execution', async () => {
+  const store = new MemorySandboxStateStore();
+  const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: 'security-invalid-identifiers' });
+  await store.put(stateRecord(engine));
+  const executor = new SandboxCommandExecutor({ engine, store });
+  let operationCalls = 0;
+  const operation = (working) => {
+    operationCalls += 1;
+    return working.depositWallet(1, { actorId: 'buyer_01' });
+  };
+  const empty = await executor.execute('wallet.deposit', { amount: 1 }, { ...buyerOptions('valid-placeholder'), idempotencyKey: '' }, operation);
+  const controlCharacter = await executor.execute('wallet.deposit', { amount: 1 }, { ...buyerOptions('valid-placeholder'), idempotencyKey: '\r' }, operation);
+  const oversized = await executor.execute('wallet.deposit', { amount: 1 }, { ...buyerOptions('valid-placeholder'), requestId: 'x'.repeat(201) }, operation);
+
+  assert.equal(empty.ok, false);
+  if (!empty.ok) assert.equal(empty.error, 'INVALID_INPUT');
+  assert.equal(controlCharacter.ok, false);
+  if (!controlCharacter.ok) assert.equal(controlCharacter.error, 'INVALID_INPUT');
+  assert.equal(oversized.ok, false);
+  if (!oversized.ok) assert.equal(oversized.error, 'INVALID_INPUT');
+  assert.equal(operationCalls, 0);
+  assert.equal(engine.getStateVersion(), 0);
+  assert.equal((await store.listCommands('security-invalid-identifiers')).length, 0);
 });
 
 test('HTTP replay retry returns the durable result without restoring the base state', async () => {

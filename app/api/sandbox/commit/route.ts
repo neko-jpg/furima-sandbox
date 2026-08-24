@@ -5,6 +5,10 @@ import {
   actionFailure,
   authorizationFailure,
   engineFromRecord,
+  hasOnlyKeys,
+  hasValidActionIdentifiers,
+  hasValidActionVersions,
+  isValidActionIdentifier,
   MAX_SANDBOX_REQUEST_BYTES,
   hasJsonContentType,
   principalForRequest,
@@ -30,7 +34,9 @@ export async function POST(request: Request): Promise<Response> {
   const contentLength = Number(request.headers.get('content-length') ?? 0);
   if (contentLength > MAX_SANDBOX_REQUEST_BYTES) return actionFailure(request, undefined, 'commit', 'PAYLOAD_TOO_LARGE', 413, 0, { maxBytes: MAX_SANDBOX_REQUEST_BYTES });
   const body = await readJson(request);
-  if (!body || typeof body.previewId !== 'string' || !body.previewId.trim()) return actionFailure(request, body ?? undefined, 'commit', 'INVALID_INPUT', 400, 0, { message: 'previewIdが必要です' });
+  if (!body || !isValidActionIdentifier(body.previewId)) return actionFailure(request, body ?? undefined, 'commit', 'INVALID_INPUT', 400, 0, { message: 'previewIdが必要です' });
+  if (!hasOnlyKeys(body, ['sandboxId', 'previewId', 'stateVersion', 'expectedStateVersion', 'operationId', 'commandId', 'requestId', 'idempotencyKey'])) return actionFailure(request, body, 'commit', 'INVALID_INPUT', 400, 0, { message: '未対応のbody fieldです' });
+  if (!hasValidActionIdentifiers(body, true) || !hasValidActionVersions(body)) return actionFailure(request, body, 'commit', 'INVALID_INPUT', 400, 0, { message: 'previewId、idempotencyKey、stateVersionの形式が不正です' });
   const id = sandboxIdFrom(request, body);
   if (!id) return actionFailure(request, body, 'commit', 'INVALID_STATE_ID', 400);
   const store = await storeForRequest();
@@ -41,7 +47,7 @@ export async function POST(request: Request): Promise<Response> {
     const options = actionOptionsFor(body, engine.getCurrentActor().id, principalForRequest(request));
     const actorId = options.actorId ?? engine.getCurrentActor().id;
     const executor = new SandboxCommandExecutor({ engine, store });
-    const result = await executor.commitPreview(body.previewId.trim(), options, (workingEngine, command, payload) => previewOperationFor(command as PreviewCommand, payload, actorId, workingEngine));
+    const result = await executor.commitPreview(body.previewId, options, (workingEngine, command, payload) => previewOperationFor(command as PreviewCommand, payload, actorId, workingEngine));
     return Response.json(result, { status: result.ok ? 200 : statusFor(result.error), headers: { 'cache-control': 'no-store' } });
   } catch {
     return actionFailure(request, body, 'commit', 'D1_UNAVAILABLE', 503, 0, { retryable: true });

@@ -8,9 +8,9 @@ selected folder. The manifest records every keep/reject decision and reason.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -20,9 +20,11 @@ from scipy.fftpack import dct
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROOT = PROJECT_ROOT / "public/images/products"
-RAW_SOURCES = [ROOT / "pexels-candidates", ROOT / "pexels-candidates-1000"]
+RAW_ROOT = PROJECT_ROOT / "outputs"
+RAW_SOURCES = [RAW_ROOT / "pexels-candidates", RAW_ROOT / "pexels-candidates-1000"]
 OUTPUT = ROOT / "pexels-selected"
 REVIEW_OUTPUT = PROJECT_ROOT / "docs/reference-assets/pexels-review"
+SELECTED_WEBP_QUALITY = 75
 
 PUBLIC_MANIFEST_FIELDS = (
     "pexelsId",
@@ -123,13 +125,13 @@ def safe_filename(value: object) -> str:
     return filename
 
 
-def public_manifest_entry(item: dict, filename: str, local_path: str) -> dict:
+def public_manifest_entry(item: dict, filename: str, local_path: str | None) -> dict:
     filename = safe_filename(filename)
     entry: dict = {}
     for field in PUBLIC_MANIFEST_FIELDS:
         if field == "filename":
             entry[field] = filename
-        elif field == "localPath":
+        elif field == "localPath" and local_path is not None:
             entry[field] = local_path
         elif field in item and item[field] is not None:
             entry[field] = item[field]
@@ -152,7 +154,7 @@ def validate_manifest(entries: list[dict], allowed_fields: tuple[str, ...], labe
 
 
 def review_manifest_entry(item: dict) -> dict:
-    entry = public_manifest_entry(item, item["filename"], public_path_for(Path(item["_sourcePath"])))
+    entry = public_manifest_entry(item, item["filename"], None)
     for field in REVIEW_MANIFEST_FIELDS:
         if field in entry or field in {"filename", "localPath"}:
             continue
@@ -270,7 +272,7 @@ def load_items() -> list[dict]:
             source_path = (source / filename).resolve()
             if source_path.parent != source.resolve() or not source_path.is_file():
                 raise RuntimeError(f"Candidate image is missing or outside its source folder: {filename}")
-            candidate = public_manifest_entry(item, filename, public_path_for(source_path))
+            candidate = public_manifest_entry(item, filename, None)
             for field in ("candidateIndex", "query"):
                 if field in item and item[field] is not None:
                     candidate[field] = item[field]
@@ -329,9 +331,6 @@ def main() -> int:
         raise SystemExit("候補manifestが見つかりません")
     OUTPUT.mkdir(parents=True, exist_ok=True)
     REVIEW_OUTPUT.mkdir(parents=True, exist_ok=True)
-    for old_file in OUTPUT.glob("*.jpg"):
-        old_file.unlink()
-
     reviewed: list[dict] = []
     for item in items:
         source_path = Path(item["_sourcePath"])
@@ -358,16 +357,26 @@ def main() -> int:
 
     # Rebuild the selected folder from scratch, but leave raw candidate folders
     # untouched so every rejection remains recoverable.
-    for old_file in OUTPUT.glob("*.jpg"):
-        old_file.unlink()
+    for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+        for old_file in OUTPUT.glob(pattern):
+            old_file.unlink()
     selected_manifest: list[dict] = []
     for index, item in enumerate(kept, start=1):
-        destination = OUTPUT / f"{index:04d}-pexels-{item['pexelsId']}.jpg"
-        shutil.copy2(item["_sourcePath"], destination)
+        destination = OUTPUT / f"{index:04d}-pexels-{item['pexelsId']}.webp"
+        with Image.open(item["_sourcePath"]) as source:
+            source.convert("RGB").save(
+                destination,
+                format="WEBP",
+                quality=SELECTED_WEBP_QUALITY,
+                method=6,
+            )
+        converted_bytes = destination.read_bytes()
         selected_manifest.append({
             **item,
             "selectionIndex": index,
             "filename": destination.name,
+            "sha256": hashlib.sha256(converted_bytes).hexdigest(),
+            "bytes": len(converted_bytes),
             "_selectedPath": str(destination.resolve()),
         })
 
@@ -392,7 +401,7 @@ def main() -> int:
         "rejectedCount": rejected,
         "keptByCategory": {},
         "rejectedReasons": {},
-        "rawSources": [public_path_for(source) for source in RAW_SOURCES],
+        "rawSources": [source.relative_to(PROJECT_ROOT).as_posix() for source in RAW_SOURCES],
         "selectedFolder": public_path_for(OUTPUT),
     }
     for item in kept:

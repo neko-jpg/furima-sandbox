@@ -6,8 +6,11 @@ const outputDirectory = resolve('output/security');
 const configPath = resolve('security/mcp-scan.json');
 const hostedAnalysisRequired = process.env.MCP_SCAN_REQUIRE_HOSTED === 'true'
   || (process.env.CI === 'true' && process.env.GITHUB_EVENT_NAME !== 'pull_request');
-const scanMode = process.env.MCP_SCAN_MODE
-  ?? (hostedAnalysisRequired || process.env.SNYK_TOKEN ? 'hosted' : 'inspect');
+const requestedScanMode = process.env.MCP_SCAN_MODE;
+if (hostedAnalysisRequired && requestedScanMode === 'inspect') {
+  throw new Error('MCP-Scan inspect mode cannot bypass hosted analysis on protected CI events.');
+}
+const scanMode = requestedScanMode ?? (hostedAnalysisRequired || process.env.SNYK_TOKEN ? 'hosted' : 'inspect');
 
 const run = (command, args) => new Promise((resolvePromise, reject) => {
   const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -40,10 +43,13 @@ for (const candidate of candidates) {
 if (!result || !selected) throw new Error('MCP-Scan is not installed. Install `snyk-agent-scan==0.6.0` or provide MCP_SCAN_BIN.');
 if (result.code !== 0) throw new Error(`MCP-Scan inspect failed with exit code ${result.code}${result.signal ? ` (${result.signal})` : ''}`);
 
-const inspection = result.stdout ? JSON.parse(result.stdout) : { ok: false, error: 'EMPTY_SCAN_OUTPUT' };
+const inspection = result.stdout ? JSON.parse(result.stdout) : null;
+if (!inspection || typeof inspection !== 'object' || Object.keys(inspection).length === 0) {
+  throw new Error('MCP-Scan inspect returned empty or invalid analysis output.');
+}
 if (scanMode === 'hosted') {
   if (!process.env.SNYK_TOKEN) {
-    throw new Error('MCP-Scan hosted analysis requires SNYK_TOKEN. Set MCP_SCAN_MODE=inspect to run without hosted analysis.');
+    throw new Error('MCP-Scan hosted analysis requires SNYK_TOKEN. Protected CI events fail closed when it is missing.');
   }
   const analysis = await run(selected.command, [...selected.prefix, configPath, '--json', '--ci', '--dangerously-run-mcp-servers']);
   await writeFile(resolve(outputDirectory, 'mcp-scan.json'), analysis.stdout || JSON.stringify({ ok: false, stderr: analysis.stderr }, null, 2));

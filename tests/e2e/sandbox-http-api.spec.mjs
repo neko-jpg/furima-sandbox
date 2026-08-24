@@ -3,14 +3,14 @@ import { TEST_CONTROL_HEADERS } from './_sandbox.mjs';
 
 test('sandbox reset, seed, replay, and state APIs preserve deterministic contracts', async ({ request }) => {
   const id = `e2e-http-${Date.now()}`;
-  const reset = await request.post('/api/sandbox/reset', { headers: TEST_CONTROL_HEADERS, data: { id, scenarioId: 'catalog_default', seed: 'http-contract-seed-v1' } });
+  const reset = await request.post('/api/sandbox/reset', { headers: TEST_CONTROL_HEADERS, data: { id, scenarioId: 'catalog_default', seed: 'http-contract-seed-v1', idempotencyKey: 'http-reset-1' } });
   expect(reset.status()).toBe(200);
   const resetBody = await reset.json();
   expect(resetBody.ok).toBe(true);
   expect(resetBody.sandboxId).toBe(id);
   expect(resetBody.state.sandboxId).toBe(id);
 
-  const seed = await request.post('/api/sandbox/seed', { headers: TEST_CONTROL_HEADERS, data: { id, scenarioId: 'catalog_default', seed: 'http-contract-seed-v2' } });
+  const seed = await request.post('/api/sandbox/seed', { headers: TEST_CONTROL_HEADERS, data: { id, scenarioId: 'catalog_default', seed: 'http-contract-seed-v2', idempotencyKey: 'http-seed-1' } });
   expect(seed.status()).toBe(200);
   const seedBody = await seed.json();
   expect(seedBody.seed).toBe('http-contract-seed-v2');

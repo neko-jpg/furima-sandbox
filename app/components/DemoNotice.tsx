@@ -14,10 +14,11 @@ export const DemoNoticeBar: React.FC = () => (
 export const DemoNoticeCard: React.FC<{ className?: string }> = ({ className = '' }) => (
   <section className={`demo-notice-card ${className}`} aria-label="ご注意：本サイトについて">
     <ShopImage
-      src="/images/marketing/furima-sandbox-notice.png"
+      src="/images/marketing/furima-sandbox-notice.webp"
       alt="ご注意。本サイトはMercari AI Agent Hackathon for PM提出用のデモ・モックサイトです。株式会社メルカリおよび同社サービスとは一切関係ありません。"
       className="block h-auto w-full"
       loading="eager"
+      sizes="100vw"
     />
   </section>
 );

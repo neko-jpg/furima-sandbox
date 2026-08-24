@@ -18,20 +18,20 @@ test('listing draft, listing lifecycle, purchase, delivery, reviews, and relist 
   const errors = await installPageGuards(page);
   await page.goto('/');
   await resetSandbox(page, 'core-lifecycle');
-  const listing = await page.evaluate((fields) => {
+  const listing = await page.evaluate(async (fields) => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
     const suffix = Date.now().toString(36);
-    const draft = api.createListingDraft(fields, { actorId: 'seller_01', idempotencyKey: `core-draft-${suffix}` });
+    const draft = await api.createListingDraft(fields, { actorId: 'seller_01', idempotencyKey: `core-draft-${suffix}` });
     if (!draft.ok) return draft;
-    const updated = api.updateListingDraft(draft.data.draftId, { ...fields, title: `${fields.title} updated` }, { actorId: 'seller_01', idempotencyKey: `core-draft-update-${suffix}` });
+    const updated = await api.updateListingDraft(draft.data.draftId, { ...fields, title: `${fields.title} updated` }, { actorId: 'seller_01', idempotencyKey: `core-draft-update-${suffix}` });
     const drafts = api.getListingDrafts({ actorId: 'seller_01', idempotencyKey: `core-drafts-${suffix}` });
-    const submitted = api.submitListing(draft.data.draftId, { actorId: 'seller_01', idempotencyKey: `core-submit-${suffix}` });
+    const submitted = await api.submitListing(draft.data.draftId, { actorId: 'seller_01', idempotencyKey: `core-submit-${suffix}` });
     if (!updated.ok || !drafts.ok || !submitted.ok) return { ok: false, draft, updated, drafts, submitted };
     const itemId = submitted.data.itemId;
-    const edited = api.updateListing(itemId, { title: `${fields.title} edited` }, { actorId: 'seller_01', idempotencyKey: `core-edit-${suffix}` });
-    const paused = api.pauseListing(itemId, { actorId: 'seller_01', idempotencyKey: `core-pause-${suffix}` });
-    const resumed = api.resumeListing(itemId, { actorId: 'seller_01', idempotencyKey: `core-resume-${suffix}` });
+    const edited = await api.updateListing(itemId, { title: `${fields.title} edited` }, { actorId: 'seller_01', idempotencyKey: `core-edit-${suffix}` });
+    const paused = await api.pauseListing(itemId, { actorId: 'seller_01', idempotencyKey: `core-pause-${suffix}` });
+    const resumed = await api.resumeListing(itemId, { actorId: 'seller_01', idempotencyKey: `core-resume-${suffix}` });
     if (!edited.ok || !paused.ok || !resumed.ok) return { ok: false, edited, paused, resumed };
     return { ok: true, draft, drafts, submitted, edited, paused, resumed, suffix };
   }, listingFields('lifecycle'));
@@ -42,35 +42,35 @@ test('listing draft, listing lifecycle, purchase, delivery, reviews, and relist 
   const suffix = listing.suffix;
 
   await setSandboxActor(page, 'buyer_01');
-  const purchase = await page.evaluate(({ itemId: targetId, key }) => {
+  const purchase = await page.evaluate(async ({ itemId: targetId, key }) => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
-    const started = api.startPurchase(targetId, { actorId: 'buyer_01', idempotencyKey: `core-start-${key}` });
-    const confirmed = started.ok ? api.confirmPurchase(started.data.purchaseIntentId, { actorId: 'buyer_01', idempotencyKey: `core-confirm-${key}` }) : started;
+    const started = await api.startPurchase(targetId, { actorId: 'buyer_01', idempotencyKey: `core-start-${key}` });
+    const confirmed = started.ok ? await api.confirmPurchase(started.data.purchaseIntentId, { actorId: 'buyer_01', idempotencyKey: `core-confirm-${key}` }) : started;
     return { started, confirmed };
   }, { itemId, key: suffix });
 
   await setSandboxActor(page, 'seller_01');
-  const shipped = await page.evaluate(({ transactionId, key }) => {
+  const shipped = await page.evaluate(async ({ transactionId, key }) => {
     const api = window.__SHOP_API__;
-    return api && transactionId ? api.shipOrder(transactionId, { actorId: 'seller_01', idempotencyKey: `core-ship-${key}` }) : { ok: false, error: 'NO_TRANSACTION' };
+    return api && transactionId ? await api.shipOrder(transactionId, { actorId: 'seller_01', idempotencyKey: `core-ship-${key}` }) : { ok: false, error: 'NO_TRANSACTION' };
   }, { transactionId: purchase.confirmed?.ok ? purchase.confirmed.data.transactionId : null, key: suffix });
 
   await setSandboxActor(page, 'buyer_01');
-  const buyerReview = await page.evaluate(({ transactionId, key }) => {
+  const buyerReview = await page.evaluate(async ({ transactionId, key }) => {
     const api = window.__SHOP_API__;
     if (!api || !transactionId) return { ok: false, error: 'NO_TRANSACTION' };
-    const delivered = api.markDelivered(transactionId, { actorId: 'buyer_01', idempotencyKey: `core-delivered-${key}` });
-    const review = delivered.ok ? api.reviewOrder(transactionId, 5, '受取評価', { actorId: 'buyer_01', idempotencyKey: `core-buyer-review-${key}` }) : delivered;
+    const delivered = await api.markDelivered(transactionId, { actorId: 'buyer_01', idempotencyKey: `core-delivered-${key}` });
+    const review = delivered.ok ? await api.reviewOrder(transactionId, 5, '受取評価', { actorId: 'buyer_01', idempotencyKey: `core-buyer-review-${key}` }) : delivered;
     return { delivered, review };
   }, { transactionId: purchase.confirmed?.ok ? purchase.confirmed.data.transactionId : null, key: suffix });
 
   await setSandboxActor(page, 'seller_01');
-  const sellerCompletion = await page.evaluate(({ itemId: targetId, transactionId, key }) => {
+  const sellerCompletion = await page.evaluate(async ({ itemId: targetId, transactionId, key }) => {
     const api = window.__SHOP_API__;
     if (!api || !transactionId) return { ok: false, error: 'NO_TRANSACTION' };
-    const review = api.reviewOrder(transactionId, 5, 'ありがとうございました', { actorId: 'seller_01', idempotencyKey: `core-seller-review-${key}` });
-    const relisted = review.ok ? api.relistItem(targetId, { actorId: 'seller_01', idempotencyKey: `core-relist-${key}` }) : review;
+    const review = await api.reviewOrder(transactionId, 5, 'ありがとうございました', { actorId: 'seller_01', idempotencyKey: `core-seller-review-${key}` });
+    const relisted = review.ok ? await api.relistItem(targetId, { actorId: 'seller_01', idempotencyKey: `core-relist-${key}` }) : review;
     return { review, relisted, snapshot: api.getSandboxSnapshot() };
   }, { itemId, transactionId: purchase.confirmed?.ok ? purchase.confirmed.data.transactionId : null, key: suffix });
 
@@ -90,35 +90,35 @@ test('auction, payment failure, wallet, profile, and actor isolation are determi
   await resetSandbox(page, 'core-scenarios');
   await loadSandboxScenario(page, 'auction_outbid');
   await setSandboxActor(page, 'buyer_02');
-  const auctionResult = await page.evaluate(() => {
+  const auctionResult = await page.evaluate(async () => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
     const auction = api.getItems().find((item) => item.isAuction);
     if (!auction) return { ok: false, error: 'NO_AUCTION' };
-    const bid = api.placeBid(auction.id, (auction.currentBid ?? auction.price) + 100, { actorId: 'buyer_02', idempotencyKey: 'core-auction-bid' });
+    const bid = await api.placeBid(auction.id, (auction.currentBid ?? auction.price) + 100, { actorId: 'buyer_02', idempotencyKey: 'core-auction-bid' });
     return { auctionId: auction.id, bid };
   });
   await advanceSandboxClock(page, 7 * 60 * 60 * 1000);
-  const auctionAfterClock = await page.evaluate((auctionId) => {
+  const auctionAfterClock = await page.evaluate(async (auctionId) => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
     const advanced = api.getSandboxSnapshot();
-    const closed = api.closeAuction(auctionId);
+    const closed = await api.closeAuction(auctionId);
     return { advanced, item: api.getItems().find((item) => item.id === auctionId), transactions: api.getTransactions(), closed };
   }, auctionResult.auctionId);
 
   await loadSandboxScenario(page, 'payment_timeout');
   await setSandboxActor(page, 'buyer_01');
-  const paymentResult = await page.evaluate(() => {
+  const paymentResult = await page.evaluate(async () => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
     const paymentItem = api.getItems().find((item) => !item.isAuction && !item.isSold && item.listingStatus === 'ACTIVE');
-    const start = paymentItem ? api.startPurchase(paymentItem.id, { actorId: 'buyer_01', idempotencyKey: 'core-payment-start' }) : { ok: false, error: 'NO_ITEM', stateVersion: api.getSandboxSnapshot().stateVersion };
-    const failed = start.ok ? api.confirmPurchase(start.data.purchaseIntentId, { actorId: 'buyer_01', idempotencyKey: 'core-payment-confirm' }) : start;
+    const start = paymentItem ? await api.startPurchase(paymentItem.id, { actorId: 'buyer_01', idempotencyKey: 'core-payment-start' }) : { ok: false, error: 'NO_ITEM', stateVersion: api.getSandboxSnapshot().stateVersion };
+    const failed = start.ok ? await api.confirmPurchase(start.data.purchaseIntentId, { actorId: 'buyer_01', idempotencyKey: 'core-payment-confirm' }) : start;
     const walletBefore = api.getWallet({ actorId: 'buyer_01', idempotencyKey: 'core-wallet-read' });
-    const deposited = api.depositWallet(1000, { actorId: 'buyer_01', idempotencyKey: 'core-wallet-deposit' });
-    const withdrawn = api.withdrawWallet(300, { actorId: 'buyer_01', idempotencyKey: 'core-wallet-withdraw' });
-    const profile = api.updateProfile({ displayName: 'E2E Buyer', bio: 'Sandbox test profile' }, { actorId: 'buyer_01', idempotencyKey: 'core-profile' });
+    const deposited = await api.depositWallet(1000, { actorId: 'buyer_01', idempotencyKey: 'core-wallet-deposit' });
+    const withdrawn = await api.withdrawWallet(300, { actorId: 'buyer_01', idempotencyKey: 'core-wallet-withdraw' });
+    const profile = await api.updateProfile({ displayName: 'E2E Buyer', bio: 'Sandbox test profile' }, { actorId: 'buyer_01', idempotencyKey: 'core-profile' });
     return { start, failed, walletBefore, deposited, withdrawn, profile, snapshot: api.getSandboxSnapshot() };
   });
   await setSandboxActor(page, 'guest');

@@ -5,20 +5,29 @@ import { useMercari } from '../context/MercariContext';
 import { Header } from './Header';
 import { BottomNav } from './BottomNav';
 import { HomeView } from './views/HomeView';
-import { NotificationView } from './views/NotificationView';
-import { ListingView } from './views/ListingView';
-import { MyPageView } from './views/MyPageView';
-import { ItemDetailView } from './views/ItemDetailView';
-import { SearchView } from './views/SearchView';
-import { CategoryView } from './views/CategoryView';
-import { ShopView } from './views/ShopView';
-import { ShopCategoryView, isShopCategoryRoute } from './views/ShopCategoryView';
-import { BrowseDirectoryView, isBrowseDirectoryRoute } from './views/BrowseDirectoryView';
-import { BuyModal } from './modals/BuyModal';
-import { LoginPromptModal } from './modals/LoginPromptModal';
 import { DemoNoticeBar } from './DemoNotice';
 import { DemoGuide } from './DemoGuide';
-import { SandboxInspector } from './SandboxInspector';
+
+const NotificationView = React.lazy(async () => ({ default: (await import('./views/NotificationView')).NotificationView }));
+const ListingView = React.lazy(async () => ({ default: (await import('./views/ListingView')).ListingView }));
+const MyPageView = React.lazy(async () => ({ default: (await import('./views/MyPageView')).MyPageView }));
+const ItemDetailView = React.lazy(async () => ({ default: (await import('./views/ItemDetailView')).ItemDetailView }));
+const SearchView = React.lazy(async () => ({ default: (await import('./views/SearchView')).SearchView }));
+const CategoryView = React.lazy(async () => ({ default: (await import('./views/CategoryView')).CategoryView }));
+const ShopView = React.lazy(async () => ({ default: (await import('./views/ShopView')).ShopView }));
+const ShopCategoryView = React.lazy(async () => ({ default: (await import('./views/ShopCategoryView')).ShopCategoryView }));
+const BrowseDirectoryView = React.lazy(async () => ({ default: (await import('./views/BrowseDirectoryView')).BrowseDirectoryView }));
+const BuyModal = React.lazy(async () => ({ default: (await import('./modals/BuyModal')).BuyModal }));
+const LoginPromptModal = React.lazy(async () => ({ default: (await import('./modals/LoginPromptModal')).LoginPromptModal }));
+
+const isShopCategoryRoute = (name: string | null): boolean => Boolean(name?.startsWith('ショップカテゴリ:'));
+const isBrowseDirectoryRoute = (name: string | null): boolean => name === 'カテゴリー一覧' || name === 'ブランド一覧';
+
+const ViewFallback: React.FC = () => (
+  <div className="flex min-h-48 flex-1 items-center justify-center text-sm text-[var(--shop-muted)]" role="status">
+    画面を読み込んでいます…
+  </div>
+);
 
 export const MercariApp: React.FC = () => {
   const {
@@ -93,7 +102,9 @@ export const MercariApp: React.FC = () => {
 
         {/* Main content becomes the full-screen listing route while the flow is open. */}
         <main aria-hidden={isBackgroundInert ? true : undefined} inert={isBackgroundInert ? true : undefined} className={`relative flex min-h-0 flex-1 flex-col overflow-hidden ${isListingFlowOpen ? 'pt-0' : 'md:pt-10'}`}>
-          {renderCurrentView()}
+          <React.Suspense fallback={<ViewFallback />}>
+            {renderCurrentView()}
+          </React.Suspense>
         </main>
 
         {!isListingFlowOpen && (
@@ -105,18 +116,19 @@ export const MercariApp: React.FC = () => {
 
         {/* Overlays & Modals */}
         {selectedItem && (
-          <ItemDetailView
-            key={selectedItem.id}
-            item={selectedItem}
-            onClose={closeItem}
-          />
+          <React.Suspense fallback={null}>
+            <ItemDetailView
+              key={selectedItem.id}
+              item={selectedItem}
+              onClose={closeItem}
+            />
+          </React.Suspense>
         )}
 
-        {isSearchOpen && !searchQuery.trim() && <SearchView />}
+        {isSearchOpen && !searchQuery.trim() && <React.Suspense fallback={null}><SearchView /></React.Suspense>}
 
-        <BuyModal />
-        <LoginPromptModal />
-        {!isListingFlowOpen && mainTab !== 'sell' && <SandboxInspector />}
+        {buyingItemId && <React.Suspense fallback={null}><BuyModal /></React.Suspense>}
+        {isLoginPromptOpen && <React.Suspense fallback={null}><LoginPromptModal /></React.Suspense>}
         {!isSandboxReady && (
           <div className="absolute inset-0 z-[100] flex items-center justify-center bg-[var(--shop-bg)]/90 px-6 text-center" role="status" aria-live="polite">
             <p className="rounded-2xl border border-white/10 bg-black/30 px-5 py-4 text-sm text-white/80">Sandbox状態を復元しています…</p>

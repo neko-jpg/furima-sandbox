@@ -24,7 +24,7 @@ test("Worker boundary rejects non-allowlisted image paths before optimization", 
 
 test("Worker image helpers enforce same-origin asset and parser boundaries", async () => {
   const security = await import(new URL("../worker/image-security.ts", import.meta.url).href);
-  assert.equal(security.isAllowedImageSourcePath('/images/products/pexels-selected/0001-pexels-1432236.jpg'), true);
+  assert.equal(security.isAllowedImageSourcePath('/images/products/pexels-selected/0001-pexels-1432236.webp'), true);
   assert.equal(security.isAllowedImageSourcePath('/images/products/../secrets.json'), false);
   assert.equal(security.isAllowedImageSourcePath('https://example.invalid/image.jpg'), false);
   assert.equal(security.isAllowedImageSourcePath('/images/products/pexels-selected/0001.jpg?raw=1'), false);

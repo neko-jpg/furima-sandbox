@@ -39,7 +39,7 @@ const waitForServer = async (server) => {
   throw new Error('Timed out waiting for the Schemathesis target server');
 };
 
-const schemathesisArguments = ({ token, include, exclude, excludeOperationId, excludeChecks, suppressHealthCheck, mode = 'all', reportPath }) => [
+const schemathesisArguments = ({ token, include, exclude, excludeOperationId, excludeChecks, mode = 'all', phases, reportPath }) => [
   'run',
   'docs/api/openapi.yaml',
   '--url', baseUrl,
@@ -48,10 +48,9 @@ const schemathesisArguments = ({ token, include, exclude, excludeOperationId, ex
   ...(exclude ? ['--exclude-path-regex', exclude] : []),
   ...(excludeOperationId ? ['--exclude-operation-id', excludeOperationId] : []),
   '--mode', mode,
-  '--phases', include ? 'examples,coverage,fuzzing' : 'examples,coverage,fuzzing,stateful',
+  '--phases', phases ?? (include ? 'examples,coverage,fuzzing' : 'examples,coverage,fuzzing,stateful'),
   '--max-examples', '10',
   '--generation-deterministic',
-  ...(suppressHealthCheck ? ['--suppress-health-check', suppressHealthCheck] : []),
   // Schemathesis v4's ignored_auth check currently reuses the global -H
   // header for generated cases. The same auth contract is asserted below
   // with explicit missing/invalid-token requests.
@@ -172,9 +171,115 @@ try {
   const seedResponse = await fetch(`${baseUrl}/api/sandbox/seed`, {
     method: 'POST',
     headers: { authorization: `Bearer ${controlToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ sandboxId: 'schemathesis', scenarioId: 'catalog_default', seed: 'schemathesis-seed-v1' }),
+    body: JSON.stringify({ sandboxId: 'schemathesis', scenarioId: 'catalog_default', seed: 'schemathesis-seed-v1', idempotencyKey: 'schemathesis-seed-1' }),
   });
   if (!seedResponse.ok) throw new Error(`Schemathesis seed failed: ${seedResponse.status} ${await seedResponse.text()}`);
+  const seeded = await seedResponse.json();
+  const seededWallet = seeded.state?.wallets?.find((wallet) => wallet.actorId === 'buyer_01');
+  if (!seededWallet || typeof seededWallet.availableBalance !== 'number') throw new Error('Schemathesis seed did not return the buyer wallet');
+
+  const resetId = 'schemathesis-reset';
+  const resetResponse = await fetch(`${baseUrl}/api/sandbox/reset`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${controlToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ sandboxId: resetId, scenarioId: 'catalog_default', seed: 'schemathesis-reset-seed-v1', idempotencyKey: 'schemathesis-reset-1' }),
+  });
+  const resetResult = await resetResponse.json();
+  if (!resetResponse.ok || !resetResult.ok || resetResult.operation !== 'reset' || resetResult.state?.sandboxId !== resetId) {
+    throw new Error(`Schemathesis reset smoke failed: ${resetResponse.status}`);
+  }
+
+  const replayId = 'schemathesis-replay';
+  const replayInput = {
+    sandboxId: replayId,
+    scenarioId: 'catalog_default',
+    seed: 'schemathesis-replay-seed-v1',
+    actions: [{ command: 'depositWallet', payload: { amount: 1 }, idempotencyKey: 'schemathesis-replay-deposit-1' }],
+  };
+  const replayResponse = await fetch(`${baseUrl}/api/sandbox/replay`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${controlToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify(replayInput),
+  });
+  const replayResult = await replayResponse.json();
+  const replayActionResult = replayResult.results?.[0];
+  const replayWallet = replayResult.state?.wallets?.find((wallet) => wallet.actorId === replayActionResult?.data?.actorId);
+  if (!replayResponse.ok || !replayResult.ok || replayResult.operation !== 'replay' || !replayActionResult?.ok || replayWallet?.availableBalance !== replayActionResult.data?.availableBalance) {
+    throw new Error(`Schemathesis replay smoke failed: ${replayResponse.status}`);
+  }
+  const replayRetryResponse = await fetch(`${baseUrl}/api/sandbox/replay`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${controlToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify(replayInput),
+  });
+  const replayRetryResult = await replayRetryResponse.json();
+  if (!replayRetryResponse.ok || JSON.stringify(replayRetryResult) !== JSON.stringify(replayResult)) {
+    throw new Error(`Schemathesis replay retry was not idempotent: ${replayRetryResponse.status}`);
+  }
+
+  // Exercise the cross-request link explicitly. Generated commit cases cannot
+  // guess a live previewId, so a green fuzz run alone does not prove that the
+  // persistence-before-publish path works end to end.
+  const previewResponse = await fetch(`${baseUrl}/api/sandbox/preview`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      sandboxId: 'schemathesis',
+      command: 'wallet.deposit',
+      payload: { amount: 1 },
+      expectedStateVersion: seeded.stateVersion,
+      idempotencyKey: 'schemathesis-linked-preview-1',
+    }),
+  });
+  const previewResult = await previewResponse.json();
+  if (!previewResponse.ok || !previewResult.ok || typeof previewResult.data?.previewId !== 'string') {
+    throw new Error(`Schemathesis linked preview failed: ${previewResponse.status}`);
+  }
+  const commitInput = {
+    sandboxId: 'schemathesis',
+    previewId: previewResult.data.previewId,
+    expectedStateVersion: previewResult.stateVersion,
+    idempotencyKey: 'schemathesis-linked-commit-1',
+  };
+  const commitResponse = await fetch(`${baseUrl}/api/sandbox/commit`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify(commitInput),
+  });
+  const commitResult = await commitResponse.json();
+  if (!commitResponse.ok || !commitResult.ok || commitResult.stateVersion !== seeded.stateVersion + 1) {
+    throw new Error(`Schemathesis linked commit failed: ${commitResponse.status}`);
+  }
+  const retryResponse = await fetch(`${baseUrl}/api/sandbox/commit`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify(commitInput),
+  });
+  const retryResult = await retryResponse.json();
+  if (!retryResponse.ok || JSON.stringify(retryResult) !== JSON.stringify(commitResult)) {
+    throw new Error(`Schemathesis linked commit retry was not idempotent: ${retryResponse.status}`);
+  }
+  const persistedResponse = await fetch(`${baseUrl}/api/sandbox/state?id=schemathesis`, {
+    headers: { authorization: `Bearer ${controlToken}` },
+  });
+  const persisted = await persistedResponse.json();
+  const persistedWallet = persisted.wallets?.find((wallet) => wallet.actorId === 'buyer_01');
+  if (!persistedResponse.ok || persisted.stateVersion !== commitResult.stateVersion || persistedWallet?.availableBalance !== seededWallet.availableBalance + 1) {
+    throw new Error(`Schemathesis linked commit was not durable: ${persistedResponse.status}`);
+  }
+  const statePutResponse = await fetch(`${baseUrl}/api/sandbox/state?id=schemathesis`, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${controlToken}`,
+      'content-type': 'application/json',
+      'if-match-state-version': String(persisted.stateVersion),
+    },
+    body: JSON.stringify(persisted),
+  });
+  const statePutResult = await statePutResponse.json();
+  if (!statePutResponse.ok || !statePutResult.ok || statePutResult.sandboxId !== 'schemathesis' || statePutResult.stateVersion !== persisted.stateVersion) {
+    throw new Error(`Schemathesis state PUT smoke failed: ${statePutResponse.status}`);
+  }
   const unauthenticatedHealthAfterSeed = await fetch(`${baseUrl}/api/sandbox/health?sandboxId=schemathesis`);
   if (unauthenticatedHealthAfterSeed.status !== 401) throw new Error(`Schemathesis target lost auth after seed: ${unauthenticatedHealthAfterSeed.status}`);
   const protectedRequests = [
@@ -182,8 +287,8 @@ try {
     ['POST', '/api/sandbox/preview', { command: 'wallet.deposit', payload: { amount: 1000 }, idempotencyKey: 'auth-smoke-preview' }],
     ['POST', '/api/sandbox/commit', { previewId: 'missing-preview', idempotencyKey: 'auth-smoke-commit' }],
     ['GET', '/api/sandbox/state?id=schemathesis'],
-    ['POST', '/api/sandbox/reset', { id: 'schemathesis' }],
-    ['POST', '/api/sandbox/seed', { id: 'schemathesis', scenarioId: 'catalog_default', seed: 'auth-smoke-seed' }],
+    ['POST', '/api/sandbox/reset', { id: 'schemathesis', idempotencyKey: 'auth-smoke-reset' }],
+    ['POST', '/api/sandbox/seed', { id: 'schemathesis', scenarioId: 'catalog_default', seed: 'auth-smoke-seed', idempotencyKey: 'auth-smoke-seed' }],
     ['POST', '/api/sandbox/replay', { id: 'schemathesis', actions: [{ command: 'depositWallet', idempotencyKey: 'auth-smoke-replay', payload: { amount: 1 } }] }],
   ];
   for (const [method, path, body] of protectedRequests) {
@@ -199,25 +304,45 @@ try {
   const plannedPaths = '^/api/(listings|wallet|profile|follows)';
   await runSuite(command.command, [...command.prefix, ...schemathesisArguments({
     token: apiToken,
-    exclude: `^/api/sandbox/(state|reset|seed|replay)$|${plannedPaths}`,
+    exclude: `^/api/sandbox/(state|reset|seed|replay|preview|commit)$|${plannedPaths}`,
+    phases: 'examples,coverage,fuzzing',
     reportPath: resolve(outputDirectory, 'schemathesis-data.xml'),
+  })]);
+  await runSuite(command.command, [...command.prefix, ...schemathesisArguments({
+    token: apiToken,
+    include: '^/api/sandbox/(preview|commit)$',
+    mode: 'negative',
+    phases: 'coverage,fuzzing',
+    reportPath: resolve(outputDirectory, 'schemathesis-actions.xml'),
   })]);
   await runSuite(command.command, [...command.prefix, ...schemathesisArguments({
     token: controlToken,
     include: '^/api/sandbox/(state|reset|seed|replay)$',
-    // Unknown HTTP headers are intentionally ignored by the runtime. The
-    // control body/route contract is covered by strict input checks and the
-    // unit/API contract suite; do not treat normal HTTP header extensibility
-    // as a schema violation in this focused control run.
-    excludeChecks: 'negative_data_rejection,positive_data_acceptance',
-    // SandboxState is a domain envelope whose fields are validated together;
-    // Schemathesis can generate many structurally valid but semantically
-    // rejected states. Keep PUT in the suite while allowing that generator
-    // distribution to continue to the status/error checks.
-    suppressHealthCheck: 'filter_too_much',
+    excludeOperationId: 'putSandboxState',
+    // Control operations are stateful: a stateless generator cannot invent a
+    // valid aggregate envelope or command payload chain. Their positive paths
+    // are exercised explicitly above; generated cases focus on rejecting
+    // malformed inputs without weakening response/schema checks.
+    mode: 'negative',
+    phases: 'coverage,fuzzing',
+    // SandboxState is a domain envelope whose fields are validated together.
+    // Schemathesis filters almost every stateless PUT candidate on Linux and
+    // fails its health check before exercising responses. The positive PUT is
+    // exercised explicitly above; malformed imports remain covered by the
+    // unit/API contract suites.
     reportPath: resolve(outputDirectory, 'schemathesis-control.xml'),
   })]);
-  await writeFile(resolve(outputDirectory, 'schemathesis-summary.json'), JSON.stringify({ ok: true, baseUrl, checked: ['data-plane', 'control-plane', 'stateful-preview-commit'] }, null, 2));
+  await writeFile(resolve(outputDirectory, 'schemathesis-summary.json'), JSON.stringify({
+    ok: true,
+    baseUrl,
+    checked: [
+      'data-plane-generated',
+      'action-plane-negative-generated',
+      'control-plane-negative-generated',
+      'control-positive-seed-reset-replay-state-put',
+      'stateful-preview-commit-retry-get',
+    ],
+  }, null, 2));
 } finally {
   if (server.exitCode === null) {
     server.kill('SIGTERM');

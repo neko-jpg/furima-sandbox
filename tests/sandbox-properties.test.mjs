@@ -10,7 +10,7 @@ const item = {
   sku: 'PROPERTY-SKU',
   title: 'Property test item',
   price: 1200,
-  images: ['/images/products/knit.jpg'],
+  images: ['/images/products/knit.webp'],
   isSold: false,
   description: 'A deterministic sandbox item.',
   category: ['テスト'],

@@ -18,6 +18,6 @@ Sandboxは決定的なseedと`stateVersion`を持つ状態機械です。Indexed
 
 ## HTTP control操作
 
-`POST /api/sandbox/reset`、`POST /api/sandbox/seed`、`POST /api/sandbox/replay`は`FURIMA_D1_CONTROL_TOKEN`を使うcontrol APIです。seed/resetで作成した保存済みSandboxへ続けてreplayする場合は、bodyに`fromStored: true`を指定して現在の保存状態を基準にします。指定しないreplayはseedとaction列から新しい基準状態を作るため、保存済み状態の`stateVersion`が進んでいれば`STATE_CONFLICT`で停止します。
+`POST /api/sandbox/reset`、`POST /api/sandbox/seed`、`POST /api/sandbox/replay`は`FURIMA_D1_CONTROL_TOKEN`を使うcontrol APIです。reset/seedのbodyとreplayの各actionには、英数字と`.`、`_`、`:`、`-`だけで構成した1〜200文字の`idempotencyKey`が必須です。互換用`id`と`sandboxId`は同時指定できません。seed/resetで作成した保存済みSandboxへ続けてreplayする場合は、bodyに`fromStored: true`を指定して現在の保存状態を基準にします。指定しないreplayはseedとaction列から新しい基準状態を作るため、保存済み状態の`stateVersion`が進んでいれば`STATE_CONFLICT`で停止します。
 
 同じ`idempotencyKey`を同じactionで再送した場合は保存済み結果を返し、副作用を再実行しません。異なるpayloadの再利用や一部actionだけが保存済みのbatchは`IDEMPOTENCY_CONFLICT`です。`POST /api/sandbox/preview`は候補commandだけを保存し、live state、stateVersion、ETagを変更しません。

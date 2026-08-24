@@ -37,12 +37,11 @@ export default defineConfig({
         env: {
           ...process.env,
           FURIMA_LOCAL_FIXTURE_MODE: 'true',
-          FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH: 'false',
+          FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH: 'true',
           FURIMA_D1_API_TOKEN: 'playwright-api-token',
           FURIMA_D1_API_ACTOR_ID: 'buyer_01',
           FURIMA_D1_CONTROL_TOKEN: 'playwright-control-token',
           FURIMA_STORAGE_MODE: 'memory',
-          VITE_ENABLE_SANDBOX_INSPECTOR: 'true',
         },
         stdout: 'pipe',
         stderr: 'pipe',

@@ -30,7 +30,7 @@ test('Browser API preview is read-only and commit is idempotent', async ({ page 
     if (!target) return { ok: false, error: 'NO_AVAILABLE_ITEM' };
     const before = api.getSnapshot();
     const durableBefore = await readDurableUpdatedAt(before.sandboxId);
-    const preview = api.previewAction('purchase', { itemId: target.id }, { actorId: 'buyer_01', operationId: 'preview-purchase-1' });
+    const preview = await api.previewAction('purchase', { itemId: target.id }, { actorId: 'buyer_01', operationId: 'preview-purchase-1' });
     const afterPreview = api.getSnapshot();
     if (!preview.ok) return { ok: false, error: preview.error, preview, before, afterPreview };
     let durableAfterPreview = null;
@@ -38,8 +38,8 @@ test('Browser API preview is read-only and commit is idempotent', async ({ page 
       durableAfterPreview = await readDurableUpdatedAt(before.sandboxId);
       if (!durableAfterPreview) await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const committed = api.commitPreview(preview.data.previewId, { actorId: 'buyer_01', idempotencyKey: 'commit-purchase-1' });
-    const repeated = api.commitPreview(preview.data.previewId, { actorId: 'buyer_01', idempotencyKey: 'commit-purchase-1' });
+    const committed = await api.commitPreview(preview.data.previewId, { actorId: 'buyer_01', idempotencyKey: 'commit-purchase-1' });
+    const repeated = await api.commitPreview(preview.data.previewId, { actorId: 'buyer_01', idempotencyKey: 'commit-purchase-1' });
     return { ok: true, targetId: target.id, beforeVersion: before.stateVersion, preview, afterPreviewVersion: afterPreview.stateVersion, durableBefore, durableAfterPreview, committed, repeated, after: api.getSnapshot() };
   });
   expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -59,14 +59,14 @@ test('stale preview is rejected after the sandbox version changes', async ({ pag
   await page.goto('/');
   await resetSandbox(page, 'preview-stale');
   await setSandboxActor(page, 'buyer_01');
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const api = window.__SHOP_API__;
     if (!api) return { ok: false, error: 'BRIDGE_NOT_READY' };
     const target = api.getItems().find((item) => !item.isSold && item.listingStatus === 'ACTIVE');
     if (!target) return { ok: false, error: 'NO_AVAILABLE_ITEM' };
-    const preview = api.previewAction('purchase', { itemId: target.id }, { actorId: 'buyer_01', operationId: 'preview-stale-1' });
+    const preview = await api.previewAction('purchase', { itemId: target.id }, { actorId: 'buyer_01', operationId: 'preview-stale-1' });
     if (!preview.ok) return preview;
-    api.depositWallet(1, { actorId: 'buyer_01', operationId: 'version-bump-1' });
+    await api.depositWallet(1, { actorId: 'buyer_01', operationId: 'version-bump-1' });
     return api.commitPreview(preview.data.previewId, { actorId: 'buyer_01', operationId: 'stale-commit-1' });
   });
   expect(result.ok).toBe(false);

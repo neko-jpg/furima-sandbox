@@ -5,6 +5,9 @@ import {
   actionFailure,
   authorizationFailure,
   engineFromRecord,
+  hasOnlyKeys,
+  hasValidActionIdentifiers,
+  hasValidActionVersions,
   MAX_SANDBOX_REQUEST_BYTES,
   hasJsonContentType,
   principalForRequest,
@@ -33,10 +36,13 @@ export async function POST(request: Request): Promise<Response> {
   if (contentLength > MAX_SANDBOX_REQUEST_BYTES) return actionFailure(request, undefined, 'preview', 'PAYLOAD_TOO_LARGE', 413, 0, { maxBytes: MAX_SANDBOX_REQUEST_BYTES });
   const body = await readJson(request);
   if (!body) return actionFailure(request, undefined, 'preview', 'INVALID_INPUT', 400, 0, { message: 'JSON bodyが不正です' });
+  if (!hasOnlyKeys(body, ['sandboxId', 'command', 'payload', 'stateVersion', 'expectedStateVersion', 'operationId', 'commandId', 'requestId', 'idempotencyKey'])) return actionFailure(request, body, 'preview', 'INVALID_INPUT', 400, 0, { message: '未対応のbody fieldです' });
+  if (!hasValidActionIdentifiers(body) || !hasValidActionVersions(body)) return actionFailure(request, body, 'preview', 'INVALID_INPUT', 400, 0, { message: '識別子とstateVersionの形式が不正です' });
   const id = sandboxIdFrom(request, body);
   if (!id) return actionFailure(request, body, 'preview', 'INVALID_STATE_ID', 400);
   const command = body.command;
   if (typeof command !== 'string' || !previewCommands.has(command as PreviewCommand)) return actionFailure(request, body, 'preview', 'INVALID_INPUT', 400, 0, { message: 'preview対象commandが不正です', allowedCommands: [...previewCommands] });
+  if (!body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) return actionFailure(request, body, 'preview', 'INVALID_INPUT', 400, 0, { message: 'payloadはobjectで指定してください' });
   const store = await storeForRequest();
   try {
     const record = await store.get(id);

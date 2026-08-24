@@ -4,7 +4,7 @@ import test from 'node:test';
 import { INITIAL_ITEMS } from '../app/data/initialData.ts';
 import { SandboxCommandExecutor } from '../app/domain/commandExecutor.ts';
 import { IndexedDbSandboxStateStore } from '../app/domain/sandboxIdbStore.ts';
-import { SandboxEngine } from '../app/domain/sandboxEngine.ts';
+import { SandboxEngine, createTrustedPrincipal } from '../app/domain/sandboxEngine.ts';
 import { FakeD1SandboxStateStore } from '../app/domain/sandboxStore.ts';
 
 const recordFor = (engine) => {
@@ -20,6 +20,12 @@ const recordFor = (engine) => {
   };
 };
 
+const buyerOptions = (idempotencyKey) => ({
+  principal: createTrustedPrincipal({ subjectId: `fault-test:${idempotencyKey}`, actorId: 'buyer_01', roles: ['buyer'], scopes: ['user'] }),
+  actorId: 'buyer_01',
+  idempotencyKey,
+});
+
 test('D1 fault points never leave a partial wallet mutation', async () => {
   const points = ['d1-unavailable', 'd1-timeout', 'worker-restart', 'request-abort', 'command-before-record', 'command-after-record-before-state', 'cas-conflict'];
   for (const point of points) {
@@ -27,13 +33,17 @@ test('D1 fault points never leave a partial wallet mutation', async () => {
     const engine = new SandboxEngine(INITIAL_ITEMS, { sandboxId: `fault-${point}`, seed: `fault-${point}` });
     await store.put(recordFor(engine));
     const before = await store.get(engine.getSandboxId());
+    const liveBefore = engine.exportState();
+    const liveVersionBefore = engine.getStateVersion();
     store.injectFailure(point);
     const executor = new SandboxCommandExecutor({ engine, store });
-    const result = await executor.execute('wallet.deposit', { amount: 1000 }, { actorId: 'buyer_01', idempotencyKey: `fault-${point}-deposit` }, (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
+    const result = await executor.execute('wallet.deposit', { amount: 1000 }, buyerOptions(`fault-${point}-deposit`), (working) => working.depositWallet(1000, { actorId: 'buyer_01' }));
     assert.equal(result.ok, false, point);
     assert.ok(['D1_UNAVAILABLE', 'STATE_CONFLICT'].includes(result.error), `${point}: ${result.error}`);
     const after = await store.get(engine.getSandboxId());
     assert.deepEqual(after, before, `${point} changed state`);
+    assert.equal(engine.exportState(), liveBefore, `${point} changed live engine state`);
+    assert.equal(engine.getStateVersion(), liveVersionBefore, `${point} changed live engine version`);
     assert.equal((await store.listCommands(engine.getSandboxId())).length, 0, `${point} left a command record`);
   }
 });

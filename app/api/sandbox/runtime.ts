@@ -20,6 +20,9 @@ export type SandboxStorageMode = 'memory' | 'd1';
 export const DEFAULT_SANDBOX_ID = 'furima-demo';
 export const MAX_SANDBOX_REQUEST_BYTES = 8 * 1024 * 1024;
 export const MAX_REPLAY_ACTIONS = 200;
+const ACTION_IDENTIFIER_FIELDS = ['operationId', 'commandId', 'requestId', 'idempotencyKey'] as const;
+const VALID_ACTION_IDENTIFIER = /^[A-Za-z0-9._:-]{1,200}$/u;
+const VALID_BEARER_SECRET = /^[A-Za-z0-9._~+/=-]{12,512}$/u;
 export const SANDBOX_CONTROL_PRINCIPAL: ExecutionPrincipal = createTrustedPrincipal({
   subjectId: 'sandbox-control-token',
   actorId: 'platform',
@@ -116,7 +119,7 @@ const requestIdFor = (request?: Request): string => {
 
 export const authConfiguration = async (): Promise<{ apiConfigured: boolean; controlConfigured: boolean }> => {
   const runtimeEnv = await runtimeEnvForRequest();
-  return { apiConfigured: Boolean(runtimeEnv.FURIMA_D1_API_TOKEN), controlConfigured: Boolean(runtimeEnv.FURIMA_D1_CONTROL_TOKEN) };
+  return { apiConfigured: VALID_BEARER_SECRET.test(runtimeEnv.FURIMA_D1_API_TOKEN ?? ''), controlConfigured: VALID_BEARER_SECRET.test(runtimeEnv.FURIMA_D1_CONTROL_TOKEN ?? '') };
 };
 
 const rateLimitFailure = (request: Request, limit: number): Response | null => {
@@ -151,7 +154,7 @@ export const authorizationFailure = async (request: Request, options: { requireC
     return rateLimitFailure(request, 120);
   }
   const configuredToken = options.requireControl ? runtimeEnv.FURIMA_D1_CONTROL_TOKEN : runtimeEnv.FURIMA_D1_API_TOKEN;
-  if (!configuredToken) return Response.json({ ok: false, error: 'AUTH_NOT_CONFIGURED', details: { retryable: false } }, { status: 503, headers: { 'cache-control': 'no-store' } });
+  if (!VALID_BEARER_SECRET.test(configuredToken ?? '')) return Response.json({ ok: false, error: 'AUTH_NOT_CONFIGURED', details: { retryable: false } }, { status: 503, headers: { 'cache-control': 'no-store' } });
   const authorization = request.headers.get('authorization');
   const requestId = requestIdFor(request);
   if (!authorization) return Response.json({ ok: false, error: 'AUTH_REQUIRED', requestId, details: { retryable: true } }, { status: 401, headers: { 'cache-control': 'no-store', 'x-request-id': requestId } });
@@ -161,7 +164,11 @@ export const authorizationFailure = async (request: Request, options: { requireC
   for (let index = 0; index < length; index += 1) difference |= (authorization.charCodeAt(index) || 0) ^ (expected.charCodeAt(index) || 0);
   if (difference !== 0) return Response.json({ ok: false, error: 'FORBIDDEN', requestId, details: { retryable: false } }, { status: 403, headers: { 'cache-control': 'no-store', 'x-request-id': requestId } });
   requestPrincipals.set(request, options.requireControl ? SANDBOX_CONTROL_PRINCIPAL : apiPrincipalFor(runtimeEnv));
-  const limit = localFixtureAuthRequired(runtimeEnv) ? 10_000 : options.requireControl ? 30 : 120;
+  // A high ceiling is restricted to an explicitly authenticated local fixture.
+  // This keeps the full cross-browser harness deterministic without allowing a
+  // similarly named variable to weaken a deployed environment's control limit.
+  const authenticatedLocalFixture = isLocalFixtureRequest && localFixtureAuthRequired(runtimeEnv);
+  const limit = authenticatedLocalFixture ? 10_000 : options.requireControl ? 30 : 120;
   return rateLimitFailure(request, limit);
 };
 
@@ -190,14 +197,39 @@ export const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly st
   return Object.keys(value).every((key) => allowedKeys.has(key));
 };
 
+export const isValidActionIdentifier = (value: unknown): value is string => typeof value === 'string' && VALID_ACTION_IDENTIFIER.test(value);
+
+export const hasValidActionIdentifiers = (value: Record<string, unknown>, requireIdempotency = false): boolean => {
+  if (requireIdempotency && typeof value.idempotencyKey !== 'string') return false;
+  return ACTION_IDENTIFIER_FIELDS.every((field) => {
+    const identifier = value[field];
+    return identifier === undefined || isValidActionIdentifier(identifier);
+  });
+};
+
+export const hasValidActionVersions = (value: Record<string, unknown>): boolean => ['stateVersion', 'expectedStateVersion'].every((field) => {
+  const version = value[field];
+  return version === undefined || (Number.isInteger(version) && Number(version) >= 0);
+});
+
 export const sandboxIdFrom = (request: Request, body?: Record<string, unknown>): string | null => {
-  const value = body?.sandboxId ?? body?.id ?? new URL(request.url).searchParams.get('sandboxId') ?? new URL(request.url).searchParams.get('id') ?? DEFAULT_SANDBOX_ID;
-  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/u.test(value) ? value : null;
+  const searchParams = new URL(request.url).searchParams;
+  if ((body && Object.hasOwn(body, 'sandboxId') && Object.hasOwn(body, 'id')) || (searchParams.has('sandboxId') && searchParams.has('id'))) return null;
+  const supplied = [
+    body && Object.hasOwn(body, 'sandboxId') ? body.sandboxId : undefined,
+    body && Object.hasOwn(body, 'id') ? body.id : undefined,
+    searchParams.has('sandboxId') ? searchParams.get('sandboxId') : undefined,
+    searchParams.has('id') ? searchParams.get('id') : undefined,
+  ].filter((value) => value !== undefined);
+  if (!supplied.length) return DEFAULT_SANDBOX_ID;
+  if (supplied.some((value) => typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(value))) return null;
+  const identifiers = supplied as string[];
+  return identifiers.every((value) => value === identifiers[0]) ? identifiers[0] : null;
 };
 
 export const actionFailure = (request: Request, body: Record<string, unknown> | undefined, mode: 'preview' | 'commit', error: string, status: number, stateVersion = 0, details?: unknown): Response => {
   const sandboxId = sandboxIdFrom(request, body) ?? DEFAULT_SANDBOX_ID;
-  const actorId = typeof body?.actorId === 'string' && body.actorId ? body.actorId : 'unknown';
+  const actorId = principalForRequest(request)?.actorId ?? 'unknown';
   const requestId = typeof body?.requestId === 'string' ? body.requestId : undefined;
   const idempotencyKey = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey : undefined;
   const commandId = typeof body?.commandId === 'string' ? body.commandId : undefined;
@@ -290,8 +322,6 @@ export const stateRecordFor = (sandboxId: string, engine: SandboxEngine, updated
 export const statePayloadFor = (engine: SandboxEngine): Record<string, unknown> => JSON.parse(engine.exportState()) as Record<string, unknown>;
 
 export const principalForRequest = (request: Request): ExecutionPrincipal | undefined => requestPrincipals.get(request);
-
-export const controlPrincipalForRequest = (request: Request): ExecutionPrincipal => requestPrincipals.get(request) ?? SANDBOX_CONTROL_PRINCIPAL;
 
 export const actionOptionsFor = (input: Record<string, unknown>, actorId?: string, principal?: ExecutionPrincipal): AgentActionOptions => ({
   // Actor, role, and scope are established by the authenticated adapter. Never

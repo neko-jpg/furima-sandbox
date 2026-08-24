@@ -4,7 +4,7 @@ window.__SHOP_API__ と window.__MERCARI_API__ は同じAPIブリッジを参照
 
 ## 共通契約
 
-すべての書き込み操作は ActionResult<T> を返します。
+すべての書き込み操作は永続commitを待つ `Promise<ActionResult<T>>` を返します。`await`で完了を待ってから次の状態を読んでください。
 
 ~~~ts
 type ActionResult<T> =
@@ -23,7 +23,8 @@ type ActionMetadata = {
 };
 ~~~
 
-expectedStateVersion、requestId、idempotencyKey、actorId、scopeは必要な操作だけに渡します。状態更新でバージョンが一致しない場合は STATE_CONFLICT を返し、呼び出し側は最新状態を取得してから再試行します。
+expectedStateVersion、requestId、idempotencyKeyは必要な操作だけに渡します。actorは信頼済みbrowser sessionへ固定され、body/optionsから別のactor、role、scope、principalへ上書きできません。互換用actorIdを渡す場合も現在actorと完全一致する値だけを受け付けます。状態更新でバージョンが一致しない場合は STATE_CONFLICT を返し、呼び出し側は最新状態を取得してから再試行します。
+operationId、commandId、requestId、idempotencyKey、previewIdには、英数字と`.`、`_`、`:`、`-`だけを使い、1〜200文字で指定します。制御文字や空白を含む識別子は INVALID_INPUT です。
 すべてのBrowser APIのActionResultにはsandboxId、actorId、stateVersion、operationId、modeを含むmetaが付きます。sandboxIdが異なる操作は拒否されます。
 
 復元完了前の変更操作は `SANDBOX_NOT_READY` になります。Agentは最初に次を待ち、ページ再読み込みや別Worker後も同じSandboxのsnapshotを使ってください。
@@ -32,7 +33,7 @@ expectedStateVersion、requestId、idempotencyKey、actorId、scopeは必要な�
 await api.waitForReady();
 ~~~
 
-IndexedDBが利用できない場合はMemory fallbackへ切り替え、結果の`durability: "volatile"`と理由を`window.__FURIMA_SANDBOX_DIAGNOSTICS__`へ公開します。`backend`、`fallbackReason`、`migratedLegacyLocalStorage`を確認でき、永続化に失敗した状態を無言で見逃さないための診断情報になります。
+IndexedDBが利用できない場合、読み取り用のMemory fallback診断へ切り替えますが、agentの書き込みは`D1_UNAVAILABLE`として失敗し、live stateを公開しません。理由は`window.__FURIMA_SANDBOX_DIAGNOSTICS__`の`backend`、`fallbackReason`、`localPersistenceError`で確認できます。
 
 ## カタログ
 
@@ -50,7 +51,7 @@ catalog.listの通常limitは24、最大40です。全カタログをクライ�
 ## 出品下書き
 
 ~~~ts
-const created = api.saveListingDraft({
+const created = await api.saveListingDraft({
   title: 'ニット',
   description: '着用回数は少なめです。',
   price: 3000,
@@ -60,8 +61,8 @@ const created = api.saveListingDraft({
 });
 
 api.getListingDrafts();
-api.saveListingDraft({ draftId: created.data.draftId, price: 2800 });
-api.deleteListingDraft(created.data.draftId);
+await api.saveListingDraft({ draftId: created.data.draftId, price: 2800 });
+await api.deleteListingDraft(created.data.draftId);
 ~~~
 
 画像本体はBlobとしてブラウザのIndexedDBまたは将来のR2アダプターに置き、ReactのプレビューはObject URLを使います。Sandbox/D1状態には imageRefs と順序・寸法・サムネイル参照だけを保存します。旧 images: string[] は読み込み互換のため残していますが、新規クライアントでは使用しません。
@@ -72,10 +73,10 @@ api.deleteListingDraft(created.data.draftId);
 
 ~~~ts
 api.listOwnListings();
-api.updateListing(itemId, { price: 2800 }, { expectedStateVersion: 12 });
-api.pauseListing(itemId);
-api.resumeListing(itemId);
-api.relistItem(itemId);
+await api.updateListing(itemId, { price: 2800 }, { expectedStateVersion: 12 });
+await api.pauseListing(itemId);
+await api.resumeListing(itemId);
+await api.relistItem(itemId);
 ~~~
 
 購入予約または取引開始後の編集はドメインで拒否されます。UIのdisabledだけを権限制御として扱わないでください。
@@ -85,10 +86,9 @@ api.relistItem(itemId);
 購入、出品公開、Sandboxウォレット入出金は、状態を変更しないpreviewと実際に反映するcommitへ分けられます。previewは現在のstateVersionを固定し、状態が変わった場合のcommitをSTATE_CONFLICTで止めます。
 
 ~~~ts
-const preview = api.previewAction('purchase', { itemId: 'item_123' }, { actorId: 'buyer_01' });
+const preview = await api.previewAction('purchase', { itemId: 'item_123' });
 if (preview.ok) {
-  const committed = api.commitPreview(preview.data.previewId, {
-    actorId: 'buyer_01',
+  const committed = await api.commitPreview(preview.data.previewId, {
     idempotencyKey: 'purchase-item_123-001',
   });
 }
@@ -101,9 +101,9 @@ if (preview.ok) {
 外部決済には接続せず、現在のactor本人の仮想ウォレットだけを操作します。入出金・決済保留・確定・返金・売上・手数料はすべて台帳へ記録され、結果には更新後の `stateVersion` が含まれます。
 
 ~~~ts
-const wallet = api.getWallet({ actorId: 'buyer_01' });
-api.depositWallet(5000, { actorId: 'buyer_01', expectedStateVersion: wallet.stateVersion });
-api.withdrawWallet(1000, { actorId: 'buyer_01' });
+const wallet = api.getWallet();
+if (wallet.ok) await api.depositWallet(5000, { expectedStateVersion: wallet.stateVersion });
+await api.withdrawWallet(1000);
 ~~~
 
 金額は1〜1,000,000円の整数です。`availableBalance`だけが出金対象で、`heldBalance`は取引完了または返金まで出金できません。残高不足は `INSUFFICIENT_FUNDS`、ウォレット未作成は `WALLET_NOT_FOUND` です。状態競合は `STATE_CONFLICT` として返され、最新スナップショットを取得してから再試行します。
@@ -118,7 +118,7 @@ api.withdrawWallet(1000, { actorId: 'buyer_01' });
 
 ~~~ts
 api.getProfile('buyer_01');
-api.updateProfile({ displayName: '表示名', bio: '自己紹介', avatarRef: 'media_profile_01' }, { expectedStateVersion: 8 });
+await api.updateProfile({ displayName: '表示名', bio: '自己紹介', avatarRef: 'media_profile_01' }, { expectedStateVersion: 8 });
 ~~~
 
 表示名は1〜60文字、自己紹介は500文字以内です。連絡先や外部URLは `INVALID_INPUT` で拒否します。actor identityは変更できず、通常権限では自分のプロフィールだけ更新できます。
@@ -131,8 +131,8 @@ api.updateProfile({ displayName: '表示名', bio: '自己紹介', avatarRef: 'm
 const following = api.getFollowList('following');
 const followers = api.getFollowList('followers');
 const seller = api.getFollowSummary('seller_01');
-const created = api.followUser('seller_01', { expectedStateVersion: seller.stateVersion });
-api.unfollowUser('seller_01');
+const created = await api.followUser('seller_01', { expectedStateVersion: seller.stateVersion });
+await api.unfollowUser('seller_01');
 ~~~
 
 `followUser` と `unfollowUser` は現在のauthenticated actor本人として実行され、自己フォロー、存在しないactor、重複フォロー、未フォロー解除をドメインで拒否します。結果には `following`、対象の `summary`、更新後の `stateVersion`、通常操作では `mode: 'commit'` のmetaが含まれます。`ALREADY_FOLLOWING`、`NOT_FOLLOWING`、`CANNOT_FOLLOW_SELF`、`FOLLOW_TARGET_NOT_FOUND` は入力を修正してから再試行してください。
@@ -142,5 +142,5 @@ api.unfollowUser('seller_01');
 - ローカルfixture: 明示的なlocal fixture modeでは認証なしで参照できます。
 - seller: 下書き作成・自分の出品操作を実行できます。
 - buyer/guest: 出品操作は AUTH_REQUIRED または FORBIDDEN です。
-- admin/platform: sandbox-controlの状態バックアップ・審査操作を実行できます。
+- admin/platform: agent用origin/bundle/realmとは別の外部ハーネスまたはcontrol APIだけがsandbox-control操作を実行できます。
 - D1接続時: 通常APIは`FURIMA_D1_API_TOKEN`、seed/reset/replay/import等のcontrol APIは別の`FURIMA_D1_CONTROL_TOKEN`を要求します。未認証は401、権限不足は403、未設定は503を返します。ブラウザへtokenを埋め込む構成は使用しません。

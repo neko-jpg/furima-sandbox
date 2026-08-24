@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const publicRoot = join(root, 'public');
-const ignored = new Set(['public/images/products/pexels-candidates', 'public/images/products/pexels-candidates-1000']);
+const forbiddenRuntimeDirectories = [
+  'public/images/products/pexels-candidates',
+  'public/images/products/pexels-candidates-1000',
+];
 const maxRuntimeBytes = 80 * 1024 * 1024;
 const selectedManifestPath = join(publicRoot, 'images/products/pexels-selected/manifest.json');
 const reviewManifestPath = join(root, 'docs/reference-assets/pexels-review/review-manifest.json');
@@ -22,7 +25,7 @@ const forbiddenManifestFields = new Set(['absolutePath', 'selectedPath', 'source
 const absolutePathPattern = /(?:^[A-Za-z]:[\\/]|^\\\\|(?:^|["'\s])\/(?:Users|home|mnt|private|var|tmp|development)(?:[\\/"'\s]|$))/iu;
 const secretPattern = /(?:PEXELS_API_KEY|(?:api[_-]?key|access[_-]?token|authorization|private[_-]?key)\s*["']?\s*[:=]|-----BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~+/=-]{12,})/iu;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
-const publicAssetPathPattern = /^\/images\/products\/pexels-(?:selected|candidates(?:-1000)?)\/[^/\\]+\.jpg$/u;
+const publicAssetPathPattern = /^\/images\/products\/(?:pexels-selected\/[^/\\]+\.webp|pexels-candidates(?:-1000)?\/[^/\\]+\.jpg)$/u;
 
 async function readJson(path, label) {
   let payload;
@@ -35,7 +38,8 @@ async function readJson(path, label) {
   return payload;
 }
 
-function assertManifestSafety(entries, allowedFields, label) {
+function assertManifestSafety(entries, allowedFields, label, { requirePublicPath = false, extension = 'jpg' } = {}) {
+  const filenamePattern = extension === 'webp' ? /^[^/\\]+\.webp$/u : /^[^/\\]+\.jpg$/u;
   for (const [index, entry] of entries.entries()) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`${label} entry ${index + 1} must be an object`);
     const keys = Object.keys(entry);
@@ -47,10 +51,13 @@ function assertManifestSafety(entries, allowedFields, label) {
     const serialized = JSON.stringify(entry);
     if (absolutePathPattern.test(serialized)) throw new Error(`${label} entry ${index + 1} contains a local absolute path`);
     if (secretPattern.test(serialized)) throw new Error(`${label} entry ${index + 1} contains a secret-like value`);
-    if (typeof entry.filename !== 'string' || !/^[^/\\]+\.jpg$/u.test(entry.filename)) {
+    if (typeof entry.filename !== 'string' || !filenamePattern.test(entry.filename)) {
       throw new Error(`${label} entry ${index + 1} has an invalid filename`);
     }
-    if (typeof entry.localPath !== 'string' || !publicAssetPathPattern.test(entry.localPath) || !entry.localPath.endsWith(`/${entry.filename}`)) {
+    if (requirePublicPath && typeof entry.localPath !== 'string') {
+      throw new Error(`${label} entry ${index + 1} must include a public asset path`);
+    }
+    if (entry.localPath !== undefined && (typeof entry.localPath !== 'string' || !publicAssetPathPattern.test(entry.localPath) || !entry.localPath.endsWith(`/${entry.filename}`))) {
       throw new Error(`${label} entry ${index + 1} has an invalid public asset path`);
     }
     if (typeof entry.pexelsUrl !== 'string' || !/^https:\/\/www\.pexels\.com\//u.test(entry.pexelsUrl)) {
@@ -85,28 +92,39 @@ async function walk(directory) {
   const files = [];
   for (const entry of entries) {
     const full = join(directory, entry.name);
-    const relativePath = relative(root, full).replaceAll('\\', '/');
-    if ([...ignored].some((prefix) => relativePath === prefix || relativePath.startsWith(`${prefix}/`))) continue;
     if (entry.isDirectory()) files.push(...await walk(full));
     else files.push(full);
   }
   return files;
 }
 
+for (const directory of forbiddenRuntimeDirectories) {
+  try {
+    const details = await stat(join(root, directory));
+    if (details.isDirectory()) {
+      throw new Error(`${directory} is review-only source material and must be stored under outputs/, never public/`);
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
 const files = await walk(publicRoot);
 let total = 0;
 const large = [];
+const legacyRasterFiles = [];
 for (const file of files) {
   const size = (await stat(file)).size;
   total += size;
   if (size >= 2 * 1024 * 1024) large.push({ file: relative(root, file).replaceAll('\\', '/'), size });
+  if (/\.(?:jpe?g|png)$/iu.test(file)) legacyRasterFiles.push(relative(root, file).replaceAll('\\', '/'));
 }
-console.log(JSON.stringify({ totalBytes: total, totalMiB: Number((total / 1024 / 1024).toFixed(2)), largeFiles: large }, null, 2));
-if (total > maxRuntimeBytes) process.exitCode = 1;
+console.log(JSON.stringify({ totalBytes: total, totalMiB: Number((total / 1024 / 1024).toFixed(2)), largeFiles: large, legacyRasterFiles }, null, 2));
+if (total > maxRuntimeBytes || legacyRasterFiles.length > 0) process.exitCode = 1;
 
 const selectedManifest = await readJson(selectedManifestPath, 'selected Pexels manifest');
 const reviewManifest = await readJson(reviewManifestPath, 'Pexels review manifest');
-assertManifestSafety(selectedManifest, selectedManifestFields, 'selected Pexels manifest');
+assertManifestSafety(selectedManifest, selectedManifestFields, 'selected Pexels manifest', { requirePublicPath: true, extension: 'webp' });
 assertManifestSafety(reviewManifest, reviewManifestFields, 'Pexels review manifest');
 await auditSelectedManifest(selectedManifest);
 console.log(JSON.stringify({
