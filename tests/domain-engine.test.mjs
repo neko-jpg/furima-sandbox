@@ -48,6 +48,48 @@ const auction = makeItem({
 
 const createEngine = (items = [makeItem(), auction]) => new SandboxEngine(items, { seed: "test-seed-v1" });
 
+test("catalog merge migrates legacy demo image formats without resetting durable state", () => {
+  const currentCatalogItem = makeItem({
+    id: "demo-image-migration",
+    isDemo: true,
+    images: ["/images/products/pexels-selected/0100-pexels-37546205.webp"],
+  });
+  const persisted = new SandboxEngine([currentCatalogItem], { seed: "test-seed-v1" });
+  const started = persisted.startPurchase(currentCatalogItem.id, { actorId: "buyer_01" });
+  assert.equal(started.ok, true);
+
+  const legacyState = JSON.parse(persisted.exportState());
+  legacyState.items[0].images = ["/images/products/pexels-selected/0100-pexels-37546205.jpg"];
+
+  const restored = new SandboxEngine([currentCatalogItem], { seed: "test-seed-v1" });
+  assert.equal(restored.importState(JSON.stringify(legacyState), controlOptions).ok, true);
+  const stateVersion = restored.getStateVersion();
+  restored.mergeCatalogItems([currentCatalogItem]);
+
+  const migrated = restored.getItem(currentCatalogItem.id);
+  assert.deepEqual(migrated?.images, currentCatalogItem.images);
+  assert.equal(migrated?.reservedQuantity, 1);
+  assert.equal(migrated?.listingStatus, "RESERVED");
+  assert.equal(restored.getStateVersion(), stateVersion);
+  assert.deepEqual(restored.assertInvariants(), []);
+});
+
+test("catalog merge preserves non-demo image references", () => {
+  const persistedItem = makeItem({
+    id: "seller-image",
+    isDemo: false,
+    images: ["/images/products/pexels-selected/0100-pexels-37546205.jpg"],
+  });
+  const engine = new SandboxEngine([persistedItem], { seed: "test-seed-v1" });
+  engine.mergeCatalogItems([makeItem({
+    id: persistedItem.id,
+    isDemo: true,
+    images: ["/images/products/pexels-selected/0100-pexels-37546205.webp"],
+  })]);
+
+  assert.deepEqual(engine.getItem(persistedItem.id)?.images, persistedItem.images);
+});
+
 test("purchase cannot bypass reservation and confirmation", () => {
   const engine = createEngine();
 

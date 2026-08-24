@@ -97,6 +97,25 @@ export const isTrustedPrincipal = (principal: ExecutionPrincipal | undefined): b
 
 const normalize = (value: string): string => value.normalize('NFKC').toLocaleLowerCase('ja-JP').trim();
 
+const localCatalogAssetStem = (value: string): string | null => {
+  const match = /^(\/images\/.+)\.(?:avif|jpe?g|png|webp)$/iu.exec(value);
+  return match?.[1] ?? null;
+};
+
+const migrateCatalogImageFormats = (current: MercariItem, catalogItem: MercariItem): MercariItem => {
+  if (!current.isDemo || !catalogItem.isDemo) return current;
+  let changed = false;
+  const images = current.images.map((image, index) => {
+    const nextImage = catalogItem.images[index];
+    if (!nextImage || nextImage === image) return image;
+    const currentStem = localCatalogAssetStem(image);
+    if (!currentStem || currentStem !== localCatalogAssetStem(nextImage)) return image;
+    changed = true;
+    return nextImage;
+  });
+  return changed ? { ...current, images } : current;
+};
+
 const sellerIdForItem = (item: MercariItem): string => item.sellerId ?? 'seller_01';
 
 const shippingCostFor = (item: MercariItem): number => item.shippingFee.includes('送料込み') ? 0 : 800;
@@ -615,17 +634,30 @@ export class SandboxEngine {
   }
 
   public mergeCatalogItems(items: MercariItem[]): void {
+    const catalogItems = clone(items);
+    const catalogById = new Map(catalogItems.map((item) => [item.id, item]));
     const existingStateIds = new Set(this.state.items.map((item) => item.id));
-    const additions = clone(items).filter((item) => !existingStateIds.has(item.id));
-    if (!additions.length) return;
     const existingInitialIds = new Set(this.initialItems.map((item) => item.id));
-    this.initialItems = [...this.initialItems, ...additions.filter((item) => !existingInitialIds.has(item.id))];
+    this.initialItems = [
+      ...this.initialItems.map((current) => {
+        const catalogItem = catalogById.get(current.id);
+        return catalogItem ? migrateCatalogImageFormats(current, catalogItem) : current;
+      }),
+      ...catalogItems.filter((item) => !existingInitialIds.has(item.id)),
+    ];
+    const additions = catalogItems.filter((item) => !existingStateIds.has(item.id));
     const stateAdditions = additions
-      .filter((item) => !existingStateIds.has(item.id))
       .map((item, index) => this.normalizeCatalogItem(item, this.state.items.length + index, this.state.items.length + additions.length, this.state.now));
-    if (!stateAdditions.length) return;
-    this.state.items = [...this.state.items, ...stateAdditions];
-    this.state.inventoryMovements = [...this.state.inventoryMovements, ...this.createInitialInventoryMovements(stateAdditions, this.state.now)];
+    this.state.items = [
+      ...this.state.items.map((current) => {
+        const catalogItem = catalogById.get(current.id);
+        return catalogItem ? migrateCatalogImageFormats(current, catalogItem) : current;
+      }),
+      ...stateAdditions,
+    ];
+    if (stateAdditions.length) {
+      this.state.inventoryMovements = [...this.state.inventoryMovements, ...this.createInitialInventoryMovements(stateAdditions, this.state.now)];
+    }
   }
 
   public getInventoryMovements(itemId?: string): InventoryMovement[] {
