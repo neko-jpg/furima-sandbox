@@ -102,7 +102,7 @@ npm run types:worker
 - 開発者向け手順: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - AIコーディングエージェント向け運用ルール: [`AGENTS.md`](AGENTS.md)
 
-`main`への変更でverify workflowが成功すると、GitHub Actionsの`.github/workflows/docs-cloudflare-pages.yml`が同じコミットを検証してからCloudflare Pagesへデプロイします。Cloudflare Accessの招待や本番デプロイは、このREADMEのDocker手順とは別の運用です。
+`main`へのAPIドキュメント生成元の変更でverify workflowが成功すると、GitHub Actionsの`.github/workflows/docs-cloudflare-pages.yml`が同じコミットを検証してからCloudflare Pagesへデプロイします。UI、CI、Wikiなど生成元以外だけの変更ではデプロイをスキップします。Cloudflare Accessの招待や本番デプロイは、このREADMEのDocker手順とは別の運用です。
 個別のPages deployment URL（`*.pages.dev`）がcanonical URLと同じAccess保護になるとは限らないため、未認証確認が済むまでdeployment/Preview URLを共有しません。
 
 ## Agent API

@@ -42,7 +42,7 @@ Scalarは`output/docs-site/index.html`、`assets/scalar.js`、`assets/scalar.css
 
 ## CIデプロイ
 
-`.github/workflows/docs-cloudflare-pages.yml`は、`main`へのpushに対する`verify` workflowが成功した後に同じコミットをcheckoutして実行されます。手動実行時もこのworkflow自身のdocs検証を通過してからdeployします。
+`.github/workflows/docs-cloudflare-pages.yml`は、`main`へのpushに対する`verify` workflowが成功した後に同じコミットをcheckoutします。`docs/api`、Scalarとサイトのエントリ、favicon、サイト生成スクリプト、npmの依存定義のいずれかが直前のコミットから変わった場合だけdocs検証とdeployを実行します。UI、CI、Runbook、Wikiだけの変更ではdeployジョブをスキップします。手動実行は明示的なデプロイ指示として扱い、常にこのworkflow自身のdocs検証を通過してからdeployします。
 
 必要なGitHub Environment Secrets:
 
