@@ -17,9 +17,9 @@ import {
   statePayloadFor,
   stateRecordFor,
   storeForRequest,
-  SANDBOX_CONTROL_PRINCIPAL,
   isSandboxScenario,
   hasOnlyKeys,
+  hasValidActionIdentifiers,
 } from '../runtime.ts';
 
 const controlCommands = new Set(['switchActor', 'loadScenario', 'resetScenario', 'advanceClock', 'injectFailure', 'importState']);
@@ -47,6 +47,11 @@ export async function POST(request: Request): Promise<Response> {
   const body = await readJson(request);
   if (!body || !Array.isArray(body.actions) || body.actions.length === 0 || body.actions.length > MAX_REPLAY_ACTIONS) return failure('INVALID_INPUT', 400, { message: `actionsは1リクエスト${MAX_REPLAY_ACTIONS}件以内の配列で指定してください` });
   if (!hasOnlyKeys(body, ['id', 'sandboxId', 'scenarioId', 'seed', 'baseState', 'fromStored', 'expectedStateVersion', 'actions'])) return failure('INVALID_INPUT', 400, { message: '未対応のbody fieldです' });
+  if (body.scenarioId !== undefined && typeof body.scenarioId !== 'string') return failure('INVALID_INPUT', 400, { message: 'scenarioIdはstringで指定してください' });
+  if (body.seed !== undefined && (typeof body.seed !== 'string' || body.seed.length > 160)) return failure('INVALID_INPUT', 400, { message: 'seedは160文字以内のstringで指定してください' });
+  if (body.baseState !== undefined && typeof body.baseState !== 'string') return failure('INVALID_INPUT', 400, { message: 'baseStateはstringで指定してください' });
+  if (body.fromStored !== undefined && typeof body.fromStored !== 'boolean') return failure('INVALID_INPUT', 400, { message: 'fromStoredはbooleanで指定してください' });
+  if (body.expectedStateVersion !== undefined && (!Number.isInteger(body.expectedStateVersion) || Number(body.expectedStateVersion) < 0)) return failure('INVALID_INPUT', 400, { message: 'expectedStateVersionは0以上の整数で指定してください' });
   const id = sandboxIdFrom(request, body);
   if (!id) return failure('INVALID_STATE_ID', 400);
   const scenarioId = typeof body.scenarioId === 'string' ? body.scenarioId : 'catalog_default';
@@ -59,11 +64,13 @@ export async function POST(request: Request): Promise<Response> {
       if (!action || typeof action !== 'object' || Array.isArray(action) || typeof (action as { command?: unknown }).command !== 'string' || !(action as { command: string }).command.trim()) return failure('INVALID_INPUT', 400, { actionIndex: index, message: '各actionには空でないcommandが必要です' });
       const entry = action as Record<string, unknown>;
       if (!hasOnlyKeys(entry, ['command', 'payload', 'idempotencyKey'])) return failure('INVALID_INPUT', 400, { actionIndex: index, message: '未対応のaction fieldです' });
+      if (!hasValidActionIdentifiers(entry, true)) return failure('INVALID_INPUT', 400, { actionIndex: index, message: '各actionのidempotencyKeyは1〜200文字で指定してください' });
+      if (entry.payload !== undefined && (!entry.payload || typeof entry.payload !== 'object' || Array.isArray(entry.payload))) return failure('INVALID_INPUT', 400, { actionIndex: index, message: '各actionのpayloadはobjectで指定してください' });
       actions.push({
         entry,
         command: String(entry.command),
         payload: entry.payload ?? {},
-        ...(typeof entry.idempotencyKey === 'string' ? { idempotencyKey: entry.idempotencyKey } : {}),
+        idempotencyKey: String(entry.idempotencyKey),
       });
     }
 
@@ -71,7 +78,8 @@ export async function POST(request: Request): Promise<Response> {
     const storedCommands = await Promise.all(actions.map((action) => action.idempotencyKey === undefined ? null : store.getCommand(id, action.idempotencyKey)));
     const duplicateCount = storedCommands.filter(Boolean).length;
     if (duplicateCount > 0) {
-      const principal = principalForRequest(request) ?? SANDBOX_CONTROL_PRINCIPAL;
+      const principal = principalForRequest(request);
+      if (!principal) return failure('AUTH_REQUIRED', 401);
       for (let index = 0; index < actions.length; index += 1) {
         const existingCommand = storedCommands[index];
         if (!existingCommand) continue;

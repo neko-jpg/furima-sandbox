@@ -13,3 +13,11 @@ test('Semgrep rules cover raw HTML, history, and UI-to-D1 boundary risks', async
   assert.match(rules, /furima-agent-surface-no-control-bridge/);
   assert.match(rules, /severity: ERROR/);
 });
+
+test('Semgrep runner fails on findings and verifies a vulnerable canary', async () => {
+  const runner = await readFile(new URL('../scripts/run-semgrep.mjs', import.meta.url), 'utf8');
+  assert.match(runner, /'--error'/);
+  assert.match(runner, /furima-semgrep-canary-/);
+  assert.match(runner, /furima-no-browser-control-token/);
+  assert.match(runner, /furima-agent-surface-no-control-bridge/);
+});

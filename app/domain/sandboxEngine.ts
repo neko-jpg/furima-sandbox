@@ -377,7 +377,10 @@ export class SandboxEngine {
     if (options?.principal) {
       if (!isTrustedPrincipal(options.principal)) return resultError('FORBIDDEN', this.state.stateVersion, '実行Principalは信頼済みadapterから注入してください');
       const principalActor = this.currentActor(options.principal.actorId);
-      if (!principalActor || !principalActor.authenticated || !options.principal.roles.includes(principalActor.role)) {
+      // A trusted adapter may represent an anonymous/guest session as well as
+      // an authenticated account. Identity matching belongs here; individual
+      // domain operations return AUTH_REQUIRED when guest access is disallowed.
+      if (!principalActor || !options.principal.roles.includes(principalActor.role)) {
         return resultError('FORBIDDEN', this.state.stateVersion, '実行PrincipalがSandbox actorと一致しません');
       }
       if (options.actorId && options.actorId !== options.principal.actorId && !options.principal.scopes.includes(sandboxControlScope)) {
@@ -1726,7 +1729,7 @@ export class SandboxEngine {
       sku: input.sku ?? `FBS-${this.state.idCounter.toString(36).toUpperCase()}`,
       title,
       price: input.price ?? 0,
-      images: input.images?.length ? [...input.images] : ['/images/products/knit.jpg'],
+      images: input.images?.length ? [...input.images] : ['/images/products/knit.webp'],
       imageRefs: input.imageRefs?.length ? [...input.imageRefs] : undefined,
       isSold: false,
       inventoryPolicy: input.inventoryPolicy ?? 'SINGLE',
@@ -2092,6 +2095,13 @@ export class SandboxEngine {
     return this.state.uiRevision;
   }
 
+  /** Commit an agent-visible view mutation so its result participates in CAS. */
+  public commitViewState(): number {
+    this.state.uiRevision += 1;
+    this.state.stateVersion += 1;
+    return this.state.stateVersion;
+  }
+
   public replaceItems(items: MercariItem[]): void {
     const incoming = new Map(clone(items).map((item) => [item.id, item]));
     this.state.items = this.state.items.map((current) => {
@@ -2198,7 +2208,7 @@ export class SandboxEngine {
       if (Object.keys(migrated.drafts ?? {}).length > MAX_STATE_COLLECTION_ENTRIES || Object.keys(migrated.draftOwners ?? {}).length > MAX_STATE_COLLECTION_ENTRIES || Object.keys(migrated.draftUpdatedAt ?? {}).length > MAX_STATE_COLLECTION_ENTRIES) return resultError('PAYLOAD_TOO_LARGE', this.state.stateVersion, 'Sandbox stateの下書き件数上限を超えています');
       const normalizedItems = (migrated.items ?? []).map((item) => ({
         ...item,
-        images: Array.isArray(item.images) && item.images.length ? item.images : ['/images/products/knit.jpg'],
+        images: Array.isArray(item.images) && item.images.length ? item.images : ['/images/products/knit.webp'],
         auctionEndsAt: item.isAuction ? item.auctionEndsAt : undefined,
       }));
       const normalizedDrafts = Object.fromEntries(Object.entries(migrated.drafts ?? {}).map(([draftId, fields]) => [draftId, {

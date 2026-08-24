@@ -29,7 +29,7 @@ body {
   margin: 0;
   background: var(--shop-bg);
   color: var(--shop-text);
-  font-family: var(--shop-ui-font), var(--font-noto-sans-jp), var(--font-inter), sans-serif;
+  font-family: var(--shop-ui-font);
   font-size: 14px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -64,11 +64,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   width: 240px;
   height: 42px;
   flex-shrink: 0;
-  background-image: url('/images/branding/furima-sandbox-logo-sheet.png');
-  background-image: image-set(
-    url('/images/branding/furima-sandbox-logo-sheet.webp') type('image/webp'),
-    url('/images/branding/furima-sandbox-logo-sheet.png') type('image/png')
-  );
+  background-image: url('/images/branding/furima-sandbox-logo-sheet.webp');
   background-repeat: no-repeat;
   background-size: 307px 307px;
   background-position: -33px -82px;

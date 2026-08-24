@@ -617,66 +617,66 @@ export interface MercariAgentAPI {
   navigateHomeSubTab: (tab: HomeTab, options?: AgentActionOptions) => ActionResult<undefined>;
   navigateCategory: (category: string, options?: AgentActionOptions) => ActionResult<undefined>;
   search: (query: string, options?: AgentActionOptions) => ActionResult<undefined>;
-  openItem: (itemId: string, options?: AgentActionOptions) => ActionResult<undefined>;
+  openItem: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<undefined>>;
   closeItem: (options?: AgentActionOptions) => ActionResult<undefined>;
   setLiked: (
     itemId: string,
     liked: boolean,
     options?: AgentActionOptions,
-  ) => ActionResult<undefined>;
+  ) => Promise<ActionResult<undefined>>;
   setSaved: (itemId: string, saved: boolean, options?: AgentActionOptions) => ActionResult<undefined>;
-  likeItem: (itemId: string, options?: AgentActionOptions) => ActionResult<undefined>;
-  addComment: (itemId: string, text: string, options?: AgentActionOptions) => ActionResult<undefined>;
+  likeItem: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<undefined>>;
+  addComment: (itemId: string, text: string, options?: AgentActionOptions) => Promise<ActionResult<undefined>>;
   listItem: (
     item: Partial<MercariItem>,
     options?: AgentActionOptions,
-  ) => ActionResult<MercariItem>;
+  ) => Promise<ActionResult<MercariItem>>;
   createListingDraft: (
     item: Partial<MercariItem>,
     options?: AgentActionOptions,
-  ) => ActionResult<{ draftId: string }>;
+  ) => Promise<ActionResult<{ draftId: string }>>;
   updateListingDraft: (
     draftId: string,
     item: Partial<MercariItem>,
     options?: AgentActionOptions,
-  ) => ActionResult<{ draftId: string }>;
+  ) => Promise<ActionResult<{ draftId: string }>>;
   getListingDrafts: (options?: AgentActionOptions) => ActionResult<ListingDraftSummary[]>;
-  saveListingDraft: (item: SaveListingDraftInput, options?: AgentActionOptions) => ActionResult<{ draftId: string }>;
-  deleteListingDraft: (draftId: string, options?: AgentActionOptions) => ActionResult<{ draftId: string }>;
+  saveListingDraft: (item: SaveListingDraftInput, options?: AgentActionOptions) => Promise<ActionResult<{ draftId: string }>>;
+  deleteListingDraft: (draftId: string, options?: AgentActionOptions) => Promise<ActionResult<{ draftId: string }>>;
   submitListing: (
     draftId: string,
     options?: AgentActionOptions,
-  ) => ActionResult<{ itemId: string }>;
+  ) => Promise<ActionResult<{ itemId: string }>>;
   startPurchase: (
     itemId: string,
     options?: AgentActionOptions,
-  ) => ActionResult<{ purchaseIntentId: string; transactionId: string; expiresAt: string; quote: number }>;
+  ) => Promise<ActionResult<{ purchaseIntentId: string; transactionId: string; expiresAt: string; quote: number }>>;
   confirmPurchase: (
     purchaseIntentId: string,
     options?: AgentActionOptions,
-  ) => ActionResult<{ transactionId: string; orderId: string; status: TransactionStatus; total: number }>;
+  ) => Promise<ActionResult<{ transactionId: string; orderId: string; status: TransactionStatus; total: number }>>;
   placeBid: (
     itemId: string,
     amount: number,
     options?: AgentActionOptions,
-  ) => ActionResult<{ currentBid: number; bidsCount: number }>;
-  closeAuction: (itemId: string, options?: AgentActionOptions) => ActionResult<{ itemId: string; transactionId?: string; status: 'SETTLED' | 'NO_BIDS' | 'PAYMENT_FAILED' }>;
-  buyItem: (itemId: string, options?: AgentActionOptions) => ActionResult<{ purchaseIntentId: string; transactionId: string; expiresAt: string; quote: number }>;
-  shipOrder: (transactionId: string, options?: AgentActionOptions) => ActionResult<{ transactionId: string; status: TransactionStatus }>;
-  markDelivered: (transactionId: string, options?: AgentActionOptions) => ActionResult<{ transactionId: string; status: TransactionStatus }>;
-  reviewOrder: (transactionId: string, rating: 1 | 2 | 3 | 4 | 5, comment?: string, options?: AgentActionOptions) => ActionResult<{ transactionId: string; status: TransactionStatus }>;
-  cancelOrder: (transactionId: string, reason: string, options?: AgentActionOptions) => ActionResult<{ transactionId: string; status: TransactionStatus }>;
-  resolveCancellation: (transactionId: string, approve: boolean, options?: AgentActionOptions) => ActionResult<{ transactionId: string; status: TransactionStatus }>;
-  reviewListing: (itemId: string, approve: boolean, options?: AgentActionOptions) => ActionResult<MercariItem>;
-  requestReturn: (transactionId: string, reason: string, options?: AgentActionOptions) => ActionResult<{ returnCaseId: string; status: ReturnStatus }>;
-  confirmReturnReceived: (transactionId: string, options?: AgentActionOptions) => ActionResult<{ returnCaseId: string; status: ReturnStatus }>;
-  sendTransactionMessage: (transactionId: string, body: string, options?: AgentActionOptions) => ActionResult<TransactionMessage>;
-  createSupportTicket: (input: Partial<SupportTicket>, options?: AgentActionOptions) => ActionResult<SupportTicket>;
-  reportTransaction: (transactionId: string, body: string, options?: AgentActionOptions) => ActionResult<SupportTicket>;
-  updateListing: (itemId: string, input: Partial<MercariItem>, options?: AgentActionOptions) => ActionResult<MercariItem>;
-  pauseListing: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
-  resumeListing: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
-  relistItem: (itemId: string, options?: AgentActionOptions) => ActionResult<MercariItem>;
+  ) => Promise<ActionResult<{ currentBid: number; bidsCount: number }>>;
+  closeAuction: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<{ itemId: string; transactionId?: string; status: 'SETTLED' | 'NO_BIDS' | 'PAYMENT_FAILED' }>>;
+  buyItem: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<{ purchaseIntentId: string; transactionId: string; expiresAt: string; quote: number }>>;
+  shipOrder: (transactionId: string, options?: AgentActionOptions) => Promise<ActionResult<{ transactionId: string; status: TransactionStatus }>>;
+  markDelivered: (transactionId: string, options?: AgentActionOptions) => Promise<ActionResult<{ transactionId: string; status: TransactionStatus }>>;
+  reviewOrder: (transactionId: string, rating: 1 | 2 | 3 | 4 | 5, comment?: string, options?: AgentActionOptions) => Promise<ActionResult<{ transactionId: string; status: TransactionStatus }>>;
+  cancelOrder: (transactionId: string, reason: string, options?: AgentActionOptions) => Promise<ActionResult<{ transactionId: string; status: TransactionStatus }>>;
+  resolveCancellation: (transactionId: string, approve: boolean, options?: AgentActionOptions) => Promise<ActionResult<{ transactionId: string; status: TransactionStatus }>>;
+  reviewListing: (itemId: string, approve: boolean, options?: AgentActionOptions) => Promise<ActionResult<MercariItem>>;
+  requestReturn: (transactionId: string, reason: string, options?: AgentActionOptions) => Promise<ActionResult<{ returnCaseId: string; status: ReturnStatus }>>;
+  confirmReturnReceived: (transactionId: string, options?: AgentActionOptions) => Promise<ActionResult<{ returnCaseId: string; status: ReturnStatus }>>;
+  sendTransactionMessage: (transactionId: string, body: string, options?: AgentActionOptions) => Promise<ActionResult<TransactionMessage>>;
+  createSupportTicket: (input: Partial<SupportTicket>, options?: AgentActionOptions) => Promise<ActionResult<SupportTicket>>;
+  reportTransaction: (transactionId: string, body: string, options?: AgentActionOptions) => Promise<ActionResult<SupportTicket>>;
+  updateListing: (itemId: string, input: Partial<MercariItem>, options?: AgentActionOptions) => Promise<ActionResult<MercariItem>>;
+  pauseListing: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<MercariItem>>;
+  resumeListing: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<MercariItem>>;
+  relistItem: (itemId: string, options?: AgentActionOptions) => Promise<ActionResult<MercariItem>>;
   listOwnListings: (options?: AgentActionOptions) => ActionResult<MercariItem[]>;
   catalog: {
     list: (input?: CatalogListInput, options?: AgentActionOptions) => ActionResult<CatalogListResult>;
@@ -694,16 +694,16 @@ export interface MercariAgentAPI {
   getActionTrace: () => ActionTraceEntry[];
   getInventoryMovements: (itemId?: string, options?: AgentActionOptions) => InventoryMovement[];
   getProfile: (actorId?: string) => ActorProfile | undefined;
-  updateProfile: (input: Partial<ActorProfile>, options?: AgentActionOptions) => ActionResult<ActorProfile>;
+  updateProfile: (input: Partial<ActorProfile>, options?: AgentActionOptions) => Promise<ActionResult<ActorProfile>>;
   getFollowList: (direction: FollowDirection, options?: AgentActionOptions) => ActionResult<FollowListResult>;
   getFollowSummary: (actorId?: string, options?: AgentActionOptions) => ActionResult<FollowSummary>;
-  followUser: (actorId: string, options?: AgentActionOptions) => ActionResult<FollowMutationResult>;
-  unfollowUser: (actorId: string, options?: AgentActionOptions) => ActionResult<FollowMutationResult>;
+  followUser: (actorId: string, options?: AgentActionOptions) => Promise<ActionResult<FollowMutationResult>>;
+  unfollowUser: (actorId: string, options?: AgentActionOptions) => Promise<ActionResult<FollowMutationResult>>;
   getWallet: (options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
-  depositWallet: (amount: number, options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
-  withdrawWallet: (amount: number, options?: AgentActionOptions) => ActionResult<WalletSnapshot>;
-  previewAction: (command: PreviewCommand, payload: unknown, options?: AgentActionOptions) => ActionResult<ActionPreview>;
-  commitPreview: (previewId: string, options?: AgentActionOptions) => ActionResult<unknown>;
+  depositWallet: (amount: number, options?: AgentActionOptions) => Promise<ActionResult<WalletSnapshot>>;
+  withdrawWallet: (amount: number, options?: AgentActionOptions) => Promise<ActionResult<WalletSnapshot>>;
+  previewAction: (command: PreviewCommand, payload: unknown, options?: AgentActionOptions) => Promise<ActionResult<ActionPreview>>;
+  commitPreview: (previewId: string, options?: AgentActionOptions) => Promise<ActionResult<unknown>>;
   subscribe: (handler: (event: DomainEvent) => void) => () => void;
 }
 

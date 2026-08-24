@@ -38,7 +38,7 @@ test('mobile home tabs and sandbox account contracts are shared and documented',
   assert.match(myPage, /プロフィール編集/);
 });
 
-test('desktop account menu routes to the five user destinations', async () => {
+test('desktop account menu routes to user destinations without changing the trusted actor', async () => {
   const header = await read('app/components/Header.tsx');
   const context = await read('app/context/MercariContext.tsx');
   const types = await read('app/types/mercari.ts');
@@ -49,8 +49,8 @@ test('desktop account menu routes to the five user destinations', async () => {
   assert.match(header, /プロフィール/);
   assert.match(header, /フォローリスト/);
   assert.match(header, /購入した商品/);
-  assert.match(header, /ログアウト/);
-  assert.match(header, /switchActor\('guest'\)/);
+  assert.match(header, /actorは信頼済みハーネスで固定/);
+  assert.doesNotMatch(header, /switchActor\(/);
   assert.match(context, /openMyPagePanel/);
   assert.match(context, /myPagePanel/);
   assert.match(types, /export type MyPagePanel/);
@@ -74,21 +74,20 @@ test('API source of truth and docs checks are wired', async () => {
   assert.match(catalogItemRoute, /If-None-Match|if-none-match/);
 });
 
-test('mobile navigation stays in the viewport and does not sit under the inspector', async () => {
+test('mobile navigation stays in the viewport and the agent bundle excludes control UI', async () => {
   const bottomNav = await read('app/components/BottomNav.tsx');
-  const inspector = await read('app/components/SandboxInspector.tsx');
   const context = await read('app/context/MercariContext.tsx');
   const app = await read('app/components/MercariApp.tsx');
   const detail = await read('app/components/views/ItemDetailView.tsx');
   const myPage = await read('app/components/views/MyPageView.tsx');
   assert.match(bottomNav, /fixed inset-x-0 bottom-0 md:hidden/);
   assert.match(bottomNav, /absolute inset-x-0 bottom-0/);
-  assert.match(inspector, /bottom-\[calc\(58px\+env\(safe-area-inset-bottom\)\+0\.75rem\)\]/);
   assert.match(context, /history\.pushState/);
   assert.match(context, /ITEM_ROUTE_PREFIX/);
   assert.match(context, /window\.history\.back\(\)/);
   assert.match(app, /onClose=\{closeItem\}/);
-  assert.match(app, /!isListingFlowOpen && mainTab !== 'sell' && <SandboxInspector \/>/);
+  assert.doesNotMatch(app, /SandboxInspector/);
+  assert.doesNotMatch(context, /runUiControlCommand/);
   assert.match(detail, /\$\{isDeviceFrame \? 'absolute' : 'fixed'\}/);
   assert.match(detail, /document\.body\.style\.overflow = 'hidden'/);
   assert.match(myPage, /出品した商品/);

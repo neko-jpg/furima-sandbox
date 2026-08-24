@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Heart, Layers3, LogOut, Monitor, Search, ScanLine, ShoppingBag, Tag, UserRound, Users, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Heart, Layers3, Monitor, Search, ScanLine, ShoppingBag, Tag, UserRound, Users, X } from 'lucide-react';
 import { useMercari } from '../context/MercariContext';
 import { joinSearchTokens, tokenizeSearchQuery } from './searchUtils';
 import type { HomeTab, MainTab, MyPagePanel } from '../types/mercari';
@@ -192,7 +192,7 @@ const accountMenuItems = [
 ] as const;
 
 const GuestActions: React.FC = () => {
-  const { requestLogin, navigateToTab, activeActor, user, profile, openMyPagePanel, switchActor } = useMercari();
+  const { requestLogin, navigateToTab, activeActor, user, profile, openMyPagePanel } = useMercari();
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const accountButtonRef = useRef<HTMLButtonElement>(null);
@@ -241,12 +241,6 @@ const GuestActions: React.FC = () => {
     openMyPagePanel(panel);
   };
 
-  const logout = () => {
-    const result = switchActor('guest');
-    closeAccountMenu();
-    if (result.ok) navigateToTab('home');
-  };
-
   return <div className="flex shrink-0 items-center gap-1.5">
     <div ref={menuRef} className="relative hidden md:block">
       <button
@@ -278,10 +272,7 @@ const GuestActions: React.FC = () => {
           <ChevronRight className="h-4 w-4 text-[var(--shop-muted)]" aria-hidden="true" />
         </button>)}
         <div className="my-2 border-t border-[var(--shop-border)]" />
-        <button type="button" role="menuitem" onClick={logout} className="flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm font-bold text-[var(--shop-blue)] hover:bg-[var(--shop-surface-raised)] focus:bg-[var(--shop-surface-raised)] focus:outline-none">
-          <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="flex-1">ログアウト</span>
-        </button>
+        <p className="px-3 py-2 text-xs leading-5 text-[var(--shop-muted)]">このSandboxのactorは信頼済みハーネスで固定されています。</p>
       </div>}
     </div>
     {!activeActor.authenticated && <><button type="button" onClick={() => requestLogin('ログインすると、いいね・保存・購入などの機能を利用できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">ログイン</button><button type="button" onClick={() => requestLogin('会員登録すると、商品を購入・出品できます。')} className="rounded-md px-2.5 py-2 text-sm font-bold text-white hover:bg-[var(--shop-surface)]">会員登録</button></>}

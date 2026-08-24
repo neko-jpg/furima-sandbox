@@ -1,9 +1,9 @@
 rules:
   - id: furima-no-dangerous-html-in-app
-    languages: [typescript]
+    languages: [generic]
     message: Avoid raw HTML injection in the sandbox UI; render escaped React values instead.
     severity: ERROR
-    pattern: dangerouslySetInnerHTML
+    pattern-regex: 'dangerouslySetInnerHTML'
     paths:
       include:
         - /app/**/*.tsx

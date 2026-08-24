@@ -115,10 +115,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ok, id, stateVersion]
+                required: [ok, id, sandboxId, stateVersion]
+                additionalProperties: false
                 properties:
                   ok: { const: true }
                   id: { type: string }
+                  sandboxId: { type: string }
                   stateVersion: { type: integer, minimum: 0 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -204,7 +206,7 @@ paths:
       summary: Sandboxをシナリオ初期状態へ戻す
       security: [{ controlBearerAuth: [] }]
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/SandboxSeedInput' }
@@ -709,8 +711,14 @@ components:
         category: { type: array, minItems: 1, items: { type: string } }
         condition: { type: string, enum: [新品・未使用, 未使用に近い, 目立った傷や汚れなし, やや傷や汚れあり, 傷や汚れあり, 全体的に状態が悪い] }
         imageRefs: { type: array, maxItems: 20, items: { type: string, pattern: '^media_[A-Za-z0-9_-]+$' } }
+    ActionIdentifier:
+      type: string
+      minLength: 1
+      maxLength: 200
+      pattern: '^[A-Za-z0-9._:-]{1,200}$'
     SandboxState:
       type: object
+      additionalProperties: false
       required: [version, sandboxId, scenarioId, seed, now, stateVersion, currentActorId, actors, items, purchaseIntents, transactions, payments, shipments, bids, reviews, inventoryMovements, events, notifications, wallets, follows, drafts, draftOwners, pendingFailures]
       properties:
         version: { const: '1' }
@@ -719,11 +727,30 @@ components:
         seed: { type: string }
         now: { type: string, format: date-time }
         stateVersion: { type: integer, minimum: 0 }
+        uiRevision: { type: integer, minimum: 0 }
+        idCounter: { type: integer, minimum: 0 }
         currentActorId: { type: string }
+        actors: { type: array, items: { type: object, additionalProperties: true } }
         items: { type: array, items: { $ref: '#/components/schemas/MercariItem' } }
+        purchaseIntents: { type: array, items: { type: object, additionalProperties: true } }
+        transactions: { type: array, items: { type: object, additionalProperties: true } }
+        payments: { type: array, items: { type: object, additionalProperties: true } }
+        shipments: { type: array, items: { type: object, additionalProperties: true } }
+        bids: { type: array, items: { type: object, additionalProperties: true } }
+        reviews: { type: array, items: { type: object, additionalProperties: true } }
+        returns: { type: array, items: { type: object, additionalProperties: true } }
+        messages: { type: array, items: { type: object, additionalProperties: true } }
+        supportTickets: { type: array, items: { type: object, additionalProperties: true } }
+        profiles: { type: array, items: { type: object, additionalProperties: true } }
+        inventoryMovements: { type: array, items: { type: object, additionalProperties: true } }
+        events: { type: array, items: { type: object, additionalProperties: true } }
+        notifications: { type: array, items: { type: object, additionalProperties: true } }
+        wallets: { type: array, items: { $ref: '#/components/schemas/WalletSnapshot' } }
         follows: { type: array, items: { $ref: '#/components/schemas/FollowRelation' } }
         drafts: { type: object, additionalProperties: { type: object } }
         draftOwners: { type: object, additionalProperties: { type: string } }
+        draftUpdatedAt: { type: object, additionalProperties: { type: string, format: date-time } }
+        pendingFailures: { type: array, items: { type: string } }
     ActionResult:
       oneOf:
         - type: object
@@ -746,13 +773,13 @@ components:
       type: object
       required: [sandboxId, actorId, stateVersion, operationId, mode]
       properties:
-        sandboxId: { type: string }
-        actorId: { type: string }
+        sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$' }
+        actorId: { $ref: '#/components/schemas/ActionIdentifier' }
         stateVersion: { type: integer, minimum: 0 }
-        operationId: { type: string }
-        commandId: { type: string }
-        requestId: { type: string }
-        idempotencyKey: { type: string }
+        operationId: { $ref: '#/components/schemas/ActionIdentifier' }
+        commandId: { $ref: '#/components/schemas/ActionIdentifier' }
+        requestId: { $ref: '#/components/schemas/ActionIdentifier' }
+        idempotencyKey: { $ref: '#/components/schemas/ActionIdentifier' }
         mode: { type: string, enum: [preview, commit] }
     SandboxPreviewInput:
       type: object
@@ -764,10 +791,10 @@ components:
         payload: { type: object }
         stateVersion: { type: integer, minimum: 0 }
         expectedStateVersion: { type: integer, minimum: 0 }
-        operationId: { type: string, minLength: 1, maxLength: 200 }
-        commandId: { type: string, minLength: 1, maxLength: 200 }
-        requestId: { type: string, minLength: 1, maxLength: 200 }
-        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        operationId: { $ref: '#/components/schemas/ActionIdentifier' }
+        commandId: { $ref: '#/components/schemas/ActionIdentifier' }
+        requestId: { $ref: '#/components/schemas/ActionIdentifier' }
+        idempotencyKey: { $ref: '#/components/schemas/ActionIdentifier' }
       allOf:
         - if:
             properties: { command: { const: purchase } }
@@ -813,13 +840,13 @@ components:
       required: [previewId, idempotencyKey]
       properties:
         sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
-        previewId: { type: string, minLength: 1, maxLength: 200 }
+        previewId: { $ref: '#/components/schemas/ActionIdentifier' }
         stateVersion: { type: integer, minimum: 0 }
         expectedStateVersion: { type: integer, minimum: 0 }
-        operationId: { type: string, minLength: 1, maxLength: 200 }
-        commandId: { type: string, minLength: 1, maxLength: 200 }
-        requestId: { type: string, minLength: 1, maxLength: 200 }
-        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        operationId: { $ref: '#/components/schemas/ActionIdentifier' }
+        commandId: { $ref: '#/components/schemas/ActionIdentifier' }
+        requestId: { $ref: '#/components/schemas/ActionIdentifier' }
+        idempotencyKey: { $ref: '#/components/schemas/ActionIdentifier' }
     ActionResultPreview:
       allOf:
         - $ref: '#/components/schemas/ActionResult'
@@ -836,12 +863,16 @@ components:
     SandboxSeedInput:
       type: object
       additionalProperties: false
+      required: [idempotencyKey]
+      allOf:
+        - not: { required: [id, sandboxId] }
       properties:
         id: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
         sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
         scenarioId: { type: string, enum: [catalog_default, purchase_happy_path, already_sold, multi_inventory, auction_outbid, listing_policy_blocked, zero_search_results, payment_timeout, delivery_delay], default: catalog_default }
         seed: { type: string, maxLength: 160 }
         expectedStateVersion: { type: integer, minimum: 0 }
+        idempotencyKey: { $ref: '#/components/schemas/ActionIdentifier' }
     SandboxOperationResponse:
       type: object
       required: [ok, operation, sandboxId, stateVersion, state]
@@ -857,6 +888,8 @@ components:
       type: object
       additionalProperties: false
       required: [actions]
+      allOf:
+        - not: { required: [id, sandboxId] }
       properties:
         id: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
         sandboxId: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]{1,80}$', example: schemathesis }
@@ -874,11 +907,11 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [command]
+            required: [command, idempotencyKey]
             properties:
               command: { type: string, enum: [listItem, createListingDraft, updateListingDraft, deleteListingDraft, submitListing, startPurchase, confirmPurchase, purchaseItem, buyItem, placeBid, closeAuction, shipOrder, markDelivered, reviewOrder, cancelOrder, resolveCancellation, reviewListing, requestReturn, confirmReturnReceived, sendTransactionMessage, createSupportTicket, reportTransaction, updateListing, pauseListing, resumeListing, relistItem, updateProfile, getFollowList, getFollowSummary, followUser, unfollowUser, depositWallet, withdrawWallet, switchActor, loadScenario, resetScenario, advanceClock, injectFailure, importState] }
               payload: { type: object, additionalProperties: true }
-              idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+              idempotencyKey: { $ref: '#/components/schemas/ActionIdentifier' }
     SandboxReplayResponse:
       type: object
       required: [ok, operation, sandboxId, stateVersion, results, trace, state]

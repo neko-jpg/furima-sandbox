@@ -12,7 +12,7 @@ const makeItem = (overrides = {}) => ({
   sku: "SKU-BASIC",
   title: "テスト商品",
   price: 1200,
-  images: ["/images/products/knit.jpg"],
+  images: ["/images/products/knit.webp"],
   isSold: false,
   description: "サンドボックス用の商品説明です。",
   category: ["ファッション", "トップス"],
@@ -252,7 +252,7 @@ test("listing policy is enforced in the domain even when called directly", () =>
     category: ["その他"],
     condition: "新品・未使用",
     shippingMethod: "らくらくメルカリ便",
-    images: ["/images/products/knit.jpg"],
+    images: ["/images/products/knit.webp"],
     sku: "SKU-SAFE",
   });
   assert.equal(approvedWithImage.ok, true);
@@ -367,7 +367,7 @@ test("listing drafts are owned by their creating actor", () => {
     category: ["Category"],
     condition: "New",
     shippingMethod: "Sandbox shipping",
-    images: ["/images/products/knit.jpg"],
+    images: ["/images/products/knit.webp"],
   }, { actorId: "seller_01" });
   assert.equal(draft.ok, true);
   if (!draft.ok) return;
@@ -450,7 +450,7 @@ test("listing policy rejects external and oversized image payloads", () => {
     category: ["Category"],
     condition: "New",
     shippingMethod: "Sandbox shipping",
-    images: Array.from({ length: 21 }, () => "/images/products/knit.jpg"),
+    images: Array.from({ length: 21 }, () => "/images/products/knit.webp"),
   });
   assert.equal(oversized.allowed, false);
   assert.equal(oversized.signals.some((signal) => signal.code === "IMAGE_INPUT_SIZE" && signal.status === "blocked"), true);
@@ -712,7 +712,7 @@ test("a completed transaction reverses settled seller accounting only after retu
 test("listing lifecycle supports edit, pause, resume, and relist without changing ownership", () => {
   const engine = createEngine();
   assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
-  const listing = engine.listItem({ title: "Lifecycle listing", description: "Valid description", price: 1200, category: ["その他"], condition: "新品", shippingMethod: "配送", images: ["/images/products/knit.jpg"], sku: "LIFECYCLE-1" }, { actorId: "seller_01" });
+  const listing = engine.listItem({ title: "Lifecycle listing", description: "Valid description", price: 1200, category: ["その他"], condition: "新品", shippingMethod: "配送", images: ["/images/products/knit.webp"], sku: "LIFECYCLE-1" }, { actorId: "seller_01" });
   assert.equal(listing.ok, true);
   if (!listing.ok) return;
   assert.equal(engine.updateListing(listing.data.id, { title: "Lifecycle listing edited" }, { actorId: "seller_01" }).ok, true);

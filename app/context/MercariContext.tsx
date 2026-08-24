@@ -26,7 +26,6 @@ import type {
   SandboxActor,
   SandboxSnapshot,
   SaveListingDraftInput,
-  ScenarioId,
   TransactionRecord,
   UserProfile,
   WalletSnapshot,
@@ -36,9 +35,10 @@ import { INITIAL_NOTIFICATIONS, INITIAL_USER } from '../data/initialData';
 import { searchCatalogItems } from '../components/searchUtils';
 import { SandboxEngine, createTrustedPrincipal, type ConfirmPurchaseResult, type StartPurchaseResult } from '../domain/sandboxEngine';
 import { SandboxCommandBus, compactImagePayloadForFingerprint, fingerprint } from '../domain/commandBus';
+import { SandboxCommandExecutor } from '../domain/commandExecutor';
 import { applyPreviewOperation } from '../domain/previewOperations';
 import { IndexedDbSandboxStateStore } from '../domain/sandboxIdbStore';
-import type { SandboxCommandRecord, SandboxPreviewRecord, SandboxStateRecord } from '../domain/sandboxStore';
+import type { SandboxCommandRecord, SandboxStateRecord } from '../domain/sandboxStore';
 
 const PREFERENCES_STORAGE_KEY = 'shop-ui-preferences-v1';
 const INVENTORY_STORAGE_KEY = 'shop-inventory-v1';
@@ -49,8 +49,10 @@ const REMOTE_SANDBOX_STATE_ID = 'furima-demo-catalog-50';
 // stays on IndexedDB (with an explicit volatile diagnostic fallback).
 const REMOTE_STATE_ENABLED = false;
 const scopedStorageKey = (base: string, actorId: string): string => `${base}:${REMOTE_SANDBOX_STATE_ID}:${actorId}`;
-const SANDBOX_CONTROL_PRINCIPAL = createTrustedPrincipal({ subjectId: 'local-sandbox-inspector', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] });
-const SANDBOX_CONTROL_OPTIONS = { principal: SANDBOX_CONTROL_PRINCIPAL } as const satisfies AgentActionOptions;
+// This capability is private to startup hydration and is never attached to the
+// browser agent bridge. Interactive control lives in the external test harness.
+const BROWSER_STATE_RESTORE_PRINCIPAL = createTrustedPrincipal({ subjectId: 'browser-state-restore', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] });
+const BROWSER_STATE_RESTORE_OPTIONS = { principal: BROWSER_STATE_RESTORE_PRINCIPAL } as const satisfies AgentActionOptions;
 const READY_TIMEOUT_MS = 15_000;
 const PERSIST_DEBOUNCE_MS = 250;
 const READ_COMMANDS = new Set(['getWallet', 'getListingDrafts', 'catalog.list', 'catalog.get', 'getFollowList', 'getFollowSummary', 'getSnapshot', 'getState']);
@@ -313,9 +315,6 @@ interface MercariContextType {
   setActiveNotification: (notification: NotificationItem | null) => void;
   isDeviceFrame: boolean;
   setIsDeviceFrame: (frame: boolean) => void;
-  switchActor: (actorId: string) => ActionResult<SandboxActor>;
-  loadScenario: (scenarioId: ScenarioId) => ActionResult<{ scenarioId: ScenarioId; seed: string; now: string }>;
-  advanceClock: (milliseconds: number) => ActionResult<{ now: string; expiredPurchaseIntentIds: string[] }>;
   getTransactions: (actorId?: string) => TransactionRecord[];
   getDomainEvents: () => ReturnType<SandboxEngine['getDomainEvents']>;
   shipOrder: (transactionId: string) => ReturnType<SandboxEngine['shipOrder']>;
@@ -376,11 +375,12 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       stateVersion: sandboxEngine.getStateVersion(),
     }),
   }));
-  const previewCacheRef = useRef(new Map<string, { command: PreviewCommand; payload: unknown; actorId: string; sandboxId: string; stateVersion: number; expiresAt: number; summary: Record<string, unknown> }>());
-  const pendingPreviewRecordsRef = useRef(new Map<string, SandboxPreviewRecord>());
-  const previewCounterRef = useRef(0);
   const [browserSandboxStore] = useState(() => new IndexedDbSandboxStateStore());
-  const durableCommandCacheRef = useRef(new Map<string, SandboxCommandRecord>());
+  const [browserCommandExecutor] = useState(() => new SandboxCommandExecutor({
+    engine: sandboxEngine,
+    store: browserSandboxStore,
+    requirePersistentCommit: true,
+  }));
   const localPersistChainRef = useRef(Promise.resolve());
   const persistTimerRef = useRef<number | null>(null);
   const localPersistedStateVersionRef = useRef<number | null>(null);
@@ -395,7 +395,6 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const remotePersistChainRef = useRef(Promise.resolve());
   const catalogLoadRef = useRef<Promise<void>>(Promise.resolve());
   const loadedCatalogItemsRef = useRef<MercariItem[]>([]);
-  const agentExecutionDepthRef = useRef(0);
 
   const readyResult = (): ActionResult<{ sandboxId: string; stateVersion: number }> => success({ sandboxId: sandboxEngine.getSandboxId(), stateVersion: sandboxEngine.getStateVersion() }, sandboxEngine.getStateVersion());
   const waitForReady = (): Promise<ActionResult<{ sandboxId: string; stateVersion: number }>> => {
@@ -435,8 +434,8 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   };
 
-  const persistSandboxStateNow = () => {
-    if (!sandboxHydratedRef.current || typeof window === 'undefined') return;
+  const persistSandboxStateNow = (allowBeforeHydration = false) => {
+    if ((!sandboxHydratedRef.current && !allowBeforeHydration) || typeof window === 'undefined') return;
     let serialized: string;
     try {
       serialized = stripImagePayloadsForPersistence(sandboxEngine.exportState());
@@ -517,7 +516,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
   };
 
-  const syncFromEngine = () => {
+  const syncFromEngine = (persist = true) => {
     const nextItems = sandboxEngine.getItems();
     const nextMovements = sandboxEngine.getInventoryMovements();
     const nextSandbox = sandboxEngine.getSnapshot();
@@ -528,13 +527,12 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     inventoryMovementsRef.current = nextMovements;
     stateVersionRef.current = nextSandbox.stateVersion;
     patchStateRef({ items: nextItems, inventoryMovements: nextMovements, sandbox: nextSandbox });
-    persistSandboxState();
+    if (persist) persistSandboxState();
     return nextSandbox;
   };
 
   const runUiCommand = <T,>(command: string, payload: unknown, operation: () => ActionResult<T>): ActionResult<T> => {
     if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。準備完了後にもう一度お試しください。');
-    if (agentExecutionDepthRef.current > 0) return operation();
     const stateVersionBefore = sandboxEngine.getStateVersion();
     const options = { actorId: sandboxEngine.getCurrentActor().id } as AgentActionOptions;
     const result = commandBus.execute(command, payload, options, operation);
@@ -655,7 +653,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (cancelled || !Array.isArray(catalogItems)) return;
       loadedCatalogItemsRef.current = catalogItems;
       sandboxEngine.mergeCatalogItems(catalogItems);
-      syncFromEngine();
+      syncFromEngine(false);
     }).catch(() => {
       // The curated 50-item catalog remains usable when the optional catalog
       // request cannot be loaded in an offline or restricted preview.
@@ -700,44 +698,17 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
           await browserSandboxStore.purgeExpired(new Date().toISOString());
           const localRecord = await browserSandboxStore.get(REMOTE_SANDBOX_STATE_ID);
           if (localRecord) {
-            const result = sandboxEngine.importState(localRecord.payload, SANDBOX_CONTROL_OPTIONS);
+            const result = sandboxEngine.importState(localRecord.payload, BROWSER_STATE_RESTORE_OPTIONS);
             if (result.ok) {
               sandboxEngine.mergeCatalogItems(loadedCatalogItemsRef.current);
               localPersistedStateVersionRef.current = localRecord.stateVersion;
               restored = true;
               sandboxLoadedFromStorageRef.current = true;
-              syncFromEngine();
+              syncFromEngine(false);
             } else {
               browserSandboxStore.recordFailure('CORRUPTED');
             }
           }
-          const persistedPreviews = await browserSandboxStore.listPreviews(REMOTE_SANDBOX_STATE_ID);
-          let highestPreviewSequence = 0;
-          persistedPreviews.filter((preview) => preview.status === 'PENDING').forEach((preview) => {
-            try {
-              if (Date.parse(preview.virtualExpiresAt) <= Date.parse(sandboxEngine.getNow()) || Date.parse(preview.retentionExpiresAt) <= Date.now()) return;
-              const payload = JSON.parse(preview.payload) as unknown;
-              const summary = JSON.parse(preview.summary) as Record<string, unknown>;
-              previewCacheRef.current.set(preview.previewId, {
-                command: preview.command as PreviewCommand,
-                payload,
-                actorId: preview.actorId,
-                sandboxId: preview.sandboxId,
-                stateVersion: preview.baseStateVersion,
-                expiresAt: Date.parse(preview.virtualExpiresAt),
-                summary,
-              });
-              const suffix = Number(preview.previewId.match(/-(\d+)$/u)?.[1] ?? 0);
-              highestPreviewSequence = Math.max(highestPreviewSequence, Number.isFinite(suffix) ? suffix : 0);
-            } catch {
-              // Corrupted preview records are ignored and remain visible in
-              // the adapter diagnostics instead of being used for commits.
-              browserSandboxStore.recordFailure('CORRUPTED');
-            }
-          });
-          previewCounterRef.current = highestPreviewSequence;
-          const persistedCommands = await browserSandboxStore.listCommands(REMOTE_SANDBOX_STATE_ID);
-          persistedCommands.forEach((command) => durableCommandCacheRef.current.set(command.idempotencyKey ?? command.operationId, command));
         } catch {
           // IndexedDB is optional in private browsing and embedded previews.
         }
@@ -746,7 +717,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const response = await fetch(`/api/sandbox/state?id=${REMOTE_SANDBOX_STATE_ID}`, { headers: { accept: 'application/json' }, credentials: 'include' });
             if (response.ok) {
               const serialized = await response.text();
-              const result = sandboxEngine.importState(serialized, SANDBOX_CONTROL_OPTIONS);
+              const result = sandboxEngine.importState(serialized, BROWSER_STATE_RESTORE_OPTIONS);
               if (result.ok) {
                 sandboxEngine.mergeCatalogItems(loadedCatalogItemsRef.current);
                 const parsed = JSON.parse(serialized) as { stateVersion?: number };
@@ -755,7 +726,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 sandboxLoadedFromStorageRef.current = true;
                 localPersistedStateVersionRef.current = typeof parsed.stateVersion === 'number' ? parsed.stateVersion : null;
                 await browserSandboxStore.put(sandboxStateRecord(), undefined, true);
-                syncFromEngine();
+                syncFromEngine(false);
               }
             } else if (response.status === 401 || response.status === 403) {
               window.__FURIMA_SANDBOX_DIAGNOSTICS__ = { ...browserSandboxStore.getDiagnostics(), remoteStateError: response.status === 401 ? 'AUTH_REQUIRED' : 'FORBIDDEN' };
@@ -770,7 +741,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
           try {
             const serialized = window.localStorage.getItem(SANDBOX_STATE_STORAGE_KEY);
             if (serialized) {
-              const result = sandboxEngine.importState(serialized, SANDBOX_CONTROL_OPTIONS);
+              const result = sandboxEngine.importState(serialized, BROWSER_STATE_RESTORE_OPTIONS);
               if (result.ok) {
                 sandboxEngine.mergeCatalogItems(loadedCatalogItemsRef.current);
                 sandboxLoadedFromStorageRef.current = true;
@@ -778,7 +749,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 await browserSandboxStore.put(sandboxStateRecord(), undefined, true);
                 browserSandboxStore.markLegacyMigration();
                 window.localStorage.removeItem(SANDBOX_STATE_STORAGE_KEY);
-                syncFromEngine();
+                syncFromEngine(false);
               } else {
                 window.localStorage.removeItem(SANDBOX_STATE_STORAGE_KEY);
               }
@@ -789,10 +760,19 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
         }
         if (!cancelled) {
+          if (persistTimerRef.current !== null) {
+            window.clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = null;
+          }
+          // Readiness includes the initial durable write. Otherwise a delayed
+          // hydration write can race with the first read-only agent preview and
+          // make the durable record appear to have been mutated by the preview.
+          persistSandboxStateNow(true);
+          await localPersistChainRef.current;
+          if (cancelled) return;
           sandboxHydratedRef.current = true;
           setIsSandboxReady(true);
           window.__FURIMA_SANDBOX_DIAGNOSTICS__ = browserSandboxStore.getDiagnostics();
-          persistSandboxState();
           resolveReady();
         }
       })();
@@ -1162,15 +1142,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const durableKeyFor = (options: AgentActionOptions | undefined, operationId: string): string => options?.idempotencyKey ?? options?.requestId ?? options?.commandId ?? operationId;
-  const parseDurableResult = <T,>(record: SandboxCommandRecord): ActionResult<T> | null => {
-    try {
-      const result = JSON.parse(record.result) as ActionResult<T>;
-      return result && typeof result === 'object' && typeof result.stateVersion === 'number' ? result : null;
-    } catch {
-      return null;
-    }
-  };
-  const persistAgentCommand = <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, result: ActionResult<T>, stateVersionBefore: number, rollbackState?: string) => {
+  const persistAgentCommand = <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, result: ActionResult<T>, stateVersionBefore: number) => {
     if (READ_COMMANDS.has(action)) return;
     if (typeof window !== 'undefined' && persistTimerRef.current !== null) {
       window.clearTimeout(persistTimerRef.current);
@@ -1196,137 +1168,104 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
       createdAt,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     };
-    durableCommandCacheRef.current.set(record.idempotencyKey ?? record.operationId, record);
     const previewId = action === 'commitPreview' && payload && typeof payload === 'object' && typeof (payload as { previewId?: unknown }).previewId === 'string'
       ? String((payload as unknown as { previewId: string }).previewId)
       : undefined;
     const state = sandboxStateRecord(createdAt);
     localPersistChainRef.current = localPersistChainRef.current.then(async () => {
       const expectedStateVersion = localPersistedStateVersionRef.current ?? stateVersionBefore;
-      const pendingPreview = result.ok && result.data && typeof result.data === 'object' && typeof (result.data as { previewId?: unknown }).previewId === 'string'
-        ? pendingPreviewRecordsRef.current.get(String((result.data as unknown as { previewId: string }).previewId))
-        : undefined;
-      const write = pendingPreview
-        ? await browserSandboxStore.putPreviewAndCommand(pendingPreview, record, state, expectedStateVersion)
-        : await browserSandboxStore.commitCommand(record, state, expectedStateVersion, previewId);
+      const write = await browserSandboxStore.commitCommand(record, state, expectedStateVersion, previewId);
       if (write.ok) {
-        if (pendingPreview) pendingPreviewRecordsRef.current.delete(pendingPreview.previewId);
         localPersistedStateVersionRef.current = state.stateVersion;
         if (write.durability === 'volatile') {
           window.__FURIMA_SANDBOX_DIAGNOSTICS__ = { ...browserSandboxStore.getDiagnostics(), localPersistenceError: browserSandboxStore.getDiagnostics().fallbackReason ?? 'UNAVAILABLE' };
         }
         return;
       }
-      durableCommandCacheRef.current.delete(record.idempotencyKey ?? record.operationId);
       window.__FURIMA_SANDBOX_DIAGNOSTICS__ = { ...browserSandboxStore.getDiagnostics(), localPersistenceError: write.error === 'CONFLICT' ? 'CORRUPTED' : 'UNAVAILABLE' };
-      if (result.ok && rollbackState && sandboxEngine.getStateVersion() === result.stateVersion) {
-        const restored = sandboxEngine.importState(rollbackState, SANDBOX_CONTROL_OPTIONS);
-        if (restored.ok) syncFromEngine();
-      }
     }).catch(() => {
-      durableCommandCacheRef.current.delete(record.idempotencyKey ?? record.operationId);
       browserSandboxStore.recordFailure('UNAVAILABLE');
       window.__FURIMA_SANDBOX_DIAGNOSTICS__ = { ...browserSandboxStore.getDiagnostics(), localPersistenceError: 'UNAVAILABLE' };
-      if (result.ok && rollbackState && sandboxEngine.getStateVersion() === result.stateVersion) {
-        const restored = sandboxEngine.importState(rollbackState, SANDBOX_CONTROL_OPTIONS);
-        if (restored.ok) syncFromEngine();
-      }
     });
   };
 
-  const runAgentAction = <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, operation: () => ActionResult<T>): ActionResult<T> => {
-    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。waitForReady()完了後に実行してください。');
-    const context = { sandboxId: sandboxEngine.getSandboxId(), actorId: options?.actorId ?? sandboxEngine.getCurrentActor().id, stateVersion: sandboxEngine.getStateVersion() };
-    const mode = options?.mode ?? 'commit';
-    const explicitKey = options?.idempotencyKey ?? options?.requestId ?? options?.commandId;
-    if (explicitKey) {
-      const payloadHash = fingerprint({ sandboxId: context.sandboxId, actorId: context.actorId, command: action, mode, payload: compactImagePayloadForFingerprint(payload) });
-      const existing = durableCommandCacheRef.current.get(explicitKey);
-      if (existing) {
-        if (existing.payloadHash !== payloadHash || existing.command !== action || existing.mode !== mode) return failure('IDEMPOTENCY_CONFLICT', sandboxEngine.getStateVersion(), '同じ冪等キーで異なるpayloadを再利用できません');
-        return parseDurableResult<T>(existing) ?? failure('INVALID_STATE', sandboxEngine.getStateVersion(), '保存済みcommand結果を読み込めません');
-      }
-    }
-    const stateVersionBefore = sandboxEngine.getStateVersion();
-    const rollbackState = sandboxEngine.exportState();
-    // IDEMPOTENCY_CONFLICT is produced by the shared Command Bus for same-tab
-    // requests; the durable cache above covers reloads and a new Worker.
-    let result: ActionResult<T>;
-    agentExecutionDepthRef.current += 1;
-    try {
-      result = commandBus.execute(action, payload, options, operation);
-    } finally {
-      agentExecutionDepthRef.current -= 1;
-    }
-    persistAgentCommand(action, payload, options, result, stateVersionBefore, rollbackState);
-    return result;
-  };
-
-  const createPreviewEngine = (): SandboxEngine | null => {
-    const snapshot = sandboxEngine.getSnapshot();
-    const previewEngine = new SandboxEngine(sandboxEngine.getItems(), {
-      sandboxId: sandboxEngine.getSandboxId(),
-      seed: snapshot.seed,
-      now: snapshot.now,
-      notifications: sandboxEngine.getNotifications(),
+  const browserOptionsFor = (options: AgentActionOptions | undefined, mode: 'preview' | 'commit' = 'commit'): AgentActionOptions | ActionResult<never> => {
+    const actor = sandboxEngine.getCurrentActor();
+    if (options?.principal || options?.scope !== undefined || options?.targetActorId !== undefined) return failure('FORBIDDEN', sandboxEngine.getStateVersion(), 'actor、role、scope、principalは信頼済みbrowser adapterだけが設定できます');
+    if (options?.actorId && options.actorId !== actor.id) return failure('FORBIDDEN', sandboxEngine.getStateVersion(), 'actorIdを現在のbrowser sessionから上書きできません');
+    if (options?.sandboxId && options.sandboxId !== sandboxEngine.getSandboxId()) return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), 'sandboxIdが現在のbrowser sessionと一致しません');
+    const principal = createTrustedPrincipal({
+      subjectId: `browser-session:${sandboxEngine.getSandboxId()}:${actor.id}`,
+      actorId: actor.id,
+      roles: [actor.role],
+      scopes: ['user'],
     });
-    const imported = previewEngine.importState(sandboxEngine.exportState(), SANDBOX_CONTROL_OPTIONS);
-    return imported.ok ? previewEngine : null;
-  };
-
-  const previewAction = (command: PreviewCommand, payload: unknown, options?: AgentActionOptions): ActionResult<ActionPreview> => runAgentAction(`preview:${command}`, payload, { ...options, mode: 'preview' }, () => {
-    const actorId = options?.actorId ?? sandboxEngine.getCurrentActor().id;
-    const previewEngine = createPreviewEngine();
-    if (!previewEngine) return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), 'Sandbox previewを作成できませんでした');
-    const previewResult = applyPreviewOperation(previewEngine, command, payload, { ...options, actorId });
-    if (!previewResult.ok) return previewResult as ActionResult<ActionPreview>;
-    const summary = previewResult.data && typeof previewResult.data === 'object'
-      ? { command, ...(previewResult.data as Record<string, unknown>) }
-      : { command, result: previewResult.data };
-    const now = sandboxEngine.getNow();
-    const previewId = `preview-${sandboxEngine.getSandboxId()}-${++previewCounterRef.current}`;
-    const expiresAt = new Date(Date.parse(now) + 10 * 60 * 1000).toISOString();
-    previewCacheRef.current.set(previewId, { command, payload, actorId, sandboxId: sandboxEngine.getSandboxId(), stateVersion: sandboxEngine.getStateVersion(), expiresAt: Date.parse(expiresAt), summary });
-    const previewRecord: SandboxPreviewRecord = {
-      previewId,
+    return {
+      principal,
+      actorId: actor.id,
       sandboxId: sandboxEngine.getSandboxId(),
-      actorId,
-      command,
-      payload: JSON.stringify(compactImagePayloadForFingerprint(payload)),
-      payloadHash: fingerprint({ sandboxId: sandboxEngine.getSandboxId(), actorId, command: `preview:${command}`, mode: 'preview', payload: compactImagePayloadForFingerprint(payload) }) ?? 'invalid-payload',
-      baseStateVersion: sandboxEngine.getStateVersion(),
-      summary: JSON.stringify(summary),
-      status: 'PENDING',
-      createdAt: new Date().toISOString(),
-      virtualExpiresAt: expiresAt,
-      retentionExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      mode,
+      ...(options?.requestId ? { requestId: options.requestId } : {}),
+      ...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+      ...(options?.operationId ? { operationId: options.operationId } : {}),
+      ...(options?.commandId ? { commandId: options.commandId } : {}),
+      ...(options?.expectedStateVersion !== undefined ? { expectedStateVersion: options.expectedStateVersion } : {}),
     };
-    pendingPreviewRecordsRef.current.set(previewId, previewRecord);
-    return success({ previewId, command, payload, createdAt: now, expiresAt, stateVersion: sandboxEngine.getStateVersion(), sandboxId: sandboxEngine.getSandboxId(), actorId, summary }, sandboxEngine.getStateVersion());
-  });
+  };
 
-  const commitPreview = (previewId: string, options?: AgentActionOptions): ActionResult<unknown> => runAgentAction('commitPreview', { previewId }, { ...options, mode: 'commit' }, () => {
-    const record = previewCacheRef.current.get(previewId);
-    if (!record) return failure('PREVIEW_NOT_FOUND', sandboxEngine.getStateVersion(), 'previewが見つかりません');
-    if (record.expiresAt <= Date.parse(sandboxEngine.getNow())) {
-      previewCacheRef.current.delete(previewId);
-      return failure('PREVIEW_EXPIRED', sandboxEngine.getStateVersion(), 'previewの有効期限が切れています');
+  const runAgentRead = <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, operation: (trustedOptions: AgentActionOptions) => ActionResult<T>): ActionResult<T> => {
+    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。waitForReady()完了後に実行してください。');
+    const trustedOptions = browserOptionsFor(options);
+    if ('ok' in trustedOptions) return trustedOptions as ActionResult<T>;
+    return commandBus.execute(action, payload, trustedOptions, () => operation(trustedOptions));
+  };
+
+  const runAgentUiAction = <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, operation: () => ActionResult<T>): ActionResult<T> => {
+    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。waitForReady()完了後に実行してください。');
+    const trustedOptions = browserOptionsFor(options);
+    if ('ok' in trustedOptions) return trustedOptions as ActionResult<T>;
+    return commandBus.execute(action, payload, trustedOptions, operation);
+  };
+
+  const runAgentMutation = async <T,>(action: string, payload: unknown, options: AgentActionOptions | undefined, operation: (working: SandboxEngine, trustedOptions: AgentActionOptions) => ActionResult<T>, afterPublish?: (result: ActionResult<T>) => void): Promise<ActionResult<T>> => {
+    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。waitForReady()完了後に実行してください。');
+    const trustedOptions = browserOptionsFor(options);
+    if ('ok' in trustedOptions) return trustedOptions as ActionResult<T>;
+    if (persistTimerRef.current !== null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+      persistSandboxStateNow();
     }
-    const actorId = options?.actorId ?? sandboxEngine.getCurrentActor().id;
-    if (record.sandboxId !== sandboxEngine.getSandboxId() || record.actorId !== actorId) return failure('FORBIDDEN', sandboxEngine.getStateVersion(), 'previewを作成したSandbox actorだけが確定できます');
-    if (record.stateVersion !== sandboxEngine.getStateVersion()) return failure('STATE_CONFLICT', sandboxEngine.getStateVersion(), 'preview作成後にSandbox状態が変化しています', { previewStateVersion: record.stateVersion, actualStateVersion: sandboxEngine.getStateVersion() });
-    const commitOptions = { ...options, actorId, expectedStateVersion: undefined };
-    const working = createPreviewEngine();
-    if (!working) return failure('INVALID_STATE', sandboxEngine.getStateVersion(), 'Sandbox previewの確定コピーを作成できませんでした');
-    const result = applyPreviewOperation(working, record.command, record.payload, commitOptions);
+    await localPersistChainRef.current;
+    const result = await browserCommandExecutor.execute(action, payload, trustedOptions, (working) => operation(working, trustedOptions));
     if (result.ok) {
-      const imported = sandboxEngine.importState(working.exportState(), SANDBOX_CONTROL_OPTIONS);
-      if (!imported.ok) return failure('INVALID_STATE', sandboxEngine.getStateVersion(), 'Sandbox previewを確定できませんでした');
-      previewCacheRef.current.delete(previewId);
-      syncFromEngine();
+      localPersistedStateVersionRef.current = result.stateVersion;
+      syncFromEngine(false);
+      afterPublish?.(result);
     }
     return result;
-  });
+  };
+
+  const previewAction = async (command: PreviewCommand, payload: unknown, options?: AgentActionOptions): Promise<ActionResult<ActionPreview>> => {
+    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。waitForReady()完了後に実行してください。');
+    const trustedOptions = browserOptionsFor(options, 'preview');
+    if ('ok' in trustedOptions) return trustedOptions as ActionResult<ActionPreview>;
+    await localPersistChainRef.current;
+    return browserCommandExecutor.preview(command, payload, trustedOptions, (working) => applyPreviewOperation(working, command, payload, trustedOptions));
+  };
+
+  const commitPreview = async (previewId: string, options?: AgentActionOptions): Promise<ActionResult<unknown>> => {
+    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。waitForReady()完了後に実行してください。');
+    const trustedOptions = browserOptionsFor(options, 'commit');
+    if ('ok' in trustedOptions) return trustedOptions;
+    await localPersistChainRef.current;
+    const result = await browserCommandExecutor.commitPreview(previewId, trustedOptions, (working, command, payload) => applyPreviewOperation(working, command as PreviewCommand, payload, trustedOptions));
+    if (result.ok) {
+      localPersistedStateVersionRef.current = result.stateVersion;
+      syncFromEngine(false);
+    }
+    return result;
+  };
 
   const searchItems = (query: string) => {
     if (typeof query !== 'string' || query.length > 500) return [];
@@ -1345,22 +1284,29 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (typeof window === 'undefined') return undefined;
     const apiDefinition: MercariAgentAPI = {
       waitForReady,
-      navigateTab: (tab, options) => runAgentAction('navigateTab', { tab }, options, () => {
+      navigateTab: (tab, options) => runAgentUiAction('navigateTab', { tab }, options, () => {
         if (!isMainTabValue(tab)) return failure('INVALID_TAB', sandboxEngine.getStateVersion(), '無効なタブです');
         navigateToTab(tab);
-        return success(undefined, bumpStateVersion());
+        return success(undefined, sandboxEngine.getStateVersion());
       }),
-      navigateHomeSubTab: (tab, options) => runAgentAction('navigateHomeSubTab', { tab }, options, () => {
+      navigateHomeSubTab: (tab, options) => runAgentUiAction('navigateHomeSubTab', { tab }, options, () => {
         if (!isHomeTabValue(tab)) return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '無効なホームサブタブです');
         navigateToTab('home');
         setHomeTab(tab);
-        return success(undefined, bumpStateVersion());
+        return success(undefined, sandboxEngine.getStateVersion());
       }),
-      navigateCategory: (category, options) => runAgentAction('navigateCategory', { category }, options, () => {
+      navigateCategory: (category, options) => runAgentUiAction('navigateCategory', { category }, options, () => {
         if (typeof category !== 'string' || !category.trim()) return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), 'カテゴリを指定してください');
-        return openCategory(category);
+        const normalizedCategory = category.trim();
+        setCategoryName(normalizedCategory);
+        setMainTab('category');
+        setIsSearchOpenState(false);
+        setSelectedItemId(null);
+        setBuyingItemId(null);
+        patchStateRef({ currentMainTab: 'category', currentCategory: normalizedCategory, selectedItemId: null, buyingItemId: null });
+        return success(undefined, sandboxEngine.getStateVersion());
       }),
-      search: (query, options) => runAgentAction('search', { query }, options, () => {
+      search: (query, options) => runAgentUiAction('search', { query }, options, () => {
         if (typeof query !== 'string') return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '検索語は文字列で指定してください');
         const normalizedQuery = query.trim();
         if (!normalizedQuery) return failure('INVALID_INPUT', stateVersionRef.current);
@@ -1368,55 +1314,96 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setIsSearchOpen(true);
         setSearchQuery(normalizedQuery);
         addSearchHistory(normalizedQuery);
-        return success(undefined, bumpStateVersion({ searchQuery: normalizedQuery, selectedItemId: null, buyingItemId: null }));
+        patchStateRef({ searchQuery: normalizedQuery, selectedItemId: null, buyingItemId: null });
+        return success(undefined, sandboxEngine.getStateVersion());
       }),
-      openItem: (itemId, options) => runAgentAction('openItem', { itemId }, options, () => typeof itemId === 'string' && itemId.trim() ? openItem(itemId) : failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '商品IDを指定してください')),
-      closeItem: (options) => runAgentAction('closeItem', {}, options, () => closeItem()),
-      setLiked: (itemId, liked, options) => runAgentAction('setLiked', { itemId, liked }, options, () => setLiked(itemId, liked)),
-      likeItem: (itemId, options) => runAgentAction('likeItem', { itemId, liked: true }, options, () => setLiked(itemId, true)),
-      setSaved: (itemId, saved, options) => runAgentAction('setSaved', { itemId, saved }, options, () => setSaved(itemId, saved)),
-      addComment: (itemId, text, options) => runAgentAction('addComment', { itemId, text }, options, () => addComment(itemId, text)),
-      listItem: (item, options) => runAgentAction('listItem', item, options, () => { const result = sandboxEngine.listItem(item, options); if (result.ok) syncFromEngine(); return result; }),
-      createListingDraft: (item, options) => runAgentAction('createListingDraft', item, options, () => { const result = sandboxEngine.createListingDraft(item, options); if (result.ok) syncFromEngine(); return result; }),
-      updateListingDraft: (draftId, item, options) => runAgentAction('updateListingDraft', { draftId, item }, options, () => { const result = sandboxEngine.updateListingDraft(draftId, item, options); if (result.ok) syncFromEngine(); return result; }),
-      getListingDrafts: (options) => runAgentAction('getListingDrafts', {}, options, () => success(sandboxEngine.getListingDrafts(sandboxEngine.getCurrentActor().id), sandboxEngine.getStateVersion())),
-      saveListingDraft: (item: SaveListingDraftInput, options) => runAgentAction('saveListingDraft', item, options, () => {
+      openItem: (itemId, options) => runAgentMutation('openItem', { itemId }, options, (working) => {
+        if (typeof itemId !== 'string' || !itemId.trim()) return failure('INVALID_INPUT', working.getStateVersion(), '商品IDを指定してください');
+        const target = working.getItem(itemId);
+        if (!target) return failure('ITEM_NOT_FOUND', working.getStateVersion());
+        working.replaceItems(working.getItems().map((item) => item.id === itemId ? { ...item, viewsCount: (item.viewsCount ?? 0) + 1, viewedAt: working.getNow() } : item));
+        return success(undefined, working.commitViewState());
+      }, () => {
+        setBuyingItemId(null);
+        setSelectedItemId(itemId);
+        setMyPagePanel(null);
+        const nextRecentlyViewedIds = [itemId, ...(stateRef.current?.recentlyViewedIds ?? recentlyViewedIds).filter((id) => id !== itemId)].slice(0, 12);
+        setRecentlyViewedIds(nextRecentlyViewedIds);
+        patchStateRef({ selectedItemId: itemId, buyingItemId: null, recentlyViewedIds: nextRecentlyViewedIds });
+      }),
+      closeItem: (options) => runAgentUiAction('closeItem', {}, options, () => {
+        setSelectedItemId(null);
+        patchStateRef({ selectedItemId: null });
+        replaceItemRoute();
+        return success(undefined, sandboxEngine.getStateVersion());
+      }),
+      setLiked: (itemId, liked, options) => runAgentMutation('setLiked', { itemId, liked }, options, (working) => {
+        if (typeof itemId !== 'string' || typeof liked !== 'boolean') return failure('INVALID_INPUT', working.getStateVersion(), 'いいね入力の形式が不正です');
+        if (!working.getCurrentActor().authenticated) return failure('AUTH_REQUIRED', working.getStateVersion(), 'いいねするにはログインが必要です。');
+        const target = working.getItem(itemId);
+        if (!target) return failure('ITEM_NOT_FOUND', working.getStateVersion());
+        if (target.isLiked === liked) return success(undefined, working.getStateVersion());
+        working.replaceItems(working.getItems().map((item) => item.id !== itemId ? item : { ...item, isLiked: liked, likesCount: liked ? item.likesCount + 1 : Math.max(0, item.likesCount - 1) }));
+        return success(undefined, working.commitViewState());
+      }),
+      likeItem: (itemId, options) => runAgentMutation('likeItem', { itemId, liked: true }, options, (working) => {
+        if (!working.getCurrentActor().authenticated) return failure('AUTH_REQUIRED', working.getStateVersion(), 'いいねするにはログインが必要です。');
+        const target = working.getItem(itemId);
+        if (!target) return failure('ITEM_NOT_FOUND', working.getStateVersion());
+        if (target.isLiked) return success(undefined, working.getStateVersion());
+        working.replaceItems(working.getItems().map((item) => item.id !== itemId ? item : { ...item, isLiked: true, likesCount: item.likesCount + 1 }));
+        return success(undefined, working.commitViewState());
+      }),
+      setSaved: (itemId, saved, options) => runAgentUiAction('setSaved', { itemId, saved }, options, () => {
+        if (typeof itemId !== 'string' || typeof saved !== 'boolean') return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '保存入力の形式が不正です');
+        if (!sandboxEngine.getCurrentActor().authenticated) return failure('AUTH_REQUIRED', sandboxEngine.getStateVersion(), '商品を保存するにはログインが必要です。');
+        if (!sandboxEngine.getItem(itemId)) return failure('ITEM_NOT_FOUND', sandboxEngine.getStateVersion());
+        const current = stateRef.current?.savedItemIds ?? savedItemIds;
+        const next = saved ? [...new Set([...current, itemId])] : current.filter((id) => id !== itemId);
+        setSavedItemIds(next);
+        patchStateRef({ savedItemIds: next });
+        return success(undefined, sandboxEngine.getStateVersion());
+      }),
+      addComment: (itemId, text, options) => runAgentMutation('addComment', { itemId, text }, options, (working, trusted) => working.addComment(itemId, text, trusted)),
+      listItem: (item, options) => runAgentMutation('listItem', item, options, (working, trusted) => working.listItem(item, trusted)),
+      createListingDraft: (item, options) => runAgentMutation('createListingDraft', item, options, (working, trusted) => working.createListingDraft(item, trusted)),
+      updateListingDraft: (draftId, item, options) => runAgentMutation('updateListingDraft', { draftId, item }, options, (working, trusted) => working.updateListingDraft(draftId, item, trusted)),
+      getListingDrafts: (options) => runAgentRead('getListingDrafts', {}, options, (trusted) => success(sandboxEngine.getListingDrafts(trusted.principal?.actorId ?? sandboxEngine.getCurrentActor().id), sandboxEngine.getStateVersion())),
+      saveListingDraft: (item: SaveListingDraftInput, options) => runAgentMutation('saveListingDraft', item, options, (working, trusted) => {
         if (!item || typeof item !== 'object') return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), '出品下書きの形式が不正です');
         const { draftId, ...fields } = item;
-        const result = draftId ? sandboxEngine.updateListingDraft(draftId, fields, options) : sandboxEngine.createListingDraft(fields, options);
-        if (result.ok) syncFromEngine();
-        return result;
+        return draftId ? working.updateListingDraft(draftId, fields, trusted) : working.createListingDraft(fields, trusted);
       }),
-      deleteListingDraft: (draftId, options) => runAgentAction('deleteListingDraft', { draftId }, options, () => { const result = sandboxEngine.deleteListingDraft(draftId, options); if (result.ok) syncFromEngine(); return result; }),
-      submitListing: (draftId, options) => runAgentAction('submitListing', { draftId }, options, () => { const result = sandboxEngine.submitListing(draftId, options); if (result.ok) syncFromEngine(); return result; }),
-      startPurchase: (itemId, options) => runAgentAction('startPurchase', { itemId }, options, () => { const result = sandboxEngine.startPurchase(itemId, options); if (result.ok) { setBuyingItemId(itemId); syncFromEngine(); } return result; }),
-      confirmPurchase: (purchaseIntentId, options) => runAgentAction('confirmPurchase', { purchaseIntentId }, options, () => { const result = sandboxEngine.confirmPurchase(purchaseIntentId, options); if (result.ok) syncFromEngine(); return result; }),
-      placeBid: (itemId, amount, options) => runAgentAction('placeBid', { itemId, amount }, options, () => { const result = sandboxEngine.placeBid(itemId, amount, options); if (result.ok) syncFromEngine(); return result; }),
-      closeAuction: (itemId, options) => runAgentAction('closeAuction', { itemId }, options, () => { const result = sandboxEngine.closeAuction(itemId, options); if (result.ok) syncFromEngine(); return result; }),
-      buyItem: (itemId, options) => runAgentAction('buyItem', { itemId }, options, () => { const result = sandboxEngine.startPurchase(itemId, options); if (result.ok) { setBuyingItemId(itemId); syncFromEngine(); } return result; }),
-      shipOrder: (transactionId, options) => runAgentAction('shipOrder', { transactionId }, options, () => { const result = sandboxEngine.shipOrder(transactionId, options); if (result.ok) syncFromEngine(); return result; }),
-      markDelivered: (transactionId, options) => runAgentAction('markDelivered', { transactionId }, options, () => { const result = sandboxEngine.markDelivered(transactionId, options); if (result.ok) syncFromEngine(); return result; }),
-      reviewOrder: (transactionId, rating, comment, options) => runAgentAction('reviewOrder', { transactionId, rating, comment }, options, () => { const result = sandboxEngine.reviewOrder(transactionId, rating, comment, options); if (result.ok) syncFromEngine(); return result; }),
-      cancelOrder: (transactionId, reason, options) => runAgentAction('cancelOrder', { transactionId, reason }, options, () => { const result = sandboxEngine.cancelOrder(transactionId, reason, options); if (result.ok) syncFromEngine(); return result; }),
-      resolveCancellation: (transactionId, approve, options) => runAgentAction('resolveCancellation', { transactionId, approve }, options, () => { const result = sandboxEngine.resolveCancellation(transactionId, approve, options); if (result.ok) syncFromEngine(); return result; }),
-      reviewListing: (itemId, approve, options) => runAgentAction('reviewListing', { itemId, approve }, options, () => { const result = sandboxEngine.reviewListing(itemId, approve, options); if (result.ok) syncFromEngine(); return result; }),
-      requestReturn: (transactionId, reason, options) => runAgentAction('requestReturn', { transactionId, reason }, options, () => { const result = sandboxEngine.requestReturn(transactionId, reason, options); if (result.ok) syncFromEngine(); return result; }),
-      confirmReturnReceived: (transactionId, options) => runAgentAction('confirmReturnReceived', { transactionId }, options, () => { const result = sandboxEngine.confirmReturnReceived(transactionId, options); if (result.ok) syncFromEngine(); return result; }),
-      sendTransactionMessage: (transactionId, body, options) => runAgentAction('sendTransactionMessage', { transactionId, body }, options, () => { const result = sandboxEngine.sendTransactionMessage(transactionId, body, options); if (result.ok) syncFromEngine(); return result; }),
-      createSupportTicket: (input, options) => runAgentAction('createSupportTicket', input, options, () => { const result = sandboxEngine.createSupportTicket(input, options); if (result.ok) syncFromEngine(); return result; }),
-      reportTransaction: (transactionId, body, options) => runAgentAction('reportTransaction', { transactionId, body }, options, () => { const result = sandboxEngine.reportTransaction(transactionId, body, options); if (result.ok) syncFromEngine(); return result; }),
-      updateListing: (itemId, input, options) => runAgentAction('updateListing', { itemId, input }, options, () => { const result = sandboxEngine.updateListing(itemId, input, options); if (result.ok) syncFromEngine(); return result; }),
-      pauseListing: (itemId, options) => runAgentAction('pauseListing', { itemId }, options, () => { const result = sandboxEngine.pauseListing(itemId, options); if (result.ok) syncFromEngine(); return result; }),
-      resumeListing: (itemId, options) => runAgentAction('resumeListing', { itemId }, options, () => { const result = sandboxEngine.resumeListing(itemId, options); if (result.ok) syncFromEngine(); return result; }),
-      relistItem: (itemId, options) => runAgentAction('relistItem', { itemId }, options, () => { const result = sandboxEngine.relistItem(itemId, options); if (result.ok) syncFromEngine(); return result; }),
-      listOwnListings: (options) => runAgentAction('listOwnListings', {}, options, () => {
+      deleteListingDraft: (draftId, options) => runAgentMutation('deleteListingDraft', { draftId }, options, (working, trusted) => working.deleteListingDraft(draftId, trusted)),
+      submitListing: (draftId, options) => runAgentMutation('submitListing', { draftId }, options, (working, trusted) => working.submitListing(draftId, trusted)),
+      startPurchase: (itemId, options) => runAgentMutation('startPurchase', { itemId }, options, (working, trusted) => working.startPurchase(itemId, trusted), () => setBuyingItemId(itemId)),
+      confirmPurchase: (purchaseIntentId, options) => runAgentMutation('confirmPurchase', { purchaseIntentId }, options, (working, trusted) => working.confirmPurchase(purchaseIntentId, trusted)),
+      placeBid: (itemId, amount, options) => runAgentMutation('placeBid', { itemId, amount }, options, (working, trusted) => working.placeBid(itemId, amount, trusted)),
+      closeAuction: (itemId, options) => runAgentMutation('closeAuction', { itemId }, options, (working, trusted) => working.closeAuction(itemId, trusted)),
+      buyItem: (itemId, options) => runAgentMutation('buyItem', { itemId }, options, (working, trusted) => working.startPurchase(itemId, trusted), () => setBuyingItemId(itemId)),
+      shipOrder: (transactionId, options) => runAgentMutation('shipOrder', { transactionId }, options, (working, trusted) => working.shipOrder(transactionId, trusted)),
+      markDelivered: (transactionId, options) => runAgentMutation('markDelivered', { transactionId }, options, (working, trusted) => working.markDelivered(transactionId, trusted)),
+      reviewOrder: (transactionId, rating, comment, options) => runAgentMutation('reviewOrder', { transactionId, rating, comment }, options, (working, trusted) => working.reviewOrder(transactionId, rating, comment, trusted)),
+      cancelOrder: (transactionId, reason, options) => runAgentMutation('cancelOrder', { transactionId, reason }, options, (working, trusted) => working.cancelOrder(transactionId, reason, trusted)),
+      resolveCancellation: (transactionId, approve, options) => runAgentMutation('resolveCancellation', { transactionId, approve }, options, (working, trusted) => working.resolveCancellation(transactionId, approve, trusted)),
+      reviewListing: (itemId, approve, options) => runAgentMutation('reviewListing', { itemId, approve }, options, (working, trusted) => working.reviewListing(itemId, approve, trusted)),
+      requestReturn: (transactionId, reason, options) => runAgentMutation('requestReturn', { transactionId, reason }, options, (working, trusted) => working.requestReturn(transactionId, reason, trusted)),
+      confirmReturnReceived: (transactionId, options) => runAgentMutation('confirmReturnReceived', { transactionId }, options, (working, trusted) => working.confirmReturnReceived(transactionId, trusted)),
+      sendTransactionMessage: (transactionId, body, options) => runAgentMutation('sendTransactionMessage', { transactionId, body }, options, (working, trusted) => working.sendTransactionMessage(transactionId, body, trusted)),
+      createSupportTicket: (input, options) => runAgentMutation('createSupportTicket', input, options, (working, trusted) => working.createSupportTicket(input, trusted)),
+      reportTransaction: (transactionId, body, options) => runAgentMutation('reportTransaction', { transactionId, body }, options, (working, trusted) => working.reportTransaction(transactionId, body, trusted)),
+      updateListing: (itemId, input, options) => runAgentMutation('updateListing', { itemId, input }, options, (working, trusted) => working.updateListing(itemId, input, trusted)),
+      pauseListing: (itemId, options) => runAgentMutation('pauseListing', { itemId }, options, (working, trusted) => working.pauseListing(itemId, trusted)),
+      resumeListing: (itemId, options) => runAgentMutation('resumeListing', { itemId }, options, (working, trusted) => working.resumeListing(itemId, trusted)),
+      relistItem: (itemId, options) => runAgentMutation('relistItem', { itemId }, options, (working, trusted) => working.relistItem(itemId, trusted)),
+      listOwnListings: (options) => runAgentRead('listOwnListings', {}, options, () => {
         const actor = sandboxEngine.getCurrentActor();
         if (!actor?.authenticated) return failure('AUTH_REQUIRED', sandboxEngine.getStateVersion());
         if (actor.role !== 'seller' && actor.role !== 'admin' && actor.role !== 'platform') return failure('FORBIDDEN', sandboxEngine.getStateVersion(), '自分の出品一覧を取得できるのはsellerまたは運営です');
         return success(sandboxEngine.getItems().filter((item) => actor.role === 'admin' || actor.role === 'platform' || item.sellerId === actor.id), sandboxEngine.getStateVersion());
       }),
       catalog: {
-        list: (input: CatalogListInput = {}, options) => runAgentAction('catalog.list', input, options, () => {
+        list: (input: CatalogListInput = {}, options) => runAgentRead('catalog.list', input, options, () => {
           const offset = Number.isInteger(input.offset) && (input.offset ?? 0) >= 0 ? input.offset ?? 0 : 0;
           const limit = Number.isInteger(input.limit) && (input.limit ?? 24) > 0 ? Math.min(input.limit ?? 24, 40) : 24;
           const query = input.query?.trim().toLocaleLowerCase('ja-JP') ?? '';
@@ -1428,7 +1415,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
           const result: CatalogListResult = { items: filtered.slice(offset, offset + limit), total: filtered.length, offset, limit, stateVersion: sandboxEngine.getStateVersion() };
           return success(result, sandboxEngine.getStateVersion());
         }),
-        get: (itemId, options) => runAgentAction('catalog.get', { itemId }, options, () => {
+        get: (itemId, options) => runAgentRead('catalog.get', { itemId }, options, () => {
           const item = sandboxEngine.getItem(itemId);
           return item ? success(item, sandboxEngine.getStateVersion()) : failure('ITEM_NOT_FOUND', sandboxEngine.getStateVersion());
         }),
@@ -1459,14 +1446,14 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (targetId !== viewer.id && viewer.role !== 'admin' && viewer.role !== 'platform') return undefined;
         return sandboxEngine.getProfile(targetId);
       },
-      updateProfile: (input, options) => runAgentAction('updateProfile', input, options, () => { const result = sandboxEngine.updateProfile(input, options); if (result.ok) syncFromEngine(); return result; }),
-      getFollowList: (direction, options) => runAgentAction('getFollowList', { direction }, options, () => sandboxEngine.getFollowList(direction, options)),
-      getFollowSummary: (actorId, options) => runAgentAction('getFollowSummary', { actorId }, options, () => sandboxEngine.getFollowSummary(actorId, options)),
-      followUser: (actorId, options) => runAgentAction('followUser', { actorId }, options, () => { const result = sandboxEngine.followUser(actorId, options); if (result.ok) syncFromEngine(); return result; }),
-      unfollowUser: (actorId, options) => runAgentAction('unfollowUser', { actorId }, options, () => { const result = sandboxEngine.unfollowUser(actorId, options); if (result.ok) syncFromEngine(); return result; }),
-      getWallet: (options) => runAgentAction('getWallet', {}, options, () => sandboxEngine.getWallet(options)),
-      depositWallet: (amount, options) => runAgentAction('depositWallet', { amount }, options, () => { const result = sandboxEngine.depositWallet(amount, options); if (result.ok) syncFromEngine(); return result; }),
-      withdrawWallet: (amount, options) => runAgentAction('withdrawWallet', { amount }, options, () => { const result = sandboxEngine.withdrawWallet(amount, options); if (result.ok) syncFromEngine(); return result; }),
+      updateProfile: (input, options) => runAgentMutation('updateProfile', input, options, (working, trusted) => working.updateProfile(input, trusted)),
+      getFollowList: (direction, options) => runAgentRead('getFollowList', { direction }, options, (trusted) => sandboxEngine.getFollowList(direction, trusted)),
+      getFollowSummary: (actorId, options) => runAgentRead('getFollowSummary', { actorId }, options, (trusted) => sandboxEngine.getFollowSummary(actorId, trusted)),
+      followUser: (actorId, options) => runAgentMutation('followUser', { actorId }, options, (working, trusted) => working.followUser(actorId, trusted)),
+      unfollowUser: (actorId, options) => runAgentMutation('unfollowUser', { actorId }, options, (working, trusted) => working.unfollowUser(actorId, trusted)),
+      getWallet: (options) => runAgentRead('getWallet', {}, options, (trusted) => sandboxEngine.getWallet(trusted)),
+      depositWallet: (amount, options) => runAgentMutation('depositWallet', { amount }, options, (working, trusted) => working.depositWallet(amount, trusted)),
+      withdrawWallet: (amount, options) => runAgentMutation('withdrawWallet', { amount }, options, (working, trusted) => working.withdrawWallet(amount, trusted)),
       previewAction,
       commitPreview,
       subscribe: (handler) => sandboxEngine.subscribe(handler),
@@ -1522,46 +1509,6 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (result.ok) syncFromEngine();
     return result;
   });
-  const runUiControlCommand = <T,>(command: string, payload: unknown, operation: () => ActionResult<T>): ActionResult<T> => {
-    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。準備完了後にもう一度お試しください。');
-    const stateVersionBefore = sandboxEngine.getStateVersion();
-    const result = commandBus.execute(command, payload, SANDBOX_CONTROL_OPTIONS, operation);
-    persistAgentCommand(command, payload, SANDBOX_CONTROL_OPTIONS, result, stateVersionBefore);
-    return result;
-  };
-
-  const switchActor = (actorId: string) => runUiControlCommand('switchActor', { actorId }, () => {
-    const result = sandboxEngine.switchActor(actorId, SANDBOX_CONTROL_OPTIONS);
-    if (result.ok) {
-      setActiveActorId(actorId);
-      syncFromEngine();
-    }
-    return result;
-  });
-  const loadScenario = (scenarioId: ScenarioId) => runUiControlCommand('loadScenario', { scenarioId }, () => {
-    const result = sandboxEngine.loadScenario(scenarioId, SANDBOX_CONTROL_OPTIONS);
-    if (result.ok) {
-      setActiveActorId(sandboxEngine.getCurrentActor().id);
-      setMainTab('home');
-      setHomeTab('recommend');
-      setCategoryName(null);
-      setIsSearchOpenState(false);
-      setSearchQuery('');
-      setSelectedItemId(null);
-      setBuyingItemId(null);
-      setActiveNotificationId(null);
-      setSearchHistory([...INITIAL_SEARCH_HISTORY]);
-      setRecentlyViewedIds([...INITIAL_RECENTLY_VIEWED_IDS]);
-      setSavedItemIds([]);
-      syncFromEngine();
-    }
-    return result;
-  });
-  const advanceClock = (milliseconds: number) => runUiControlCommand('advanceClock', { milliseconds }, () => {
-    const result = sandboxEngine.advanceClock(milliseconds, SANDBOX_CONTROL_OPTIONS);
-    if (result.ok) syncFromEngine();
-    return result;
-  });
   const shipOrder = (transactionId: string) => runUiCommand('shipOrder', { transactionId }, () => {
     const result = sandboxEngine.shipOrder(transactionId, { actorId: activeActor.id });
     if (result.ok) syncFromEngine();
@@ -1583,7 +1530,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return result;
   });
 
-    return <MercariContext.Provider value={{ isAuthenticated, activeActor, sandboxSnapshot: liveSnapshot, isSandboxReady, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, myPagePanel, setMyPagePanel, openMyPagePanel, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, createListingDraft, updateListingDraft, getListingDrafts: () => sandboxEngine.getListingDrafts(activeActor.id), deleteListingDraft, submitListing, updateListing, pauseListing, resumeListing, relistItem, addComment, recentlyViewedIds, savedItemIds, user, profile, wallet, getWallet, depositWallet, withdrawWallet, updateProfile, getFollowList, getFollowSummary, followUser, unfollowUser, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame, switchActor, loadScenario, advanceClock, getTransactions: (actorId) => sandboxEngine.getVisibleTransactions(actorId), getDomainEvents: () => sandboxEngine.getVisibleDomainEvents(), shipOrder, markDelivered, reviewOrder, cancelOrder }}>{children}</MercariContext.Provider>;
+    return <MercariContext.Provider value={{ isAuthenticated, activeActor, sandboxSnapshot: liveSnapshot, isSandboxReady, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, myPagePanel, setMyPagePanel, openMyPagePanel, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, createListingDraft, updateListingDraft, getListingDrafts: () => sandboxEngine.getListingDrafts(activeActor.id), deleteListingDraft, submitListing, updateListing, pauseListing, resumeListing, relistItem, addComment, recentlyViewedIds, savedItemIds, user, profile, wallet, getWallet, depositWallet, withdrawWallet, updateProfile, getFollowList, getFollowSummary, followUser, unfollowUser, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame, getTransactions: (actorId) => sandboxEngine.getVisibleTransactions(actorId), getDomainEvents: () => sandboxEngine.getVisibleDomainEvents(), shipOrder, markDelivered, reviewOrder, cancelOrder }}>{children}</MercariContext.Provider>;
 };
 
 export const useMercari = () => {

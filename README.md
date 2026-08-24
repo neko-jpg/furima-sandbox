@@ -20,6 +20,8 @@ npm run dev
 
 ブラウザで<http://localhost:3000>を開きます。UI/fixture開発では外部D1や本番の資格情報は不要です。`.env.example`を`.env.local`へコピーする場合も、値はローカル開発用のままにしてください。
 
+通常の`npm run dev`は、Vinextの3つの開発環境でsourcemap生成を省き、コールド初回表示を優先します。サーバーやhydrationのスタックをソース位置まで追うときは、起動前に`FURIMA_DEV_SOURCEMAPS=true`を設定してください。
+
 ### DockerでUI/fixtureを起動する
 
 Docker経路も同じUI/fixture開発を目的にしています。通常起動はイメージへソースを含めるため、初回または依存関係・ソースを更新した後に次を実行します。
@@ -69,7 +71,7 @@ npm run dev:edge
 - ブラウザSandboxの正本はIndexedDBです。localStorageは小さな設定、旧データ移行、actor別の下書きメタデータなどに限定しています。IndexedDBが利用できない環境では診断付きのvolatile fallbackになるため、再起動後の保持を前提にしないでください。
 - Cloudflare WorkerでD1を使う場合だけ、`DB` bindingとOperator API用の`FURIMA_D1_API_TOKEN` / `FURIMA_D1_CONTROL_TOKEN`を別途設定します。DockerのUIサービスはD1/R2を提供しません。
 
-通常のagent操作とsandbox制御操作は分離しています。購入者・出品者のAPIには現在actorの取引・walletだけを返し、`switchActor`、シナリオロード、仮想時計、障害注入は`sandbox-control` scopeかつadmin/platform actorが必要です。Sandbox Inspectorはデモ検証用の運営画面です。
+通常のagent操作とsandbox制御操作はorigin・bundle・JavaScript realmの境界で分離します。agent用React bundleにはactor切替、シナリオロード、仮想時計、障害注入のclientやcredentialを含めません。これらは`FURIMA_D1_CONTROL_TOKEN`で認証した外部ハーネスまたはcontrol APIからだけ実行し、購入者・出品者のAPIには現在actorの取引・walletだけを返します。
 
 ## 開発と検証
 
@@ -105,8 +107,8 @@ npm run types:worker
 
 ## Agent API
 
-ブラウザ上では`window.__SHOP_API__`から安定したAPIオブジェクトを取得できます。後方互換のため`window.__MERCARI_API__`も同じオブジェクトを指します。読み取りには`getSnapshot()`、`getItems()`、`getItem(id)`、`searchItems(query)`、操作には`setLiked`、`startPurchase`、`confirmPurchase`、`createListingDraft`、`submitListing`などを使います。操作結果は`ActionResult`で返り、`idempotencyKey`、`getActionTrace()`、`resetScenario()`に対応しています。
+ブラウザ上では`window.__SHOP_API__`から安定したdata-plane APIオブジェクトを取得できます。後方互換のため`window.__MERCARI_API__`も同じオブジェクトを指します。読み取りには`getSnapshot()`、`getItems()`、`getItem(id)`、`searchItems(query)`、操作には`setLiked`、`startPurchase`、`confirmPurchase`、`createListingDraft`、`submitListing`などを使います。操作結果は`ActionResult`で返り、`idempotencyKey`と`getActionTrace()`に対応します。`resetScenario`などのcontrol操作はブラウザAPIへ公開しません。
 
 ## 画像・カタログ
 
-実行時の商品画像は`public/images/products/pexels-selected/`です。参考スクリーンショットは`docs/reference-assets/`に置き、公開静的assetからは除外しています。`npm run assets:audit`は公開対象の総量80MiB budgetと2MiB以上のファイルを確認します。Pexelsから追加候補を取得する場合はAPIキーを環境変数で渡し、キーをソースコードや`.env`へコミットしないでください。
+実行時の商品画像はWebPに変換して`public/images/products/pexels-selected/`へ置きます。Pexelsの未選定候補はGit管理・公開配信の対象外である`outputs/pexels-candidates*/`へ保存し、参考スクリーンショットは`docs/reference-assets/`に置きます。`public/images/products/pexels-candidates*/`や公開対象のJPEG/PNGが存在すると`npm run assets:audit`と`npm run build`は失敗します。監査は公開対象の総量80MiB budgetと2MiB以上のファイルも確認します。Pexelsから追加候補を取得する場合はAPIキーを環境変数で渡し、キーをソースコードや`.env`へコミットしないでください。

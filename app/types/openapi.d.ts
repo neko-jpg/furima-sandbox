@@ -830,6 +830,7 @@ export interface components {
             condition?: "新品・未使用" | "未使用に近い" | "目立った傷や汚れなし" | "やや傷や汚れあり" | "傷や汚れあり" | "全体的に状態が悪い";
             imageRefs?: string[];
         };
+        ActionIdentifier: string;
         SandboxState: {
             /** @constant */
             version: "1";
@@ -839,8 +840,53 @@ export interface components {
             /** Format: date-time */
             now: string;
             stateVersion: number;
+            uiRevision?: number;
+            idCounter?: number;
             currentActorId: string;
+            actors: {
+                [key: string]: unknown;
+            }[];
             items: components["schemas"]["MercariItem"][];
+            purchaseIntents: {
+                [key: string]: unknown;
+            }[];
+            transactions: {
+                [key: string]: unknown;
+            }[];
+            payments: {
+                [key: string]: unknown;
+            }[];
+            shipments: {
+                [key: string]: unknown;
+            }[];
+            bids: {
+                [key: string]: unknown;
+            }[];
+            reviews: {
+                [key: string]: unknown;
+            }[];
+            returns?: {
+                [key: string]: unknown;
+            }[];
+            messages?: {
+                [key: string]: unknown;
+            }[];
+            supportTickets?: {
+                [key: string]: unknown;
+            }[];
+            profiles?: {
+                [key: string]: unknown;
+            }[];
+            inventoryMovements: {
+                [key: string]: unknown;
+            }[];
+            events: {
+                [key: string]: unknown;
+            }[];
+            notifications: {
+                [key: string]: unknown;
+            }[];
+            wallets: components["schemas"]["WalletSnapshot"][];
             follows: components["schemas"]["FollowRelation"][];
             drafts: {
                 [key: string]: Record<string, never>;
@@ -848,6 +894,10 @@ export interface components {
             draftOwners: {
                 [key: string]: string;
             };
+            draftUpdatedAt?: {
+                [key: string]: string;
+            };
+            pendingFailures: string[];
         };
         ActionResult: {
             /** @constant */
@@ -866,12 +916,12 @@ export interface components {
         };
         ActionMetadata: {
             sandboxId: string;
-            actorId: string;
+            actorId: components["schemas"]["ActionIdentifier"];
             stateVersion: number;
-            operationId: string;
-            commandId?: string;
-            requestId?: string;
-            idempotencyKey?: string;
+            operationId: components["schemas"]["ActionIdentifier"];
+            commandId?: components["schemas"]["ActionIdentifier"];
+            requestId?: components["schemas"]["ActionIdentifier"];
+            idempotencyKey?: components["schemas"]["ActionIdentifier"];
             /** @enum {string} */
             mode: "preview" | "commit";
         };
@@ -883,21 +933,21 @@ export interface components {
             payload: Record<string, never>;
             stateVersion?: number;
             expectedStateVersion?: number;
-            operationId?: string;
-            commandId?: string;
-            requestId?: string;
-            idempotencyKey?: string;
+            operationId?: components["schemas"]["ActionIdentifier"];
+            commandId?: components["schemas"]["ActionIdentifier"];
+            requestId?: components["schemas"]["ActionIdentifier"];
+            idempotencyKey?: components["schemas"]["ActionIdentifier"];
         } & (unknown & unknown & unknown);
         SandboxCommitInput: {
             /** @example schemathesis */
             sandboxId?: string;
-            previewId: string;
+            previewId: components["schemas"]["ActionIdentifier"];
             stateVersion?: number;
             expectedStateVersion?: number;
-            operationId?: string;
-            commandId?: string;
-            requestId?: string;
-            idempotencyKey: string;
+            operationId?: components["schemas"]["ActionIdentifier"];
+            commandId?: components["schemas"]["ActionIdentifier"];
+            requestId?: components["schemas"]["ActionIdentifier"];
+            idempotencyKey: components["schemas"]["ActionIdentifier"];
         };
         ActionResultPreview: components["schemas"]["ActionResult"];
         SandboxHealth: {
@@ -924,7 +974,8 @@ export interface components {
             scenarioId: "catalog_default" | "purchase_happy_path" | "already_sold" | "multi_inventory" | "auction_outbid" | "listing_policy_blocked" | "zero_search_results" | "payment_timeout" | "delivery_delay";
             seed?: string;
             expectedStateVersion?: number;
-        };
+            idempotencyKey: components["schemas"]["ActionIdentifier"];
+        } & unknown;
         SandboxOperationResponse: {
             /** @constant */
             ok: true;
@@ -957,9 +1008,9 @@ export interface components {
                 payload?: {
                     [key: string]: unknown;
                 };
-                idempotencyKey?: string;
+                idempotencyKey: components["schemas"]["ActionIdentifier"];
             }[];
-        };
+        } & unknown;
         SandboxReplayResponse: {
             /** @constant */
             ok: true;
@@ -1113,6 +1164,7 @@ export interface operations {
                         /** @constant */
                         ok: true;
                         id: string;
+                        sandboxId: string;
                         stateVersion: number;
                     };
                 };
@@ -1204,7 +1256,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["SandboxSeedInput"];
             };

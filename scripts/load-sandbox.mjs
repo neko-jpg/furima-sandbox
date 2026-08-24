@@ -286,6 +286,7 @@ const startLocalServer = async () => {
       ...process.env,
       NODE_ENV: "test",
       FURIMA_LOCAL_FIXTURE_MODE: "true",
+      FURIMA_LOCAL_FIXTURE_REQUIRE_AUTH: "true",
       FURIMA_STORAGE_MODE: "memory",
       FURIMA_DEPLOYMENT_ENV: "development",
       FURIMA_D1_API_TOKEN: apiToken,
@@ -366,10 +367,10 @@ const stopLocalServer = async () => {
 const makeActor = (index) => ({
   index,
   sandboxId: `${runId}-${index}`,
-  actorId: "buyer_01",
   lastStateVersion: 0,
   dispatchCount: 0,
   sequence: 0,
+  busy: false,
   etag: undefined,
   pendingPreview: null,
   repeatCommit: null,
@@ -383,6 +384,7 @@ const setupActor = async (actor) => {
       sandboxId: actor.sandboxId,
       scenarioId: "catalog_default",
       seed: `${runId}-seed-${actor.index}`,
+      idempotencyKey: `${runId}-reset-${actor.index}`,
     },
     "setup",
     actor,
@@ -470,7 +472,6 @@ const runPreview = async (actor) => {
     "/api/sandbox/preview",
     {
       sandboxId: actor.sandboxId,
-      actorId: actor.actorId,
       stateVersion: actor.lastStateVersion,
       command: "wallet.deposit",
       payload: { amount: 1000 },
@@ -497,7 +498,6 @@ const runCommit = async (actor) => {
     "/api/sandbox/commit",
     {
       sandboxId: actor.sandboxId,
-      actorId: actor.actorId,
       stateVersion: actor.lastStateVersion,
       previewId: pending.previewId,
       idempotencyKey: pending.idempotencyKey,
@@ -533,7 +533,6 @@ const runRepeatedCommit = async (actor) => {
     "/api/sandbox/commit",
     {
       sandboxId: actor.sandboxId,
-      actorId: actor.actorId,
       stateVersion: repeat.stateVersion,
       previewId: repeat.previewId,
       idempotencyKey: repeat.idempotencyKey,
@@ -599,8 +598,20 @@ const main = async () => {
       const wait = nextDispatch - nowMs();
       if (wait > 0) await sleep(Math.min(wait, 1000));
       if (nowMs() >= deadline) break;
-      const actor = actors[actorCursor % actors.length];
-      actorCursor += 1;
+      let actor;
+      for (let attempt = 0; attempt < actors.length; attempt += 1) {
+        const candidate = actors[actorCursor % actors.length];
+        actorCursor += 1;
+        if (!candidate.busy) {
+          actor = candidate;
+          break;
+        }
+      }
+      if (!actor) {
+        if (active.size) await Promise.race(active);
+        continue;
+      }
+      actor.busy = true;
       const promise = Promise.resolve(runJob(actor))
         .catch((error) => {
           stats.failed += 1;
@@ -608,7 +619,10 @@ const main = async () => {
             sandboxId: actor.sandboxId,
           });
         })
-        .finally(() => active.delete(promise));
+        .finally(() => {
+          actor.busy = false;
+          active.delete(promise);
+        });
       active.add(promise);
       nextDispatch += intervalMs;
       if (active.size > 500) await Promise.race(active);

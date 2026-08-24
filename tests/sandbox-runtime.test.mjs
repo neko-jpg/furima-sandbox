@@ -13,7 +13,7 @@ const item = {
   sku: "RUNTIME-SKU",
   title: "Runtime item",
   price: 1200,
-  images: ["/images/products/knit.jpg"],
+  images: ["/images/products/knit.webp"],
   isSold: false,
   description: "runtime test",
   category: ["その他"],
@@ -77,6 +77,31 @@ test("fixture mode is rejected for deployed environments", async () => {
     const response = await runtime.authorizationFailure(new Request("http://127.0.0.1/api/sandbox/health"));
     assert.equal(response?.status, 503);
     assert.equal((await response?.json())?.error, "RUNTIME_MISCONFIGURED");
+  } finally {
+    restore();
+  }
+});
+
+test("sandbox ID aliases must all be valid and agree across body and query", () => {
+  assert.equal(runtime.sandboxIdFrom(new Request("https://example.test/api/sandbox/replay"), {}), "furima-demo");
+  assert.equal(runtime.sandboxIdFrom(new Request("https://example.test/api/sandbox/replay?id=same"), { sandboxId: "same" }), "same");
+  assert.equal(runtime.sandboxIdFrom(new Request("https://example.test/api/sandbox/replay"), { id: "invalid id", sandboxId: "valid" }), null);
+  assert.equal(runtime.sandboxIdFrom(new Request("https://example.test/api/sandbox/replay"), { id: "same", sandboxId: "same" }), null);
+  assert.equal(runtime.sandboxIdFrom(new Request("https://example.test/api/sandbox/replay"), { id: "left", sandboxId: "right" }), null);
+  assert.equal(runtime.sandboxIdFrom(new Request("https://example.test/api/sandbox/replay?id=left"), { sandboxId: "right" }), null);
+});
+
+test("empty and whitespace bearer secrets are treated as unconfigured", async () => {
+  const restore = configureSandboxRuntimeForTest({ fixtureMode: "false", storageMode: "d1" });
+  try {
+    process.env.FURIMA_D1_API_TOKEN = "   ";
+    process.env.FURIMA_D1_CONTROL_TOKEN = "";
+    const apiResponse = await runtime.authorizationFailure(new Request("https://api.example.test/api/sandbox/health"));
+    const controlResponse = await runtime.authorizationFailure(new Request("https://api.example.test/api/sandbox/state"), { requireControl: true });
+    assert.equal(apiResponse?.status, 503);
+    assert.equal((await apiResponse?.json())?.error, "AUTH_NOT_CONFIGURED");
+    assert.equal(controlResponse?.status, 503);
+    assert.equal((await controlResponse?.json())?.error, "AUTH_NOT_CONFIGURED");
   } finally {
     restore();
   }

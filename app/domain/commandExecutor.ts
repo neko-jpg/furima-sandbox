@@ -19,6 +19,8 @@ import type {
 const COMMAND_RETENTION_MS = 24 * 60 * 60 * 1000;
 const PREVIEW_VIRTUAL_TTL_MS = 10 * 60 * 1000;
 const MAX_DURABLE_RESULT_BYTES = 64 * 1024;
+const MAX_ACTION_IDENTIFIER_LENGTH = 200;
+const VALID_ACTION_IDENTIFIER = /^[A-Za-z0-9._:-]{1,200}$/u;
 let fallbackIdCounter = 0;
 const INTERNAL_CONTROL_OPTIONS: AgentActionOptions = {
   principal: createTrustedPrincipal({ subjectId: 'command-executor-control', actorId: 'platform', roles: ['platform'], scopes: ['sandbox-control', 'operator'] }),
@@ -99,24 +101,28 @@ export interface SandboxCommandExecutorOptions {
   engine: SandboxEngine;
   store: SandboxStateStore;
   now?: () => Date;
+  requirePersistentCommit?: boolean;
 }
 
 export class SandboxCommandExecutor {
   private readonly engine: SandboxEngine;
   private readonly store: SandboxStateStore;
   private readonly now: () => Date;
+  private readonly requirePersistentCommit: boolean;
+  private readonly volatileRejectedKeys = new Set<string>();
   private sequence = 0;
 
   public constructor(options: SandboxCommandExecutorOptions) {
     this.engine = options.engine;
     this.store = options.store;
     this.now = options.now ?? (() => new Date());
+    this.requirePersistentCommit = options.requirePersistentCommit ?? false;
   }
 
   private context(options?: AgentActionOptions): { sandboxId: string; actorId: string; stateVersion: number } {
     return {
       sandboxId: this.engine.getSandboxId(),
-      actorId: options?.principal?.actorId ?? options?.actorId ?? this.engine.getCurrentActor().id,
+      actorId: options?.principal?.actorId ?? this.engine.getCurrentActor().id,
       stateVersion: this.engine.getStateVersion(),
     };
   }
@@ -138,24 +144,41 @@ export class SandboxCommandExecutor {
 
   private validate(command: string, payload: unknown, options: AgentActionOptions | undefined, mode: 'preview' | 'commit'): { metadata: ActionMetadata; payloadHash: string } | ActionResult<never> {
     const context = this.context(options);
-    const metadata = this.metadata(command, options, mode, context.stateVersion);
+    const identifierFields = ['operationId', 'commandId', 'requestId', 'idempotencyKey'] as const;
+    const invalidIdentifier = identifierFields.find((field) => {
+      const value = options?.[field];
+      return value !== undefined && (typeof value !== 'string' || !VALID_ACTION_IDENTIFIER.test(value));
+    });
+    const safeOptions = invalidIdentifier ? { ...options, [invalidIdentifier]: undefined } : options;
+    const metadata = this.metadata(command, safeOptions, mode, context.stateVersion);
+    if (invalidIdentifier) return resultWithMeta(failure('INVALID_INPUT', context.stateVersion, `${invalidIdentifier}は1〜${MAX_ACTION_IDENTIFIER_LENGTH}文字で指定してください`), metadata);
     const originalHash = fingerprint({ sandboxId: context.sandboxId, actorId: metadata.actorId, command, mode, payload });
     const compacted = compactImagePayload(payload);
     const payloadHash = fingerprint({ sandboxId: context.sandboxId, actorId: metadata.actorId, command, mode, payload: compacted });
     if (!originalHash || !payloadHash) return resultWithMeta(failure('INVALID_INPUT', context.stateVersion, 'payloadはJSON互換・循環参照なし・128KB以内で指定してください'), metadata);
     if (options?.sandboxId && options.sandboxId !== context.sandboxId) return resultWithMeta(failure('INVALID_INPUT', context.stateVersion, 'sandboxIdが現在のSandboxと一致しません', { expectedSandboxId: context.sandboxId, receivedSandboxId: options.sandboxId }), metadata);
-    if (options?.principal && !isTrustedPrincipal(options.principal)) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, '実行Principalは信頼済みadapterから注入してください'), metadata);
-    if (options?.principal && options.principal.actorId !== context.actorId && !options.principal.scopes.includes('sandbox-control')) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, '実行Principalは現在のSandbox actorと一致している必要があります'), metadata);
-    if (!options?.principal && options?.actorId && options.scope !== 'sandbox-control' && options.actorId !== context.actorId) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, 'actorIdは現在のSandbox actorと一致している必要があります'), metadata);
+    if (!options?.principal || !isTrustedPrincipal(options.principal)) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, '実行Principalは信頼済みadapterから必ず注入してください'), metadata);
+    if (options.actorId && options.actorId !== options.principal.actorId && !options.principal.scopes.includes('sandbox-control')) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, 'actorIdを認証済みPrincipalから上書きできません'), metadata);
+    if (options.scope === 'sandbox-control' && !options.principal.scopes.includes('sandbox-control')) return resultWithMeta(failure('FORBIDDEN', context.stateVersion, 'sandbox-control scopeがありません'), metadata);
     if (options?.expectedStateVersion !== undefined && options.expectedStateVersion !== context.stateVersion) return resultWithMeta(failure('STATE_CONFLICT', context.stateVersion, '状態が更新されています。最新スナップショットを取得してください。', { expectedStateVersion: options.expectedStateVersion, actualStateVersion: context.stateVersion }), metadata);
     return { metadata, payloadHash };
   }
 
   private async existingResult<T>(sandboxId: string, key: string, payloadHash: string, command: string, mode: 'preview' | 'commit', metadata: ActionMetadata): Promise<ActionResult<T> | null> {
+    if (this.volatileRejectedKeys.has(`${sandboxId}:${key}`)) return resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '前回の実行は永続storageへcommitされていません', { retryable: true }), metadata);
     const existing = await this.store.getCommand(sandboxId, key);
     if (!existing) return null;
     if (existing.payloadHash !== payloadHash || existing.command !== command || existing.mode !== mode) return resultWithMeta(failure('IDEMPOTENCY_CONFLICT', this.engine.getStateVersion(), '同じ冪等キーで異なるpayloadを再利用できません'), metadata);
     const result = parseResult<T>(existing.result);
+    // A retry can reach a different executor whose cache is still behind the
+    // durable record. Refresh that cache from the source of truth before the
+    // saved result becomes observable to the caller.
+    if (result && existing.stateVersionAfter > this.engine.getStateVersion()) {
+      const persisted = await this.store.get(sandboxId);
+      if (persisted && persisted.stateVersion >= existing.stateVersionAfter) {
+        this.engine.importState(persisted.payload, INTERNAL_CONTROL_OPTIONS);
+      }
+    }
     return result ? resultWithMeta(result, { ...metadata, operationId: existing.operationId, actorId: existing.actorId, stateVersion: result.stateVersion }) : resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '保存済みcommand結果を読み込めません'), metadata);
   }
 
@@ -203,23 +226,31 @@ export class SandboxCommandExecutor {
       const createdAt = this.now();
       const record = this.commandRecord(effectiveResult, command, payloadHash, options, metadata, before, createdAt);
       const stateForPersist = result.ok ? working : this.engine;
-      const previousState = result.ok ? this.engine.exportState() : null;
-      if (result.ok) {
-        // Apply to the live aggregate before the durable write. If the store
-        // rejects the CAS/idempotency write, restore the exact prior state so
-        // the browser/server cannot observe a durable/live split.
-        const imported = this.engine.importState(working.exportState(), INTERNAL_CONTROL_OPTIONS);
-        if (!imported.ok) return resultWithMeta(failure('INVALID_STATE', before, 'Sandbox状態を反映できませんでした'), metadata);
-      }
       const committed = await this.store.commitCommand(record, stateRecordFor(metadata.sandboxId, stateForPersist, createdAt.toISOString()), before, previewId);
       if (!committed.ok) {
-        if (previousState) this.engine.importState(previousState, INTERNAL_CONTROL_OPTIONS);
         if (committed.error === 'IDEMPOTENCY_CONFLICT') return resultWithMeta(failure('IDEMPOTENCY_CONFLICT', this.engine.getStateVersion(), '同じ冪等キーで異なるpayloadを再利用できません'), metadata);
         return resultWithMeta(failure(committed.error === 'UNAVAILABLE' ? 'D1_UNAVAILABLE' : 'STATE_CONFLICT', committed.actualStateVersion ?? this.engine.getStateVersion(), committed.error === 'UNAVAILABLE' ? 'Sandbox永続化が利用できません' : 'Sandbox状態が競合しています'), metadata);
       }
+      if (this.requirePersistentCommit && committed.durability !== 'persistent') {
+        this.volatileRejectedKeys.add(`${metadata.sandboxId}:${key}`);
+        return resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '永続storageへcommitできなかったためlive状態を公開しません', { retryable: true }), metadata);
+      }
       if (committed.duplicate) {
-        if (previousState) this.engine.importState(previousState, INTERNAL_CONTROL_OPTIONS);
-        return parseResult<T>(committed.record.result) ?? resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '保存済みcommand結果を読み込めません'), metadata);
+        const persisted = await this.store.get(metadata.sandboxId);
+        if (persisted && persisted.stateVersion > this.engine.getStateVersion()) {
+          this.engine.importState(persisted.payload, INTERNAL_CONTROL_OPTIONS);
+        }
+        const duplicateResult = parseResult<T>(committed.record.result);
+        return duplicateResult
+          ? resultWithMeta(duplicateResult, { ...metadata, operationId: committed.record.operationId, actorId: committed.record.actorId, stateVersion: duplicateResult.stateVersion })
+          : resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), '保存済みcommand結果を読み込めません'), metadata);
+      }
+      // Publish only after the atomic state/command write succeeds. Readers of
+      // the live aggregate therefore cannot observe an uncommitted transition,
+      // and a failed CAS never requires a version-decreasing rollback.
+      if (result.ok) {
+        const imported = this.engine.importState(working.exportState(), INTERNAL_CONTROL_OPTIONS);
+        if (!imported.ok) return resultWithMeta(failure('INVALID_STATE', this.engine.getStateVersion(), '永続化済みSandbox状態をlive cacheへ反映できませんでした'), metadata);
       }
       return resultWithMeta(effectiveResult, { ...metadata, stateVersion: effectiveResult.stateVersion });
     } catch (error) {
@@ -283,6 +314,10 @@ export class SandboxCommandExecutor {
       const persistedState = await this.store.get(metadata.sandboxId);
       const commandWrite = await this.store.putPreviewAndCommand(storedPreview, record, stateRecordFor(metadata.sandboxId, this.engine, persistedState?.updatedAt ?? now.toISOString()), this.engine.getStateVersion());
       if (!commandWrite.ok) return resultWithMeta(failure(commandWrite.error === 'UNAVAILABLE' ? 'D1_UNAVAILABLE' : commandWrite.error === 'IDEMPOTENCY_CONFLICT' ? 'IDEMPOTENCY_CONFLICT' : 'STATE_CONFLICT', this.engine.getStateVersion(), 'preview commandを記録できませんでした'), metadata);
+      if (this.requirePersistentCommit && commandWrite.durability !== 'persistent') {
+        this.volatileRejectedKeys.add(`${metadata.sandboxId}:${key}`);
+        return resultWithMeta(failure('D1_UNAVAILABLE', this.engine.getStateVersion(), 'previewを永続storageへ保存できませんでした', { retryable: true }), metadata);
+      }
       return commandResult;
     } catch (error) {
       const code = executorErrorCode(error);
@@ -292,6 +327,7 @@ export class SandboxCommandExecutor {
 
   public async commitPreview(previewId: string, options: AgentActionOptions | undefined, operation: (engine: SandboxEngine, command: string, payload: unknown) => ActionResult<unknown>): Promise<ActionResult<unknown>> {
     const metadata = this.metadata('commitPreview', options, 'commit', this.engine.getStateVersion());
+    if (!options?.principal || !isTrustedPrincipal(options.principal)) return resultWithMeta(failure('FORBIDDEN', this.engine.getStateVersion(), '実行Principalは信頼済みadapterから必ず注入してください'), metadata);
     try {
       await this.store.purgeExpired(this.now().toISOString());
       const preview = await this.store.getPreview(this.engine.getSandboxId(), previewId);

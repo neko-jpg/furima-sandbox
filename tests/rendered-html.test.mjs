@@ -24,39 +24,47 @@ test("server-renders the Furima Sandbox app shell", async () => {
 });
 
 test("UI contracts keep domain state, policy, search, and accessibility behavior wired", async () => {
-  const [context, engine, types, detail, buyModal, listing, globals, app, header, home, category, shop, search, inspector, schema, sandboxRoute] = await Promise.all([
+  const [context, engine, executor, types, detail, buyModal, listing, globals, layout, app, header, home, category, shop, search, schema, sandboxRoute, shopImage, viteConfig, demoNotice, assetAudit] = await Promise.all([
     readFile(new URL("app/context/MercariContext.tsx", root), "utf8"),
     readFile(new URL("app/domain/sandboxEngine.ts", root), "utf8"),
+    readFile(new URL("app/domain/commandExecutor.ts", root), "utf8"),
     readFile(new URL("app/types/mercari.ts", root), "utf8"),
     readFile(new URL("app/components/views/ItemDetailView.tsx", root), "utf8"),
     readFile(new URL("app/components/modals/BuyModal.tsx", root), "utf8"),
     readFile(new URL("app/components/views/ListingView.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/components/MercariApp.tsx", root), "utf8"),
     readFile(new URL("app/components/Header.tsx", root), "utf8"),
     readFile(new URL("app/components/views/HomeView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/CategoryView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/ShopView.tsx", root), "utf8"),
     readFile(new URL("app/components/views/SearchView.tsx", root), "utf8"),
-    readFile(new URL("app/components/SandboxInspector.tsx", root), "utf8"),
     readFile(new URL("db/schema.ts", root), "utf8"),
     readFile(new URL("app/api/sandbox/state/route.ts", root), "utf8"),
+    readFile(new URL("app/components/ui/ShopImage.tsx", root), "utf8"),
+    readFile(new URL("vite.config.ts", root), "utf8"),
+    readFile(new URL("app/components/DemoNotice.tsx", root), "utf8"),
+    readFile(new URL("scripts/audit-runtime-assets.mjs", root), "utf8"),
   ]);
   assert.match(context, /new SandboxEngine\(items/);
   assert.match(context, /const INITIAL_CATALOG_ITEMS = \[\.\.\.CATALOG_ITEMS\]/);
   assert.doesNotMatch(context, /const INITIAL_CATALOG_ITEMS = \[\.\.\.INITIAL_ITEMS\]/);
   assert.match(context, /sandboxEngine\.startPurchase/);
-  assert.match(context, /sandboxEngine\.confirmPurchase/);
+  assert.match(context, /runAgentMutation\('confirmPurchase',[\s\S]*working\.confirmPurchase/);
+  assert.doesNotMatch(context, /runAgentMutation\('confirmPurchase',[^\n]*sandboxEngine\.confirmPurchase/);
   assert.match(context, /window\.__MERCARI_API__ = api/);
   assert.match(context, /window\.__SHOP_API__ = api/);
   assert.match(context, /addComment: \(itemId, text, options\)/);
-  assert.match(context, /IDEMPOTENCY_CONFLICT/);
+  assert.match(executor, /IDEMPOTENCY_CONFLICT/);
+  assert.match(executor, /const working = cloneEngine\(this\.engine\)/);
+  assert.match(executor, /await this\.store\.commitCommand[\s\S]*this\.engine\.importState\(working\.exportState\(\)/);
   assert.match(context, /REMOTE_STATE_ENABLED/);
   assert.doesNotMatch(context, /window\.localStorage\.setItem\(SANDBOX_STATE_STORAGE_KEY, serialized\)/);
   assert.match(context, /new IndexedDbSandboxStateStore/);
   assert.match(context, /browserSandboxStore\.put/);
   assert.match(context, /if \(!REMOTE_STATE_ENABLED\) return;/);
-  assert.match(context, /sandboxEngine\.importState\(serialized, SANDBOX_CONTROL_OPTIONS\)/);
+  assert.match(context, /sandboxEngine\.importState\(serialized, BROWSER_STATE_RESTORE_OPTIONS\)/);
   assert.match(context, /catalogLoadRef\.current/);
   assert.doesNotMatch(context, /serializedDigest/);
   assert.doesNotMatch(context, /importState:\s*\(/);
@@ -86,11 +94,20 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
   assert.doesNotMatch(listing, /<Footer\s*\/>/, "Listing flow must not render the site footer");
   assert.match(listing, /id="listing-images" type="file"/);
   assert.match(listing, /setCategory\(''\)/);
-  assert.match(globals, /var\(--font-noto-sans-jp\)/);
+  assert.match(globals, /font-family:\s*var\(--shop-ui-font\)/);
+  assert.doesNotMatch(layout, /next\/font\/google/);
+  assert.match(shopImage, /unoptimized=\{process\.env\.NODE_ENV === 'development'\}/);
+  assert.match(demoNotice, /furima-sandbox-notice\.webp/);
+  assert.match(assetAudit, /legacyRasterFiles/);
+  assert.match(viteConfig, /command === "build"/);
+  assert.match(viteConfig, /FURIMA_LOCAL_FIXTURE_MODE \?\?= "true"/);
   assert.match(globals, /prefers-reduced-motion/);
   assert.doesNotMatch(globals, /user-select:\s*none/);
   assert.match(app, /case 'category'/);
-  assert.match(app, /SandboxInspector/);
+  assert.doesNotMatch(app, /SandboxInspector/);
+  assert.match(app, /const ListingView = React\.lazy/);
+  assert.doesNotMatch(app, /import \{ ListingView \} from/);
+  assert.doesNotMatch(context, /runUiControlCommand/);
   assert.match(app, /categoryName === 'ショップ' \? <ShopView \/> : <CategoryView \/>/);
   assert.match(header, /onCategory=\{navigateCategory\}/);
   assert.doesNotMatch(home, /openCategory\(category\.target\)/);
@@ -98,7 +115,6 @@ test("UI contracts keep domain state, policy, search, and accessibility behavior
   assert.match(search, /tokenizeSearchQuery/);
   assert.match(search, /filterCatalogItems/);
   assert.match(category, /filterCatalogItems/);
-  assert.match(inspector, /invariantViolations/);
   assert.match(schema, /sandboxUsers/);
   assert.match(schema, /domainEvents/);
   assert.match(sandboxRoute, /hasValidStateEnvelope/);

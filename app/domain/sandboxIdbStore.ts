@@ -298,12 +298,12 @@ export class IndexedDbSandboxStateStore implements SandboxStateStore {
           return { ok: false, error: 'IDEMPOTENCY_CONFLICT', existing };
         }
       }
-      if (existingCount === commands.length) { transaction.abort(); return { ok: true, record: { ...commands.at(-1)! }, duplicate: true }; }
+      if (existingCount === commands.length) { transaction.abort(); return { ok: true, record: { ...commands.at(-1)! }, duplicate: true, durability: 'persistent' }; }
       if (existingCount > 0) { transaction.abort(); return { ok: false, error: 'IDEMPOTENCY_CONFLICT', existing: firstExisting }; }
       commands.forEach((command) => commandStore.add({ ...command, key: keyFor(command.sandboxId, command.idempotencyKey ?? command.operationId) }));
       stateStore.put({ ...state });
       await transactionResult(transaction);
-      return { ok: true, record: { ...commands.at(-1)! } };
+      return { ok: true, record: { ...commands.at(-1)! }, durability: 'persistent' };
     } catch (error) {
       this.fallbackFrom(error);
       return { ok: false, error: 'UNAVAILABLE' };
