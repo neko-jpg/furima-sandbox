@@ -33,6 +33,13 @@ test('Cloudflare docs CD deploys only for API docs source changes', async () => 
   }
   assert.match(workflow, /needs:\s*detect_changes/);
   assert.match(workflow, /needs\.detect_changes\.outputs\.deploy == 'true'/);
+  assert.match(workflow, /cancel-in-progress:\s*false/);
+  assert.match(workflow, /verify_and_deploy:/);
+  assert.match(workflow, /docs_status:/);
+  assert.match(workflow, /name:\s*docs-status/);
+  assert.match(workflow, /always\(\)/);
+  assert.match(workflow, /DEPLOY_RESULT/);
+  assert.match(workflow, /"skipped"/);
 });
 
 test('catalog HTTP handlers support pagination, item lookup, and ETag revalidation', async () => {

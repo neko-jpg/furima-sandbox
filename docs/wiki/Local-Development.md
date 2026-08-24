@@ -34,4 +34,4 @@ npm run e2e
 
 API参照サイトは`npm run docs:site`で`output/docs-site`へ生成し、`npm run docs:validate-public`で公開前検査を行います。Wiki資材は`npm run docs:wiki:check`で検証します。
 
-Cloudflare Pagesへの本番デプロイは、API関連差分が`main`へ入ったときだけ`.github/workflows/docs-cloudflare-pages.yml`から実行されます。詳細は[Cloudflare Pages APIドキュメントRunbook](https://github.com/neko-jpg/furima-sandbox/blob/main/docs/runbooks/cloudflare-pages-docs.md)を参照してください。
+Cloudflare Pagesへの本番デプロイは、API関連差分が`main`へ入ったときだけ`.github/workflows/docs-cloudflare-pages.yml`から実行されます。それ以外の差分ではdeployをskipし、`docs-status`が正常終了を記録します。進行中のdeploymentは後続runで中断せず直列に処理します。詳細は[Cloudflare Pages APIドキュメントRunbook](https://github.com/neko-jpg/furima-sandbox/blob/main/docs/runbooks/cloudflare-pages-docs.md)を参照してください。

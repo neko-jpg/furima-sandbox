@@ -42,7 +42,9 @@ Scalarは`output/docs-site/index.html`、`assets/scalar.js`、`assets/scalar.css
 
 ## CIデプロイ
 
-`.github/workflows/docs-cloudflare-pages.yml`は、`main`へのpushに対する`verify` workflowが成功した後に同じコミットをcheckoutします。`docs/api`、Scalarとサイトのエントリ、favicon、サイト生成スクリプト、npmの依存定義のいずれかが直前のコミットから変わった場合だけdocs検証とdeployを実行します。UI、CI、Runbook、Wikiだけの変更ではdeployジョブをスキップします。手動実行は明示的なデプロイ指示として扱い、常にこのworkflow自身のdocs検証を通過してからdeployします。
+`.github/workflows/docs-cloudflare-pages.yml`は、`main`へのpushに対する`verify` workflowが成功した後に同じコミットをcheckoutします。`docs/api`、Scalarとサイトのエントリ、favicon、サイト生成スクリプト、npmの依存定義のいずれかが直前のコミットから変わった場合だけdocs検証とdeployを実行します。UI、CI、Runbook、Wikiだけの変更ではdeployジョブをスキップし、`docs-status`がデプロイ不要の正常終了を記録します。手動実行は明示的なデプロイ指示として扱い、常にこのworkflow自身のdocs検証を通過してからdeployします。
+
+同じconcurrency groupのrunは直列に処理し、後続runから進行中のdeploymentをcancelしません。`docs-status`は変更検出の失敗、必要なdeploymentの失敗、不要なdeploymentの誤実行を失敗として扱います。手動cancelで残ったGitHub Environmentの履歴はCloudflare deploymentの失敗と区別し、再実行で不要な本番デプロイを発生させません。
 
 必要なGitHub Environment Secrets:
 

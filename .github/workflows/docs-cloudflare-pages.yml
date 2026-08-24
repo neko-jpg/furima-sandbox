@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: cloudflare-pages-docs
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   detect_changes:
@@ -55,7 +55,8 @@ jobs:
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           fi
 
-  verify-and-deploy:
+  verify_and_deploy:
+    name: verify-and-deploy
     needs: detect_changes
     if: ${{ needs.detect_changes.outputs.deploy == 'true' }}
     runs-on: ubuntu-latest
@@ -86,3 +87,37 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  docs_status:
+    name: docs-status
+    needs: [detect_changes, verify_and_deploy]
+    if: ${{ always() && needs.detect_changes.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm docs workflow result
+        shell: bash
+        env:
+          DETECT_RESULT: ${{ needs.detect_changes.result }}
+          DEPLOY_RESULT: ${{ needs.verify_and_deploy.result }}
+          DEPLOY_REQUESTED: ${{ needs.detect_changes.outputs.deploy }}
+        run: |
+          if [[ "$DETECT_RESULT" != "success" ]]; then
+            echo "API docs change detection did not succeed: $DETECT_RESULT"
+            exit 1
+          fi
+
+          if [[ "$DEPLOY_REQUESTED" == "true" && "$DEPLOY_RESULT" != "success" ]]; then
+            echo "API docs deployment was requested but did not succeed: $DEPLOY_RESULT"
+            exit 1
+          fi
+
+          if [[ "$DEPLOY_REQUESTED" != "true" && "$DEPLOY_RESULT" != "skipped" ]]; then
+            echo "API docs deployment should have been skipped but was: $DEPLOY_RESULT"
+            exit 1
+          fi
+
+          if [[ "$DEPLOY_RESULT" == "skipped" ]]; then
+            echo "No API docs deployment was required; CD completed without changing Cloudflare."
+          else
+            echo "API docs deployment and verification succeeded."
+          fi
