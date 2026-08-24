@@ -7,10 +7,11 @@
 - 生成先: `output/docs-site`
 - Pagesプロジェクト: `mercari-ui-kit-api-docs`
 - 本番URL: `https://mercari-ui-kit-api-docs.pages.dev/`
+- Access: canonical hostname用と`*.mercari-ui-kit-api-docs.pages.dev`用の2つのSelf-hosted Applicationで保護する
 - Scalar: 本番では閲覧専用。Test RequestとAgentは無効。
 - Wiki: チーム向けの内部運用資料
 
-Pagesのcanonical hostnameにCloudflare Accessを設定していても、個別のdeployment URL（`*.pages.dev`）やPreview hostnameの公開状態が自動で同じになるとは限りません。監査ではcanonical hostnameと、最新deployment URL・Preview URLの両方を未認証で確認します。個別URLが200を返す場合は、Accessの適用範囲を見直すまで「招待者限定」として案内しません。
+Pagesのcanonical hostnameにCloudflare Accessを設定していても、個別のdeployment URL（`*.pages.dev`）やPreview hostnameは自動では保護されません。このプロジェクトではcanonical hostnameを完全一致のApplication、個別deployment/Preview hostnameを`*.mercari-ui-kit-api-docs.pages.dev`のpublic destinationを持つApplicationで保護し、両方に同じメール限定Allow policyを設定します。監査ではcanonical hostnameと最新deployment URLの両方が未認証でCloudflare Accessへリダイレクトされることを確認します。
 
 ## 初回構築
 
@@ -20,8 +21,8 @@ Pagesのcanonical hostnameにCloudflare Accessを設定していても、個別�
 4. Cloudflare Zero Trustを有効化する。
 5. PagesプロジェクトのSettings > General > `Enable access policy`を選択する。
 6. 作成されたAccess policyの`Manage`からAccess > Applications > 対象アプリをConfigureし、Public hostnameのSubdomainにある`*`を削除して本番ホスト名だけに変更する。必要ならアプリ名を変更して保存する。
-7. Previewも保護する場合は、PagesのSettings > Generalで`Enable access policy`を再確認し、productionホスト用とPreview用の2つのポリシーが存在することを確認する。
-8. AllowポリシーのIncludeに、チームから受け取った招待メールだけを登録する。全員許可やドメイン全体許可は設定しない。
+7. 個別deployment/Preview URL用にSelf-hosted Applicationを作成し、public destinationを`*.mercari-ui-kit-api-docs.pages.dev`、App Launcher表示を無効にする。canonical用とワイルドカード用の2つのApplicationが存在することを確認する。
+8. 両ApplicationのAllow policyのIncludeに、チームから受け取った同じ招待メールだけを登録する。全員許可やドメイン全体許可は設定しない。
 9. 未招待アカウントで拒否されることを確認する。
 10. 招待アカウントでトップページと`api/openapi.yaml`を確認する。
 11. Accessとdeployment/Preview URLの保護を確認してから初回デプロイを行う。
@@ -68,7 +69,7 @@ npx wrangler pages deployment list --project-name mercari-ui-kit-api-docs
 - OpenAPI YAMLが取得できる
 - Access未認証では拒否される
 - 招待済みユーザーでは閲覧できる
-- 最新deployment URLとPreview URLも未認証では拒否される、または公開を許容する非機密ドキュメントとして明示されている
+- 最新deployment URLとPreview URLも未認証ではCloudflare Accessへリダイレクトされる
 
 ## 障害対応
 

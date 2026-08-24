@@ -103,7 +103,7 @@ npm run types:worker
 - AIコーディングエージェント向け運用ルール: [`AGENTS.md`](AGENTS.md)
 
 `main`へのAPIドキュメント生成元の変更でverify workflowが成功すると、GitHub Actionsの`.github/workflows/docs-cloudflare-pages.yml`が同じコミットを検証してからCloudflare Pagesへデプロイします。UI、CI、Wikiなど生成元以外だけの変更ではデプロイをスキップし、`docs-status`が「デプロイ不要」の正常終了を記録します。進行中のdocs deploymentは後続runで中断せず、順番に処理します。Cloudflare Accessの招待や本番デプロイは、このREADMEのDocker手順とは別の運用です。
-個別のPages deployment URL（`*.pages.dev`）がcanonical URLと同じAccess保護になるとは限らないため、未認証確認が済むまでdeployment/Preview URLを共有しません。
+canonical URLは完全一致、個別のPages deployment URLは`*.mercari-ui-kit-api-docs.pages.dev`のワイルドカードCloudflare Access Applicationで保護します。デプロイ後は両URLが未認証でAccessへリダイレクトされることを確認してから共有します。
 
 ## Agent API
 
