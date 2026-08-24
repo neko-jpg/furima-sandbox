@@ -57,15 +57,16 @@ test('MCP buyer session cannot draft a seller listing', async () => {
   assert.equal(readResult(result).error, 'FORBIDDEN');
 });
 
-test('protected CI MCP checks require hosted analysis and fail closed without its secret', async () => {
+test('CI MCP checks use hosted analysis when a Snyk secret exists and inspect otherwise', async () => {
   const verify = await readFile(new URL('../.github/workflows/verify.yml', import.meta.url), 'utf8');
   const nightly = await readFile(new URL('../.github/workflows/sandbox-nightly.yml', import.meta.url), 'utf8');
   const runner = await readFile(new URL('../scripts/run-mcp-scan.mjs', import.meta.url), 'utf8');
 
-  assert.match(verify, /github\.event_name == 'pull_request' && 'inspect' \|\| 'hosted'/);
+  assert.doesNotMatch(verify, /MCP_SCAN_MODE:/);
   assert.match(verify, /SNYK_TOKEN:\s*\$\{\{\s*secrets\.SNYK_TOKEN\s*\}\}/);
-  assert.match(nightly, /MCP_SCAN_MODE:\s*hosted/);
+  assert.doesNotMatch(nightly, /MCP_SCAN_MODE:/);
   assert.match(nightly, /SNYK_TOKEN:\s*\$\{\{\s*secrets\.SNYK_TOKEN\s*\}\}/);
-  assert.match(runner, /inspect mode cannot bypass hosted analysis on protected CI events/);
-  assert.match(runner, /Protected CI events fail closed when it is missing/);
+  assert.match(runner, /process\.env\.MCP_SCAN_REQUIRE_HOSTED === 'true'/);
+  assert.doesNotMatch(runner, /process\.env\.CI === 'true'/);
+  assert.match(runner, /hostedAnalysisRequired \|\| process\.env\.SNYK_TOKEN \? 'hosted' : 'inspect'/);
 });

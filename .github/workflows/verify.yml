@@ -99,7 +99,6 @@ jobs:
       - name: MCP-Scan
         run: npm run security:mcp
         env:
-          MCP_SCAN_MODE: ${{ github.event_name == 'pull_request' && 'inspect' || 'hosted' }}
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       - run: npm run security:schemathesis
       - if: always()

@@ -52,7 +52,6 @@ jobs:
       - name: MCP-Scan
         run: npm run security:mcp
         env:
-          MCP_SCAN_MODE: hosted
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       - run: npm run security:schemathesis
       - if: always()

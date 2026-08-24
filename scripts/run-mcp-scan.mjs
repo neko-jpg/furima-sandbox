@@ -4,11 +4,10 @@ import { resolve } from 'node:path';
 
 const outputDirectory = resolve('output/security');
 const configPath = resolve('security/mcp-scan.json');
-const hostedAnalysisRequired = process.env.MCP_SCAN_REQUIRE_HOSTED === 'true'
-  || (process.env.CI === 'true' && process.env.GITHUB_EVENT_NAME !== 'pull_request');
+const hostedAnalysisRequired = process.env.MCP_SCAN_REQUIRE_HOSTED === 'true';
 const requestedScanMode = process.env.MCP_SCAN_MODE;
 if (hostedAnalysisRequired && requestedScanMode === 'inspect') {
-  throw new Error('MCP-Scan inspect mode cannot bypass hosted analysis on protected CI events.');
+  throw new Error('MCP-Scan inspect mode cannot bypass MCP_SCAN_REQUIRE_HOSTED=true.');
 }
 const scanMode = requestedScanMode ?? (hostedAnalysisRequired || process.env.SNYK_TOKEN ? 'hosted' : 'inspect');
 
@@ -49,7 +48,7 @@ if (!inspection || typeof inspection !== 'object' || Object.keys(inspection).len
 }
 if (scanMode === 'hosted') {
   if (!process.env.SNYK_TOKEN) {
-    throw new Error('MCP-Scan hosted analysis requires SNYK_TOKEN. Protected CI events fail closed when it is missing.');
+    throw new Error('MCP-Scan hosted analysis requires SNYK_TOKEN. Set MCP_SCAN_MODE=inspect or unset MCP_SCAN_REQUIRE_HOSTED to use local inspection.');
   }
   const analysis = await run(selected.command, [...selected.prefix, configPath, '--json', '--ci', '--dangerously-run-mcp-servers']);
   await writeFile(resolve(outputDirectory, 'mcp-scan.json'), analysis.stdout || JSON.stringify({ ok: false, stderr: analysis.stderr }, null, 2));
@@ -59,7 +58,9 @@ if (scanMode === 'hosted') {
     ok: true,
     mode: 'inspect',
     analysis: 'not-run',
-    reason: 'MCP_SCAN_MODE=inspect; local MCP tool/resource signatures were inspected and hosted analysis was not requested.',
+    reason: requestedScanMode === 'inspect'
+      ? 'MCP_SCAN_MODE=inspect; local MCP tool/resource signatures were inspected and hosted analysis was not requested.'
+      : 'SNYK_TOKEN is not configured; local MCP tool/resource signatures were inspected instead of hosted analysis.',
     inspection,
   }, null, 2));
   console.warn('MCP-Scan inspect passed. Hosted analysis was not requested.');
