@@ -93,6 +93,57 @@ const recordInvariant = (message, details = {}) => {
     stats.invariantViolations.push({ message, ...details });
 };
 
+const hasResultTooLargeMarker = (value) =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      value.truncated === true &&
+      value.reason === "RESULT_TOO_LARGE",
+  );
+
+const sameReplayMetadata = (expected, received) => {
+  const expectedMeta = expected?.meta;
+  const receivedMeta = received?.meta;
+  if (!expectedMeta && !receivedMeta) return true;
+  if (
+    !expectedMeta ||
+    typeof expectedMeta !== "object" ||
+    !receivedMeta ||
+    typeof receivedMeta !== "object"
+  )
+    return false;
+  const keys = [
+    "sandboxId",
+    "actorId",
+    "operationId",
+    "requestId",
+    "idempotencyKey",
+    "mode",
+    "stateVersion",
+  ];
+  return keys.every((key) => expectedMeta[key] === receivedMeta[key]);
+};
+
+const replayResultMatchesExpected = (expectedSerialized, received) => {
+  if (JSON.stringify(received) === expectedSerialized) return true;
+  let expected;
+  try {
+    expected = JSON.parse(expectedSerialized);
+  } catch {
+    return false;
+  }
+  if (!expected || typeof expected !== "object") return false;
+  if (!received || typeof received !== "object") return false;
+  if (expected.ok !== received.ok) return false;
+  if (expected.error !== received.error) return false;
+  if (expected.stateVersion !== received.stateVersion) return false;
+  if (!sameReplayMetadata(expected, received)) return false;
+  return (
+    hasResultTooLargeMarker(received.data) &&
+    !hasResultTooLargeMarker(expected.data)
+  );
+};
+
 const checkState = (state, actor) => {
   if (!state || typeof state !== "object") {
     recordInvariant("state response is not an object", {
@@ -543,7 +594,7 @@ const runRepeatedCommit = async (actor) => {
   );
   actor.repeatCommit = null;
   stats.idempotencyReplays += 1;
-  if (result.ok && JSON.stringify(result.body) !== repeat.expected) {
+  if (result.ok && !replayResultMatchesExpected(repeat.expected, result.body)) {
     stats.duplicateMutationViolations.push({
       sandboxId: actor.sandboxId,
       previewId: repeat.previewId,
