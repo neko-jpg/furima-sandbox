@@ -6,11 +6,17 @@ info:
     Furima Sandboxのカタログ、Sandbox状態、出品下書き・出品ライフサイクルAPI。
     このファイルがAPI契約の正本です。GitHub Wikiはチーム向けの読み物として本ファイルへリンクします。
     /api/catalog、/api/catalog/{itemId}、/api/sandbox/state、/api/sandbox/health、/api/sandbox/preview、/api/sandbox/commit、/api/sandbox/reset、/api/sandbox/seed、/api/sandbox/replayは現在のHTTP実装です。
-    撮影アシスタントの5 APIはfixture/liveのPythonサービスが実装するHTTP契約です。Team-D backendの統合基準は最新mainのcd7b42a207fc3912fdd5e8e76ac2e91f7f5f5abeです（初期基準be5ee304febe14b280fa546fa3cc9704b84e6e8から更新）。画像はmultipartのbinaryとして扱い、秘密値や画像Data URLをこの仕様へ含めません。
+    撮影アシスタントの6 APIはfixture/liveのPythonサービスが実装するHTTP契約です。Team-D backendの統合基準は最新mainの8339803b45b4899ba61546a4e1686d65a0ecd54cです（初期基準be5ee304febe14b280fa546fa3cc9704b84e6e8から更新）。画像はmultipartのbinaryとして扱い、秘密値や画像Data URLをこの仕様へ含めません。
     /api/listings、/api/wallet、/api/profile、/api/follows系はplanned contractです。現時点のHTTP runtimeは未実装で、実行経路はBrowser APIです。planned操作にはx-implementation-status: plannedを付けています。
 servers:
   - url: /
     description: Local or deployed application origin
+x-cors-policy:
+  description: FastAPI assistant serviceのデフォルトCORS設定。環境変数で追加する場合もワイルドカードは許可しません。
+  allowOrigins: [http://127.0.0.1:3000, http://localhost:3000]
+  allowMethods: [GET, POST]
+  allowHeaders: [accept, content-type]
+  allowCredentials: false
 tags:
   - name: Catalog
   - name: Sandbox State
@@ -271,6 +277,20 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { description: command列の途中で失敗した }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/health:
+    x-implementation-status: python-service
+    get:
+      tags: [Guided Capture]
+      operationId: assistantHealth
+      summary: 出品写真アシスタントの稼働状態を確認する
+      responses:
+        '200':
+          description: FastAPI assistant serviceが稼働中
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantHealth' }
   /api/livekit-token:
     x-implementation-status: python-service
     post:
@@ -289,7 +309,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LiveKitTokenResponse' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '422': { $ref: '#/components/responses/AssistantValidationError' }
         '503': { $ref: '#/components/responses/ProviderFailure' }
   /api/analyze-shot:
     x-implementation-status: python-service
@@ -314,7 +334,7 @@ paths:
               schema: { $ref: '#/components/schemas/ShotAssessment' }
         '413': { $ref: '#/components/responses/ProviderFailure' }
         '415': { $ref: '#/components/responses/ProviderFailure' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '422': { $ref: '#/components/responses/AssistantValidationError' }
         '502': { $ref: '#/components/responses/ProviderFailure' }
         '503': { $ref: '#/components/responses/ProviderFailure' }
         '504': { $ref: '#/components/responses/ProviderFailure' }
@@ -325,6 +345,8 @@ paths:
       operationId: suggestMeasurementPoints
       summary: 採寸画像から4端点を提案する
       description: 出力は0〜1の正規化された4端点だけです。cm値、confidence、画面遷移、UI文言は返しません。採寸値の算出、必要に応じた射影補正、端点編集、承認はブラウザ側で行います。
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
       requestBody:
         required: true
         content:
@@ -336,12 +358,16 @@ paths:
       responses:
         '200':
           description: 採寸4端点の未承認提案
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+            X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+            X-Request-ID: { $ref: '#/components/headers/RequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MeasurementPointSuggestion' }
         '413': { $ref: '#/components/responses/ProviderFailure' }
         '415': { $ref: '#/components/responses/ProviderFailure' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '422': { $ref: '#/components/responses/AssistantValidationError' }
         '502': { $ref: '#/components/responses/ProviderFailure' }
         '503': { $ref: '#/components/responses/ProviderFailure' }
         '504': { $ref: '#/components/responses/ProviderFailure' }
@@ -363,12 +389,15 @@ paths:
       responses:
         '200':
           description: 正面原本と同じ寸法のmask-only PNG
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+            X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
           content:
             image/png:
               schema: { type: string, format: binary }
         '413': { $ref: '#/components/responses/ProviderFailure' }
         '415': { $ref: '#/components/responses/ProviderFailure' }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '422': { $ref: '#/components/responses/AssistantValidationError' }
         '502': { $ref: '#/components/responses/ProviderFailure' }
         '503': { $ref: '#/components/responses/ProviderFailure' }
         '504': { $ref: '#/components/responses/ProviderFailure' }
@@ -387,10 +416,12 @@ paths:
       responses:
         '200':
           description: 商品を含まない背景PNG候補
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
           content:
             image/png:
               schema: { type: string, format: binary }
-        '422': { $ref: '#/components/responses/ValidationError' }
+        '422': { $ref: '#/components/responses/AssistantValidationError' }
         '502': { $ref: '#/components/responses/ProviderFailure' }
         '503': { $ref: '#/components/responses/ProviderFailure' }
         '504': { $ref: '#/components/responses/ProviderFailure' }
@@ -655,10 +686,25 @@ components:
       name: If-Match-State-Version
       in: header
       schema: { type: integer, minimum: 0 }
+    RequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: 任意の相関ID。空白・制御文字を除いてサービス内で検証し、成功時に同じ値を返します（最大200文字）。
+      schema: { type: string, minLength: 1, maxLength: 200 }
   headers:
     ETag:
       description: リソースのバージョン
       schema: { type: string }
+    NoStore:
+      description: キャッシュを保存しない
+      schema: { type: string, const: no-store }
+    NoSniff:
+      description: MIME sniffingを無効化する
+      schema: { type: string, const: nosniff }
+    RequestId:
+      description: リクエストで指定された相関ID（指定時のみ返却）
+      schema: { type: string, minLength: 1, maxLength: 200 }
   responses:
     BadRequest:
       description: 入力が不正
@@ -695,12 +741,23 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ProviderErrorResponse' }
+    AssistantValidationError:
+      description: 撮影アシスタントの入力形式・画像内容・provider入力が不正
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AssistantValidationErrorResponse' }
     ValidationError:
       description: リクエストの形式または値が不正
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ValidationErrorResponse' }
   schemas:
+    AssistantHealth:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { const: ok }
     SessionSlot:
       type: string
       enum: [front, back, tag, measurement]
@@ -760,6 +817,17 @@ components:
         detail:
           oneOf:
             - { type: string, minLength: 1, maxLength: 240 }
+            - type: array
+              items: { type: object, additionalProperties: true }
+    AssistantValidationErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - { type: string, minLength: 1, maxLength: 240 }
+            - { $ref: '#/components/schemas/ProviderError' }
             - type: array
               items: { type: object, additionalProperties: true }
     LiveKitTokenRequest:

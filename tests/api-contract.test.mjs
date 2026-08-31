@@ -108,6 +108,121 @@ test('HTTP sandbox routes and OpenAPI stay in one-to-one contract', async () => 
   assert.ok(openapi.components.securitySchemes.controlBearerAuth);
 });
 
+test('listing photo assistant FastAPI routes have an exact public HTTP contract', async () => {
+  const openapiText = await read('docs/api/openapi.yaml');
+  const openapi = YAML.parse(openapiText);
+  const paths = openapi.paths;
+  const assistantCases = {
+    '/api/health': {
+      method: 'get',
+      statuses: ['200'],
+      request: undefined,
+      successContentType: 'application/json',
+      successSchema: '#/components/schemas/AssistantHealth',
+    },
+    '/api/livekit-token': {
+      method: 'post',
+      statuses: ['200', '422', '503'],
+      request: ['application/json', '#/components/schemas/LiveKitTokenRequest'],
+      successContentType: 'application/json',
+      successSchema: '#/components/schemas/LiveKitTokenResponse',
+    },
+    '/api/analyze-shot': {
+      method: 'post',
+      statuses: ['200', '413', '415', '422', '502', '503', '504'],
+      request: ['multipart/form-data', '#/components/schemas/ShotAnalysisUpload'],
+      successContentType: 'application/json',
+      successSchema: '#/components/schemas/ShotAssessment',
+    },
+    '/api/suggest-measurement-points': {
+      method: 'post',
+      statuses: ['200', '413', '415', '422', '502', '503', '504'],
+      request: ['multipart/form-data', '#/components/schemas/MeasurementPointsUpload'],
+      successContentType: 'application/json',
+      successSchema: '#/components/schemas/MeasurementPointSuggestion',
+    },
+    '/api/remove-background': {
+      method: 'post',
+      statuses: ['200', '413', '415', '422', '502', '503', '504'],
+      request: ['multipart/form-data', '#/components/schemas/FrontImageUpload'],
+      successContentType: 'image/png',
+      successSchema: { type: 'string', format: 'binary' },
+    },
+    '/api/generate-background': {
+      method: 'post',
+      statuses: ['200', '422', '502', '503', '504'],
+      request: ['application/json', '#/components/schemas/BackgroundGenerationRequest'],
+      successContentType: 'image/png',
+      successSchema: { type: 'string', format: 'binary' },
+    },
+  };
+
+  assert.deepEqual(openapi['x-cors-policy'], {
+    description: 'FastAPI assistant serviceのデフォルトCORS設定。環境変数で追加する場合もワイルドカードは許可しません。',
+    allowOrigins: ['http://127.0.0.1:3000', 'http://localhost:3000'],
+    allowMethods: ['GET', 'POST'],
+    allowHeaders: ['accept', 'content-type'],
+    allowCredentials: false,
+  });
+
+  for (const [path, expected] of Object.entries(assistantCases)) {
+    const operation = paths[path]?.[expected.method];
+    assert.ok(operation, `${path} must define ${expected.method.toUpperCase()}`);
+    assert.equal(paths[path]['x-implementation-status'], 'python-service');
+    assert.equal(operation.security, undefined);
+    assert.deepEqual(Object.keys(operation.responses), expected.statuses);
+    if (expected.request) {
+      const [contentType, schemaRef] = expected.request;
+      const requestContent = operation.requestBody?.content?.[contentType];
+      assert.ok(requestContent, `${path} request content type is missing`);
+      assert.equal(requestContent.schema.$ref, schemaRef);
+      if (contentType === 'multipart/form-data') assert.equal(requestContent.encoding.file.contentType, 'image/jpeg, image/png, image/webp');
+    } else {
+      assert.equal(operation.requestBody, undefined);
+    }
+    const successContent = operation.responses['200'].content[expected.successContentType];
+    assert.ok(successContent, `${path} success content type is missing`);
+    if (typeof expected.successSchema === 'string') assert.equal(successContent.schema.$ref, expected.successSchema);
+    else assert.deepEqual(successContent.schema, expected.successSchema);
+  }
+
+  const health = paths['/api/health'].get;
+  assert.equal(health.responses['200'].headers['Cache-Control'].$ref, '#/components/headers/NoStore');
+  assert.deepEqual(openapi.components.schemas.AssistantHealth, {
+    type: 'object',
+    additionalProperties: false,
+    required: ['status'],
+    properties: { status: { const: 'ok' } },
+  });
+
+  const measurement = paths['/api/suggest-measurement-points'].post;
+  assert.ok(measurement.parameters.some((parameter) => parameter.$ref === '#/components/parameters/RequestId'));
+  for (const header of ['Cache-Control', 'X-Content-Type-Options', 'X-Request-ID']) assert.ok(measurement.responses['200'].headers[header]);
+
+  const points = openapi.components.schemas.MeasurementPointSuggestion;
+  assert.deepEqual(points.required, ['lengthStart', 'lengthEnd', 'widthStart', 'widthEnd']);
+  assert.deepEqual(Object.keys(points.properties), ['lengthStart', 'lengthEnd', 'widthStart', 'widthEnd']);
+  assert.equal(points.additionalProperties, false);
+  assert.equal(openapi.components.schemas.NormalizedPoint.additionalProperties, false);
+  assert.equal(openapi.components.schemas.NormalizedPoint.properties.x.minimum, 0);
+  assert.equal(openapi.components.schemas.NormalizedPoint.properties.x.maximum, 1);
+  assert.equal(openapi.components.schemas.NormalizedPoint.properties.y.minimum, 0);
+  assert.equal(openapi.components.schemas.NormalizedPoint.properties.y.maximum, 1);
+  assert.equal(openapi.components.schemas.ProviderError.properties.message.maxLength, 240);
+  assert.deepEqual(openapi.components.schemas.ProviderErrorCode.enum, ['TIMEOUT', 'UNAVAILABLE', 'INVALID_RESPONSE', 'INVALID_INPUT', 'UNKNOWN']);
+
+  const assistantValidation = openapi.components.responses.AssistantValidationError;
+  assert.equal(assistantValidation.content['application/json'].schema.$ref, '#/components/schemas/AssistantValidationErrorResponse');
+  const detailVariants = openapi.components.schemas.AssistantValidationErrorResponse.properties.detail.oneOf;
+  assert.ok(detailVariants.some((variant) => variant.$ref === '#/components/schemas/ProviderError'));
+  assert.ok(detailVariants.some((variant) => variant.type === 'array'));
+  for (const header of ['Cache-Control', 'X-Content-Type-Options']) {
+    assert.ok(paths['/api/remove-background'].post.responses['200'].headers[header]);
+  }
+  assert.ok(paths['/api/generate-background'].post.responses['200'].headers['Cache-Control']);
+  for (const forbidden of ['OPENAI_API_KEY', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'data:image/']) assert.equal(openapiText.includes(forbidden), false);
+});
+
 test('Sandbox state GET requires control authorization before resolving an arbitrary sandbox', async () => {
   const route = await read('app/api/sandbox/state/route.ts');
   const runtimeSource = await read('app/api/sandbox/runtime.ts');

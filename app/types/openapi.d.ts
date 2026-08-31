@@ -242,6 +242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 出品写真アシスタントの稼働状態を確認する */
+        get: operations["assistantHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/livekit-token": {
         parameters: {
             query?: never;
@@ -814,6 +831,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AssistantHealth: {
+            /** @constant */
+            status: "ok";
+        };
         /**
          * @description 撮影セッション内の固定4slot。measurementは出品画像へ使用しません。
          * @enum {string}
@@ -855,6 +876,11 @@ export interface components {
         };
         ValidationErrorResponse: {
             detail: string | {
+                [key: string]: unknown;
+            }[];
+        };
+        AssistantValidationErrorResponse: {
+            detail: string | components["schemas"]["ProviderError"] | {
                 [key: string]: unknown;
             }[];
         };
@@ -1353,6 +1379,15 @@ export interface components {
                 "application/json": components["schemas"]["ProviderErrorResponse"];
             };
         };
+        /** @description 撮影アシスタントの入力形式・画像内容・provider入力が不正 */
+        AssistantValidationError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["AssistantValidationErrorResponse"];
+            };
+        };
         /** @description リクエストの形式または値が不正 */
         ValidationError: {
             headers: {
@@ -1368,11 +1403,19 @@ export interface components {
         Offset: number;
         Limit: number;
         IfMatchStateVersion: number;
+        /** @description 任意の相関ID。空白・制御文字を除いてサービス内で検証し、成功時に同じ値を返します（最大200文字）。 */
+        RequestId: string;
     };
     requestBodies: never;
     headers: {
         /** @description リソースのバージョン */
         ETag: string;
+        /** @description キャッシュを保存しない */
+        NoStore: "no-store";
+        /** @description MIME sniffingを無効化する */
+        NoSniff: "nosniff";
+        /** @description リクエストで指定された相関ID（指定時のみ返却） */
+        RequestId: string;
     };
     pathItems: never;
 }
@@ -1642,6 +1685,27 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
+    assistantHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description FastAPI assistant serviceが稼働中 */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantHealth"];
+                };
+            };
+        };
+    };
     issueLiveKitToken: {
         parameters: {
             query?: never;
@@ -1664,7 +1728,7 @@ export interface operations {
                     "application/json": components["schemas"]["LiveKitTokenResponse"];
                 };
             };
-            422: components["responses"]["ValidationError"];
+            422: components["responses"]["AssistantValidationError"];
             503: components["responses"]["ProviderFailure"];
         };
     };
@@ -1692,7 +1756,7 @@ export interface operations {
             };
             413: components["responses"]["ProviderFailure"];
             415: components["responses"]["ProviderFailure"];
-            422: components["responses"]["ValidationError"];
+            422: components["responses"]["AssistantValidationError"];
             502: components["responses"]["ProviderFailure"];
             503: components["responses"]["ProviderFailure"];
             504: components["responses"]["ProviderFailure"];
@@ -1701,7 +1765,10 @@ export interface operations {
     suggestMeasurementPoints: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description 任意の相関ID。空白・制御文字を除いてサービス内で検証し、成功時に同じ値を返します（最大200文字）。 */
+                "X-Request-ID"?: components["parameters"]["RequestId"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1714,6 +1781,9 @@ export interface operations {
             /** @description 採寸4端点の未承認提案 */
             200: {
                 headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    "X-Content-Type-Options": components["headers"]["NoSniff"];
+                    "X-Request-ID": components["headers"]["RequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -1722,7 +1792,7 @@ export interface operations {
             };
             413: components["responses"]["ProviderFailure"];
             415: components["responses"]["ProviderFailure"];
-            422: components["responses"]["ValidationError"];
+            422: components["responses"]["AssistantValidationError"];
             502: components["responses"]["ProviderFailure"];
             503: components["responses"]["ProviderFailure"];
             504: components["responses"]["ProviderFailure"];
@@ -1744,6 +1814,8 @@ export interface operations {
             /** @description 正面原本と同じ寸法のmask-only PNG */
             200: {
                 headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    "X-Content-Type-Options": components["headers"]["NoSniff"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -1752,7 +1824,7 @@ export interface operations {
             };
             413: components["responses"]["ProviderFailure"];
             415: components["responses"]["ProviderFailure"];
-            422: components["responses"]["ValidationError"];
+            422: components["responses"]["AssistantValidationError"];
             502: components["responses"]["ProviderFailure"];
             503: components["responses"]["ProviderFailure"];
             504: components["responses"]["ProviderFailure"];
@@ -1774,13 +1846,14 @@ export interface operations {
             /** @description 商品を含まない背景PNG候補 */
             200: {
                 headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
                     [name: string]: unknown;
                 };
                 content: {
                     "image/png": string;
                 };
             };
-            422: components["responses"]["ValidationError"];
+            422: components["responses"]["AssistantValidationError"];
             502: components["responses"]["ProviderFailure"];
             503: components["responses"]["ProviderFailure"];
             504: components["responses"]["ProviderFailure"];
