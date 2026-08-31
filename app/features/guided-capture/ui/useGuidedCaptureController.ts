@@ -3,7 +3,15 @@ import { createConfiguredGuidedCaptureAdapter } from './httpAdapter';
 import { createFixtureGuidedCaptureAdapter } from './fixtureAdapter';
 import { MeasurementEndpointsSchema } from '../../../types/measurement';
 import { calculateMeasurement, homographyFromCorners, readImageDimensions } from '../measurement';
-import { createListingHandoff, type AcceptedGuidedMedia, type ApprovedMeasurement, type CaptureImageSlot, type ConnectionState, type GuidedCaptureAdapter, type GuidedCaptureHandoff, type GuidedCaptureState, type GuidanceEvent, type GuidanceStateEvent, type MeasurementDraft, type MeasurementPatch, type MeasurementRequest, type SessionSlot, type SlotProgress, type CaptureRequest } from './contracts';
+import {
+  GuidanceHysteresis,
+  candidateFromGuidanceEvent,
+  createLocalGuidanceCandidate,
+  type GuidanceCandidate,
+  type LocalGuidanceCode,
+} from '../core/guidanceSelector';
+import { createCaptureRequestId } from '../core/captureReducer';
+import { createListingHandoff, type AcceptedGuidedMedia, type ApprovedMeasurement, type CaptureImageSlot, type ConnectionState, type GuidedCaptureAdapter, type GuidedCaptureHandoff, type GuidedCaptureState, type GuidanceEvent, type GuidanceStateEvent, type MeasurementDraft, type MeasurementPatch, type MeasurementRequest, type SessionSlot, type SlotProgress, type CaptureRequest, type GuidedCaptureStep, type ShotAssessment } from './contracts';
 
 export interface GuidedCaptureController {
   state: GuidedCaptureState;
@@ -22,6 +30,7 @@ export interface GuidedCaptureController {
   approveBackground: (previewUrl?: string) => void;
   reportConnectionState: (connectionState: ConnectionState, error?: string) => void;
   reportGuidance: (event: GuidanceEvent) => void;
+  reportLocalGuidance: (candidate: { shot: SessionSlot; code: LocalGuidanceCode; message?: string; expiresAt: number } | null) => void;
   reportState: (event: GuidanceStateEvent) => void;
   publishCameraStream: (stream: MediaStream) => Promise<void>;
   getListingHandoff: () => GuidedCaptureHandoff | null;
@@ -42,11 +51,15 @@ const createInitialSlots = (): Record<SessionSlot, SlotProgress> => ({
 const createInitialState = (): GuidedCaptureState => ({
   sessionId: null,
   phase: 'idle',
+  currentStep: 'front',
   connectionState: 'disconnected',
   transport: null,
   activeSlot: 'front',
   slots: createInitialSlots(),
   latestGuidance: null,
+  primaryGuidance: null,
+  guidanceAcknowledgement: null,
+  lastAssessment: null,
   measurementDraft: null,
   measurement: null,
   backgroundApproval: 'not_started',
@@ -67,7 +80,61 @@ const demoteImageApprovals = (slots: Record<SessionSlot, SlotProgress>): Record<
   ]),
 ) as Record<SessionSlot, SlotProgress>;
 
-const issueMessage = (issues: readonly string[]): string => issues[0] ? `撮影結果を確認してください（${issues[0]}）。同じ向きで撮り直せます。` : '撮影結果を確認できませんでした。同じ向きで撮り直してください。';
+const RETAKE_INSTRUCTIONS: Readonly<Record<string, string>> = {
+  TOO_DARK: '明るい場所へ移動して、影が少ない状態で撮り直してください。',
+  TOO_BRIGHT: '反射が少ない場所へ移動して、明るさを落として撮り直してください。',
+  TOO_BLURRY: 'ピントが合うまでカメラをゆっくり止めて撮り直してください。',
+  BLURRY: 'ピントが合うまでカメラをゆっくり止めて撮り直してください。',
+  GARMENT_CROPPED: '衣類全体が入るように少しカメラを離して撮り直してください。',
+  TAG_UNREADABLE: 'タグが画面中央に入り、文字が読める距離で撮り直してください。',
+  WRONG_SHOT: '指定された向きに衣類を置き、同じステップの写真を撮り直してください。',
+};
+
+const issueMessage = (issues: readonly string[]): string => {
+  const issue = issues.find((candidate) => candidate.trim() !== '');
+  if (!issue) return '撮影結果を確認できませんでした。同じ向きで撮り直してください。';
+  return RETAKE_INSTRUCTIONS[issue] ?? `撮影結果を確認してください（${issue}）。同じ向きで撮り直してください。`;
+};
+
+const providerMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return fallback;
+};
+
+const stepForSlot = (slot: SessionSlot, slots: Record<SessionSlot, SlotProgress>): GuidedCaptureStep => {
+  if (slot !== 'measurement') return slot;
+  return slots.measurement.status === 'captured' || slots.measurement.status === 'approved'
+    ? 'measurement-review'
+    : 'measurement-preparation';
+};
+
+const activeWorkflowPhase = (slot: SessionSlot): 'capturing' | 'measurement' => slot === 'measurement' ? 'measurement' : 'capturing';
+
+const defaultAcceptedAssessment = (slot: CaptureImageSlot): ShotAssessment => ({
+  shotType: slot,
+  quality: 'ok',
+  issues: [],
+  missingShots: CAPTURE_SLOTS.filter((candidate) => candidate !== slot),
+  nextAction: 'REQUEST_NEXT',
+});
+
+interface CaptureRequestFence {
+  readonly sessionId: string;
+  readonly slot: CaptureImageSlot;
+  readonly mediaId: string;
+  readonly requestId: string;
+  readonly sequence: number;
+  readonly generation: number;
+}
+
+interface MeasurementRequestFence {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly sequence: number;
+  readonly generation: number;
+}
+
+const isFiniteSequence = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
 
 const finiteMeasurement = (value: number | null | undefined): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0;
 const isApprovedMeasurement = (value: ApprovedMeasurement | null): value is ApprovedMeasurement => Boolean(
@@ -94,10 +161,26 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
   const captureGenerationRef = useRef(0);
   const measurementGenerationRef = useRef(0);
   const captureQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const captureRequestsRef = useRef(new Map<CaptureImageSlot, CaptureRequestFence>());
+  const measurementRequestRef = useRef<MeasurementRequestFence | null>(null);
+  const connectGenerationRef = useRef(0);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const guidanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const guidanceCandidatesRef = useRef(new Map<string, GuidanceCandidate>());
+  const guidanceSelectorRef = useRef<GuidanceHysteresis | null>(null);
+  if (guidanceSelectorRef.current === null) guidanceSelectorRef.current = new GuidanceHysteresis();
+  const awaitingResyncRef = useRef(false);
+  const manuallyStoppedRef = useRef(false);
+  const suppressConnectionEventsRef = useRef(false);
+  const connectSessionRef = useRef<(sessionId: string) => void>(() => undefined);
+  const guidanceFlushRef = useRef<(now: number) => void>(() => undefined);
+  const mountedRef = useRef(true);
   const stateRef = useRef<GuidedCaptureState>(createInitialState());
   const [state, setState] = useState<GuidedCaptureState>(createInitialState);
 
   const updateState = useCallback((updater: StateUpdater): void => {
+    if (!mountedRef.current) return;
     setState((current) => {
       const next = updater(current);
       stateRef.current = next;
@@ -107,6 +190,11 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
 
   useEffect(() => {
     if (adapter !== undefined && adapter !== adapterRef.current) {
+      connectGenerationRef.current += 1;
+      captureGenerationRef.current += 1;
+      measurementGenerationRef.current += 1;
+      captureRequestsRef.current.clear();
+      measurementRequestRef.current = null;
       void adapterRef.current?.disconnect();
       adapterRef.current = adapter;
     }
@@ -118,36 +206,181 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
   }, [state]);
 
   useEffect(() => () => {
+    mountedRef.current = false;
+    manuallyStoppedRef.current = true;
+    connectGenerationRef.current += 1;
     captureGenerationRef.current += 1;
+    measurementGenerationRef.current += 1;
     sessionIdRef.current = null;
     sequenceRef.current = 0;
     transportSequenceRef.current = 0;
+    captureRequestsRef.current.clear();
+    measurementRequestRef.current = null;
+    if (reconnectTimerRef.current !== null) clearTimeout(reconnectTimerRef.current);
+    if (guidanceTimerRef.current !== null) clearTimeout(guidanceTimerRef.current);
+    reconnectTimerRef.current = null;
+    guidanceTimerRef.current = null;
+    guidanceCandidatesRef.current.clear();
+    guidanceSelectorRef.current?.reset();
     void adapterRef.current?.disconnect();
   }, []);
 
+  const clearReconnectTimer = useCallback((): void => {
+    if (reconnectTimerRef.current !== null) clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
+  }, []);
+
+  const clearGuidanceTimer = useCallback((): void => {
+    if (guidanceTimerRef.current !== null) clearTimeout(guidanceTimerRef.current);
+    guidanceTimerRef.current = null;
+  }, []);
+
+  const resetGuidance = useCallback((clearState = true): void => {
+    clearGuidanceTimer();
+    guidanceCandidatesRef.current.clear();
+    guidanceSelectorRef.current?.reset();
+    if (clearState) {
+      updateState((current) => ({
+        ...current,
+        latestGuidance: null,
+        primaryGuidance: null,
+        guidanceAcknowledgement: null,
+      }));
+    }
+  }, [clearGuidanceTimer, updateState]);
+
+  const scheduleGuidanceWake = useCallback((): void => {
+    clearGuidanceTimer();
+    const nextWakeAt = guidanceSelectorRef.current?.nextWakeAt ?? null;
+    if (nextWakeAt === null) return;
+    const delay = Math.max(0, nextWakeAt - Date.now());
+    guidanceTimerRef.current = setTimeout(() => {
+      guidanceTimerRef.current = null;
+      guidanceFlushRef.current(Date.now());
+    }, delay);
+  }, [clearGuidanceTimer]);
+
+  const applyGuidance = useCallback((now: number): void => {
+    const current = stateRef.current;
+    if (!current.sessionId || !Number.isFinite(now) || now < 0) return;
+    const selector = guidanceSelectorRef.current;
+    if (!selector) return;
+    const result = selector.update([...guidanceCandidatesRef.current.values()], now, current.activeSlot);
+    const primary = result.primary;
+    updateState((next) => next.sessionId === current.sessionId ? {
+      ...next,
+      latestGuidance: primary?.source === 'agent' ? primary.event ?? null : null,
+      primaryGuidance: primary,
+      guidanceAcknowledgement: result.acknowledgement,
+      error: primary?.code === 'AGENT_UNAVAILABLE'
+        ? 'ライブ案内を利用できません。固定ガイドと手動撮影を利用できます。'
+        : next.error?.startsWith('ライブ案内を利用できません。') ? null : next.error,
+      phase: primary?.code === 'AGENT_UNAVAILABLE' && !['idle', 'ready', 'review'].includes(next.phase)
+        ? 'fallback'
+        : next.phase,
+    } : next);
+    scheduleGuidanceWake();
+  }, [scheduleGuidanceWake, updateState]);
+
+  useEffect(() => {
+    guidanceFlushRef.current = applyGuidance;
+  }, [applyGuidance]);
+
+  const scheduleReconnect = useCallback((sessionId: string, reason?: string): void => {
+    if (manuallyStoppedRef.current || sessionIdRef.current !== sessionId) return;
+    if (reconnectTimerRef.current !== null) return;
+    const attempt = reconnectAttemptRef.current;
+    if (attempt >= 3) {
+      updateState((current) => current.sessionId === sessionId ? {
+        ...current,
+        phase: current.phase === 'capturing' || current.phase === 'measurement' || current.phase === 'connecting' ? 'fallback' : current.phase,
+        connectionState: 'disconnected',
+        error: `${reason ?? 'AI撮影アシスタントとの接続が切断されました。'} 自動再接続を終了しました。再接続ボタンから再試行できます。`,
+      } : current);
+      return;
+    }
+    reconnectAttemptRef.current = attempt + 1;
+    const delay = [500, 1_000, 2_000][attempt] ?? 2_000;
+    updateState((current) => current.sessionId === sessionId ? {
+      ...current,
+      connectionState: 'reconnecting',
+      error: 'AI撮影アシスタントを再接続しています。固定ガイドと手動撮影はそのまま利用できます。',
+    } : current);
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (sessionIdRef.current === sessionId && !manuallyStoppedRef.current) connectSessionRef.current(sessionId);
+    }, delay);
+  }, [updateState]);
+
   const connect = useCallback(async (sessionId: string): Promise<void> => {
-    updateState((current) => current.sessionId === sessionId ? { ...current, phase: 'connecting', connectionState: 'connecting', error: null } : current);
+    const attemptId = ++connectGenerationRef.current;
+    const wasReconnect = awaitingResyncRef.current || reconnectAttemptRef.current > 0 || stateRef.current.connectionState === 'reconnecting';
+    updateState((current) => current.sessionId === sessionId ? {
+      ...current,
+      phase: current.phase === 'fallback' ? 'fallback' : current.phase,
+      connectionState: wasReconnect ? 'reconnecting' : 'connecting',
+      error: null,
+    } : current);
     try {
       const connection = await adapterRef.current?.connect(sessionId);
       if (!connection) throw new Error('撮影アシスタントadapterがありません。');
-      updateState((current) => current.sessionId === sessionId ? { ...current, phase: 'capturing', connectionState: connection.connectionState, transport: connection.transport, error: null } : current);
+      if (sessionIdRef.current !== sessionId || attemptId !== connectGenerationRef.current || manuallyStoppedRef.current) return;
+      const resumedLive = connection.transport === 'live' && wasReconnect;
+      awaitingResyncRef.current = resumedLive;
+      reconnectAttemptRef.current = 0;
+      clearReconnectTimer();
+      updateState((current) => current.sessionId === sessionId ? {
+        ...current,
+        connectionState: connection.connectionState,
+        transport: connection.transport,
+        phase: current.phase === 'fallback' || current.phase === 'connecting' ? activeWorkflowPhase(current.activeSlot) : current.phase,
+        error: resumedLive ? '接続を復元しました。撮影ステップを同期しています。' : null,
+      } : current);
+      if (resumedLive) resetGuidance(false);
     } catch (error) {
-      const message = error instanceof Error && error.message ? error.message : '撮影アシスタントAPIに接続できません。';
-      updateState((current) => current.sessionId === sessionId ? { ...current, phase: 'fallback', connectionState: 'disconnected', error: `${message} 固定ガイドと手動撮影を利用できます。` } : current);
+      if (sessionIdRef.current !== sessionId || attemptId !== connectGenerationRef.current || manuallyStoppedRef.current) return;
+      const message = providerMessage(error, '撮影アシスタントAPIに接続できません。');
+      updateState((current) => current.sessionId === sessionId ? {
+        ...current,
+        phase: current.phase === 'capturing' || current.phase === 'measurement' || current.phase === 'connecting' ? 'fallback' : current.phase,
+        connectionState: 'disconnected',
+        error: `${message} 固定ガイドと手動撮影を利用できます。`,
+      } : current);
+      scheduleReconnect(sessionId, message);
     }
-  }, [updateState]);
+  }, [clearReconnectTimer, resetGuidance, scheduleReconnect, updateState]);
+
+  useEffect(() => {
+    connectSessionRef.current = (sessionId) => { void connect(sessionId); };
+  }, [connect]);
 
   const start = useCallback(() => {
+    manuallyStoppedRef.current = false;
+    clearReconnectTimer();
+    clearGuidanceTimer();
+    connectGenerationRef.current += 1;
     captureGenerationRef.current += 1;
+    measurementGenerationRef.current += 1;
+    captureRequestsRef.current.clear();
+    measurementRequestRef.current = null;
+    guidanceCandidatesRef.current.clear();
+    guidanceSelectorRef.current?.reset();
+    suppressConnectionEventsRef.current = true;
+    sessionIdRef.current = null;
     const sessionId = createSessionId();
     sessionIdRef.current = sessionId;
     sequenceRef.current = 0;
     transportSequenceRef.current = 0;
-    const initial = { ...createInitialState(), sessionId, phase: 'connecting' as const, connectionState: 'connecting' as const, slots: { ...createInitialSlots(), front: { slot: 'front' as const, status: 'active' as const } } };
+    awaitingResyncRef.current = false;
+    const slots = { ...createInitialSlots(), front: { slot: 'front' as const, status: 'active' as const } };
+    const initial = { ...createInitialState(), sessionId, phase: 'connecting' as const, currentStep: 'front' as const, connectionState: 'connecting' as const, slots };
     stateRef.current = initial;
     setState(initial);
-    void connect(sessionId);
-  }, [connect]);
+    void Promise.resolve(adapterRef.current?.disconnect()).catch(() => undefined).finally(() => {
+      suppressConnectionEventsRef.current = false;
+      if (sessionIdRef.current === sessionId && !manuallyStoppedRef.current) void connect(sessionId);
+    });
+  }, [clearGuidanceTimer, clearReconnectTimer, connect]);
 
   const retryConnection = useCallback(() => {
     const sessionId = sessionIdRef.current;
@@ -155,32 +388,54 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       start();
       return;
     }
+    manuallyStoppedRef.current = false;
+    clearReconnectTimer();
+    reconnectAttemptRef.current = 0;
+    awaitingResyncRef.current = stateRef.current.transport === 'live';
+    resetGuidance(false);
     void connect(sessionId);
-  }, [connect, start]);
+  }, [clearReconnectTimer, connect, resetGuidance, start]);
 
   const stop = useCallback(() => {
+    manuallyStoppedRef.current = true;
+    connectGenerationRef.current += 1;
     captureGenerationRef.current += 1;
     measurementGenerationRef.current += 1;
     sessionIdRef.current = null;
     sequenceRef.current = 0;
     transportSequenceRef.current = 0;
+    reconnectAttemptRef.current = 0;
+    awaitingResyncRef.current = false;
+    captureRequestsRef.current.clear();
+    measurementRequestRef.current = null;
+    clearReconnectTimer();
+    resetGuidance(false);
     void adapterRef.current?.disconnect();
     const initial = createInitialState();
     stateRef.current = initial;
     setState(initial);
-  }, []);
+  }, [clearReconnectTimer, resetGuidance]);
 
   const selectSlot = useCallback((slot: SessionSlot) => {
-    const sessionId = stateRef.current.sessionId;
+    const snapshot = stateRef.current;
+    const sessionId = snapshot.sessionId;
+    if (!sessionId) return;
+    resetGuidance(false);
+    if (snapshot.transport === 'live') awaitingResyncRef.current = true;
     updateState((current) => {
       if (!current.sessionId) return current;
       const currentSlot = current.slots[slot];
       const isApproved = currentSlot.status === 'approved';
+      const nextSlots = { ...current.slots, [slot]: { ...currentSlot, status: isApproved ? 'approved' as const : currentSlot.status === 'pending' ? 'active' as const : currentSlot.status } };
       return {
         ...current,
         activeSlot: slot,
+        currentStep: stepForSlot(slot, nextSlots),
         phase: isApproved ? 'review' : slot === 'measurement' ? 'measurement' : 'capturing',
-        slots: { ...current.slots, [slot]: { ...currentSlot, status: isApproved ? 'approved' : currentSlot.status === 'pending' ? 'active' as const : currentSlot.status } },
+        slots: nextSlots,
+        latestGuidance: null,
+        primaryGuidance: null,
+        guidanceAcknowledgement: null,
         error: null,
       };
     });
@@ -193,7 +448,7 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
         });
       }
     }
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const processMedia = useCallback(async (media: AcceptedGuidedMedia): Promise<void> => {
     const snapshot = stateRef.current;
@@ -203,42 +458,67 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       : nextPendingCaptureSlot(snapshot.slots);
     if (!target) return;
     const sequence = ++sequenceRef.current;
-    const request: CaptureRequest = { sessionId: snapshot.sessionId, slot: target, mediaId: media.mediaId, blob: media.blob, requestId: `${snapshot.sessionId}:${target}:${sequence}`, sequence };
+    const requestId = createCaptureRequestId(`${snapshot.sessionId}:${target}`);
+    const request: CaptureRequest = { sessionId: snapshot.sessionId, slot: target, mediaId: media.mediaId, blob: media.blob, requestId, sequence };
+    const fence: CaptureRequestFence = {
+      sessionId: snapshot.sessionId,
+      slot: target,
+      mediaId: media.mediaId,
+      requestId,
+      sequence,
+      generation: captureGenerationRef.current,
+    };
+    captureRequestsRef.current.set(target, fence);
+    resetGuidance(false);
     updateState((current) => {
       if (current.sessionId !== snapshot.sessionId) return current;
       return {
         ...current,
         activeSlot: target,
+        currentStep: target,
         phase: 'capturing',
         slots: { ...current.slots, [target]: { slot: target, status: 'active', mediaId: media.mediaId, previewUrl: media.previewUrl, source: media.source } },
+        latestGuidance: null,
+        primaryGuidance: null,
+        guidanceAcknowledgement: null,
+        lastAssessment: null,
         error: null,
       };
     });
     const requested = request;
+    const isCurrentRequest = (): boolean => {
+      const current = stateRef.current;
+      const currentFence = captureRequestsRef.current.get(target);
+      return current.sessionId === fence.sessionId
+        && currentFence?.requestId === fence.requestId
+        && currentFence.generation === fence.generation
+        && captureGenerationRef.current === fence.generation
+        && current.slots[target].mediaId === fence.mediaId;
+    };
     try {
-      const assessment = await adapterRef.current?.assessShot?.(requested);
+      const assessment = await adapterRef.current?.assessShot?.(requested) ?? defaultAcceptedAssessment(target);
+      if (!isCurrentRequest()) return;
+      captureRequestsRef.current.delete(target);
       updateState((current) => {
         const slot = requested.slot;
         if (current.sessionId !== requested.sessionId || current.slots[slot].mediaId !== media.mediaId) return current;
         if (assessment && (assessment.quality !== 'ok' || assessment.shotType !== slot)) {
-          return { ...current, activeSlot: slot, phase: 'capturing', slots: { ...current.slots, [slot]: { ...current.slots[slot], status: 'active' } }, error: issueMessage(assessment.issues) };
+          return { ...current, activeSlot: slot, currentStep: slot, phase: 'capturing', slots: { ...current.slots, [slot]: { ...current.slots[slot], status: 'active' } }, lastAssessment: assessment, primaryGuidance: null, guidanceAcknowledgement: null, error: issueMessage(assessment.issues) };
         }
         const nextSlots = { ...current.slots, [slot]: { ...current.slots[slot], status: 'captured' as const } };
         const nextSlot = nextPendingCaptureSlot(nextSlots);
-        return { ...current, slots: nextSlots, activeSlot: nextSlot ?? 'measurement', phase: nextSlot ? 'capturing' : 'measurement', error: null };
+        return { ...current, slots: nextSlots, activeSlot: nextSlot ?? 'measurement', currentStep: nextSlot ?? 'measurement-preparation', phase: nextSlot ? 'capturing' : 'measurement', lastAssessment: assessment, latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, error: null };
       });
     } catch (error) {
-      // A provider outage must not discard a photo the user captured. Keep the
-      // slot accepted and expose manual retry/fallback instead.
-      const message = error instanceof Error && error.message ? error.message : '撮影後AIを利用できません。';
+      if (!isCurrentRequest()) return;
+      captureRequestsRef.current.delete(target);
+      const message = providerMessage(error, '撮影後AIを利用できません。');
       updateState((current) => {
         if (current.sessionId !== requested.sessionId || current.slots[requested.slot].mediaId !== media.mediaId) return current;
-        const nextSlots = { ...current.slots, [requested.slot]: { ...current.slots[requested.slot], status: 'captured' as const } };
-        const nextSlot = nextPendingCaptureSlot(nextSlots);
-        return { ...current, slots: nextSlots, activeSlot: nextSlot ?? 'measurement', phase: nextSlot ? 'capturing' : 'measurement', error: `${message} 写真は保持しています。手動で続行できます。` };
+        return { ...current, activeSlot: requested.slot, currentStep: requested.slot, phase: 'capturing', slots: { ...current.slots, [requested.slot]: { ...current.slots[requested.slot], status: 'active' as const } }, lastAssessment: null, primaryGuidance: null, guidanceAcknowledgement: null, error: `${message} 写真は保持しています。もう一度解析するか、撮り直してください。` };
       });
     }
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   // File inputs can deliver several images in one change event. Serialize
   // assessment so each image receives the next reducer slot, and invalidate
@@ -262,9 +542,15 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       return;
     }
     const generation = ++measurementGenerationRef.current;
+    const requestId = createCaptureRequestId(`${sessionId}:measurement`);
+    const sequence = ++sequenceRef.current;
+    const fence: MeasurementRequestFence = { sessionId, requestId, sequence, generation };
+    measurementRequestRef.current = fence;
+    resetGuidance(false);
     updateState((current) => current.sessionId === sessionId ? {
       ...current,
       activeSlot: 'measurement',
+      currentStep: 'measurement-capture',
       phase: 'measurement',
       slots: { ...demoteImageApprovals(current.slots), measurement: { slot: 'measurement', status: 'active' } },
       measurementDraft: null,
@@ -272,11 +558,14 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       error: null,
     } : current);
     try {
-      const request: MeasurementRequest = { sessionId, blob };
+      const request: MeasurementRequest = { sessionId, blob, requestId, sequence };
       const [suggestion, imageDimensions] = await Promise.all([
         adapterRef.current?.suggestMeasurement?.(request),
-        readImageDimensions(blob),
+        readImageDimensions(blob).catch(() => null),
       ]);
+      const currentFence = measurementRequestRef.current;
+      if (sessionIdRef.current !== sessionId || currentFence?.requestId !== requestId || currentFence.generation !== generation || measurementGenerationRef.current !== generation) return;
+      measurementRequestRef.current = null;
       const enrichedSuggestion = suggestion && imageDimensions
         ? { ...suggestion, imageDimensions, rawEndpoints: suggestion.endpoints }
         : suggestion && suggestion.endpoints
@@ -285,50 +574,65 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       updateState((current) => current.sessionId === sessionId && generation === measurementGenerationRef.current ? {
         ...current,
         activeSlot: 'measurement',
+        currentStep: 'measurement-review',
         phase: 'measurement',
         measurementDraft: enrichedSuggestion ?? { lengthCm: null, widthCm: null, source: 'ai' },
         slots: { ...current.slots, measurement: { slot: 'measurement', status: 'captured' } },
         error: null,
       } : current);
     } catch (error) {
-      const message = error instanceof Error && error.message ? error.message : '採寸点を提案できません。';
-      updateState((current) => current.sessionId === sessionId && generation === measurementGenerationRef.current ? { ...current, activeSlot: 'measurement', phase: 'measurement', slots: { ...current.slots, measurement: { slot: 'measurement', status: 'active' } }, error: `${message} 着丈・身幅を手入力できます。` } : current);
+      const currentFence = measurementRequestRef.current;
+      if (sessionIdRef.current !== sessionId || currentFence?.requestId !== requestId || currentFence.generation !== generation || measurementGenerationRef.current !== generation) return;
+      measurementRequestRef.current = null;
+      const message = providerMessage(error, '採寸点を提案できません。');
+      updateState((current) => current.sessionId === sessionId && generation === measurementGenerationRef.current ? { ...current, activeSlot: 'measurement', currentStep: 'measurement-capture', phase: 'measurement', slots: { ...current.slots, measurement: { slot: 'measurement', status: 'active' } }, error: `${message} 着丈・身幅を手入力できます。` } : current);
     }
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const removeMedia = useCallback((mediaId: string) => {
+    const snapshot = stateRef.current;
+    const slot = snapshot.sessionId ? CAPTURE_SLOTS.find((candidate) => snapshot.slots[candidate].mediaId === mediaId) : undefined;
+    if (!slot) return;
+    captureGenerationRef.current += 1;
+    measurementGenerationRef.current += 1;
+    captureRequestsRef.current.delete(slot);
+    measurementRequestRef.current = null;
+    resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId) return current;
-      const slot = CAPTURE_SLOTS.find((candidate) => current.slots[candidate].mediaId === mediaId);
-      if (!slot) return current;
-      return { ...current, slots: { ...current.slots, [slot]: { slot, status: 'active' as const }, measurement: { slot: 'measurement', status: 'pending' as const } }, activeSlot: slot, phase: 'capturing', measurementDraft: null, measurement: null, backgroundApproval: slot === 'front' ? 'not_started' : current.backgroundApproval, backgroundPreviewUrl: slot === 'front' ? undefined : current.backgroundPreviewUrl, error: null };
+      return { ...current, slots: { ...current.slots, [slot]: { slot, status: 'active' as const } }, activeSlot: slot, currentStep: slot, phase: 'capturing', lastAssessment: null, latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, backgroundApproval: slot === 'front' ? 'not_started' : current.backgroundApproval, backgroundPreviewUrl: slot === 'front' ? undefined : current.backgroundPreviewUrl, error: null };
     });
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const replaceMedia = useCallback((slot: CaptureImageSlot, media: AcceptedGuidedMedia) => {
+    captureGenerationRef.current += 1;
+    captureRequestsRef.current.delete(slot);
     updateState((current) => {
       if (!current.sessionId) return current;
       const previous = current.slots[slot];
       if (previous.status !== 'captured' && previous.status !== 'approved') return current;
-      return { ...current, slots: { ...current.slots, [slot]: { slot, status: previous.status, mediaId: media.mediaId, previewUrl: media.previewUrl, source: media.source } } };
+      return { ...current, slots: { ...current.slots, [slot]: { slot, status: previous.status, mediaId: media.mediaId, previewUrl: media.previewUrl, source: media.source } }, error: null };
     });
   }, [updateState]);
 
   const retakeMeasurement = useCallback(() => {
     measurementGenerationRef.current += 1;
+    measurementRequestRef.current = null;
+    resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId || !allImageSlotsCaptured(current.slots)) return current;
       return {
         ...current,
         slots: { ...demoteImageApprovals(current.slots), measurement: { slot: 'measurement', status: 'pending' } },
         activeSlot: 'measurement',
+        currentStep: 'measurement-preparation',
         phase: 'measurement',
         measurementDraft: null,
         measurement: null,
         error: null,
       };
     });
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const approveBackground = useCallback((previewUrl?: string) => {
     updateState((current) => current.sessionId && current.phase === 'ready' && current.slots.front.status === 'approved'
@@ -401,11 +705,12 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
         homography,
         source: patch.lengthCm !== undefined || patch.widthCm !== undefined || geometryChanged ? 'approved_manual' : currentDraft.source,
       };
-      return { ...current, measurementDraft: nextDraft, slots: { ...current.slots, measurement: { slot: 'measurement', status: 'captured' as const } }, phase: 'measurement', error: null };
+      return { ...current, measurementDraft: nextDraft, slots: { ...current.slots, measurement: { slot: 'measurement', status: 'captured' as const } }, currentStep: 'measurement-review', phase: 'measurement', error: null };
     });
   }, [updateState]);
 
   const approveMeasurement = useCallback((measurement?: ApprovedMeasurement) => {
+    resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId) return current;
       const hasRequiredImages = CAPTURE_SLOTS.every((slot) => current.slots[slot].status === 'captured' || current.slots[slot].status === 'approved');
@@ -416,11 +721,12 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
         ? { lengthCm: draftLength, widthCm: draftWidth, source: current.measurementDraft?.source === 'ai' ? 'approved_cv' : 'approved_manual' }
         : null);
       if (!isApprovedMeasurement(candidate)) return { ...current, error: '着丈は20〜100cm、身幅は20〜80cmの範囲で入力してから承認してください。' };
-      return { ...current, slots: { ...current.slots, measurement: { slot: 'measurement', status: 'approved' } }, measurement: candidate, phase: 'review', activeSlot: 'measurement', error: null };
+      return { ...current, slots: { ...current.slots, measurement: { slot: 'measurement', status: 'approved' } }, measurement: candidate, currentStep: 'measurement-review', phase: 'review', activeSlot: 'measurement', latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, error: null };
     });
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const approveCapture = useCallback(() => {
+    resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId || !allImageSlotsCaptured(current.slots)) {
         return { ...current, error: 'front・back・tagの撮影を確認してから次へ進んでください。' };
@@ -430,48 +736,115 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       }
       const slots = { ...current.slots };
       for (const slot of CAPTURE_SLOTS) slots[slot] = { ...slots[slot], status: 'approved' as const };
-      return { ...current, slots, phase: 'ready', activeSlot: 'measurement', error: null };
+      return { ...current, slots, phase: 'ready', currentStep: 'edit', activeSlot: 'measurement', latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, error: null };
     });
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const reportConnectionState = useCallback((connectionState: ConnectionState, error?: string) => {
-    updateState((current) => ({
+    if (suppressConnectionEventsRef.current) return;
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    const previous = stateRef.current.connectionState;
+    if (connectionState === 'connected') {
+      clearReconnectTimer();
+      reconnectAttemptRef.current = 0;
+      const resumedLive = stateRef.current.transport === 'live' && (previous === 'reconnecting' || previous === 'disconnected');
+      awaitingResyncRef.current = resumedLive;
+      if (resumedLive) resetGuidance(false);
+      updateState((current) => current.sessionId === sessionId ? {
+        ...current,
+        connectionState,
+        latestGuidance: null,
+        primaryGuidance: null,
+        guidanceAcknowledgement: null,
+        phase: current.phase === 'fallback' || current.phase === 'connecting' ? activeWorkflowPhase(current.activeSlot) : current.phase,
+        error: error ?? (resumedLive ? '接続を復元しました。撮影ステップを同期しています。' : null),
+      } : current);
+      return;
+    }
+    if (connectionState === 'reconnecting') {
+      if (stateRef.current.transport === 'live') {
+        awaitingResyncRef.current = true;
+        resetGuidance(false);
+      }
+      updateState((current) => current.sessionId === sessionId ? {
+        ...current,
+        connectionState,
+        latestGuidance: null,
+        primaryGuidance: null,
+        guidanceAcknowledgement: null,
+        error: error ?? 'AI撮影アシスタントを再接続しています。固定ガイドと手動撮影はそのまま利用できます。',
+      } : current);
+      return;
+    }
+    awaitingResyncRef.current = stateRef.current.transport === 'live';
+    resetGuidance(false);
+    updateState((current) => current.sessionId === sessionId ? {
       ...current,
       connectionState,
-      phase: connectionState === 'disconnected' && !['idle', 'review', 'ready'].includes(current.phase) ? 'fallback' : current.phase,
-      error: error ?? (connectionState === 'disconnected' && !['review', 'ready'].includes(current.phase) ? 'AI撮影アシスタントが切断されました。固定ガイドと手動撮影を利用できます。' : null),
-    }));
-  }, [updateState]);
+      latestGuidance: null,
+      primaryGuidance: null,
+      guidanceAcknowledgement: null,
+      phase: !['idle', 'review', 'ready'].includes(current.phase) ? 'fallback' : current.phase,
+      error: error ?? (!['review', 'ready'].includes(current.phase) ? 'AI撮影アシスタントが切断されました。固定ガイドと手動撮影を利用できます。' : null),
+    } : current);
+    scheduleReconnect(sessionId, error);
+  }, [clearReconnectTimer, resetGuidance, scheduleReconnect, updateState]);
 
   const reportGuidance = useCallback((event: GuidanceEvent) => {
     const now = Date.now();
     const snapshot = stateRef.current;
-    const latestSequence = snapshot.latestGuidance?.sequence ?? 0;
-    if (!snapshot.sessionId || event.sessionId !== snapshot.sessionId || !Number.isInteger(event.sequence) || event.sequence <= latestSequence || event.sequence <= transportSequenceRef.current || !Number.isFinite(event.observedAt) || !Number.isFinite(event.expiresAt) || event.expiresAt <= event.observedAt || now >= event.expiresAt) return;
+    if (
+      awaitingResyncRef.current
+      || !snapshot.sessionId
+      || event.sessionId !== snapshot.sessionId
+      || event.shot !== snapshot.activeSlot
+      || !isFiniteSequence(event.sequence)
+      || event.sequence <= transportSequenceRef.current
+      || !Number.isFinite(event.observedAt)
+      || !Number.isFinite(event.expiresAt)
+      || event.expiresAt <= event.observedAt
+      || now >= event.expiresAt
+    ) return;
     transportSequenceRef.current = event.sequence;
-    updateState((current) => {
-      if (!current.sessionId || event.sessionId !== current.sessionId) return current;
-      return {
-        ...current,
-        latestGuidance: event,
-        error: event.code === 'AGENT_UNAVAILABLE' ? 'ライブ案内を利用できません。固定ガイドと手動撮影を利用できます。' : null,
-        phase: event.code === 'AGENT_UNAVAILABLE' && current.phase !== 'idle' && current.phase !== 'ready' ? 'fallback' : current.phase,
-      };
-    });
-  }, [updateState]);
+    guidanceCandidatesRef.current.set(`agent:${event.shot}`, candidateFromGuidanceEvent(event));
+    applyGuidance(now);
+  }, [applyGuidance]);
+
+  const reportLocalGuidance = useCallback((candidate: { shot: SessionSlot; code: LocalGuidanceCode; message?: string; expiresAt: number } | null) => {
+    const snapshot = stateRef.current;
+    if (!snapshot.sessionId) return;
+    if (candidate === null) {
+      guidanceCandidatesRef.current.delete(`device:${snapshot.activeSlot}`);
+    } else if (candidate.shot === snapshot.activeSlot && Number.isFinite(candidate.expiresAt)) {
+      const now = Date.now();
+      if (candidate.expiresAt <= now) return;
+      guidanceCandidatesRef.current.set(`device:${candidate.shot}`, createLocalGuidanceCandidate({ ...candidate, observedAt: now }));
+    } else {
+      return;
+    }
+    applyGuidance(Date.now());
+  }, [applyGuidance]);
 
   const reportState = useCallback((event: GuidanceStateEvent) => {
     const snapshot = stateRef.current;
-    if (!snapshot.sessionId || event.sessionId !== snapshot.sessionId || !Number.isInteger(event.sequence) || event.sequence < 1 || event.sequence <= transportSequenceRef.current) return;
+    if (
+      !snapshot.sessionId
+      || event.sessionId !== snapshot.sessionId
+      || !isFiniteSequence(event.sequence)
+      || event.sequence <= transportSequenceRef.current
+      || !Number.isFinite(event.observedAt)
+      || (event.shot !== null && !['front', 'back', 'tag', 'measurement'].includes(event.shot))
+    ) return;
     transportSequenceRef.current = event.sequence;
+    awaitingResyncRef.current = false;
+    resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId || event.sessionId !== current.sessionId) return current;
       // Reliable state is authoritative for the active shot. A state packet
       // intentionally has no expiry/confidence, so never synthesize a public
       // GuidanceEvent from it; clear any advice belonging to the old shot.
-      // Keep the local phase/status coherent with a server-side resync so a
-      // reconnect cannot leave the camera pointed at the wrong capture step.
-      if (event.shot === null) return { ...current, latestGuidance: null, error: null };
+      if (event.shot === null) return { ...current, latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, error: null };
       const activeProgress = current.slots[event.shot];
       const nextPhase = event.shot === 'measurement'
         ? 'measurement'
@@ -481,8 +854,13 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       return {
         ...current,
         activeSlot: event.shot,
+        currentStep: event.shot === 'measurement' && measurementRequestRef.current?.sessionId === current.sessionId
+          ? 'measurement-capture'
+          : stepForSlot(event.shot, current.slots),
         phase: nextPhase,
         latestGuidance: null,
+        primaryGuidance: null,
+        guidanceAcknowledgement: null,
         slots: {
           ...current.slots,
           [event.shot]: activeProgress.status === 'pending'
@@ -492,7 +870,7 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
         error: null,
       };
     });
-  }, [updateState]);
+  }, [resetGuidance, updateState]);
 
   const publishCameraStream = useCallback(async (stream: MediaStream): Promise<void> => {
     await adapterRef.current?.publishCameraStream?.(stream);
@@ -513,6 +891,45 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     return () => unsubscribe?.();
   }, [adapter, reportState]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+    const onPageHide = () => stop();
+    const onVisibilityChange = () => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      if (document.visibilityState === 'hidden') {
+        if (stateRef.current.transport === 'live') awaitingResyncRef.current = true;
+        resetGuidance(false);
+        updateState((current) => current.sessionId === sessionId ? {
+          ...current,
+          latestGuidance: null,
+          primaryGuidance: null,
+          guidanceAcknowledgement: null,
+        } : current);
+        return;
+      }
+      if (stateRef.current.transport !== 'live' || stateRef.current.connectionState !== 'connected') {
+        applyGuidance(Date.now());
+        return;
+      }
+      awaitingResyncRef.current = true;
+      resetGuidance(false);
+      const sync = adapterRef.current?.setActiveShot?.(stateRef.current.activeSlot);
+      if (sync) {
+        void sync.catch((error: unknown) => updateState((current) => current.sessionId === sessionId ? {
+          ...current,
+          error: `${providerMessage(error, '撮影ステップを同期できませんでした。')} 再接続して続行できます。`,
+        } : current));
+      }
+    };
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [applyGuidance, resetGuidance, stop, updateState]);
+
   const getListingHandoff = useCallback((): GuidedCaptureHandoff | null => {
     const current = stateRef.current;
     if (!current.sessionId || current.phase !== 'ready' || !allImageSlotsApproved(current.slots) || !isApprovedMeasurement(current.measurement)) return null;
@@ -520,5 +937,5 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     return handoff.images.length === CAPTURE_SLOTS.length && handoff.garmentMeasurements ? handoff : null;
   }, []);
 
-  return useMemo(() => ({ state, start, retryConnection, stop, selectSlot, recordMedia, recordMeasurement, replaceMedia, removeMedia, retakeMeasurement, updateMeasurement, approveMeasurement, approveCapture, approveBackground, reportConnectionState, reportGuidance, reportState, publishCameraStream, getListingHandoff }), [approveBackground, approveCapture, approveMeasurement, getListingHandoff, publishCameraStream, recordMedia, recordMeasurement, removeMedia, replaceMedia, reportConnectionState, reportGuidance, reportState, retakeMeasurement, retryConnection, selectSlot, start, state, stop, updateMeasurement]);
+  return useMemo(() => ({ state, start, retryConnection, stop, selectSlot, recordMedia, recordMeasurement, replaceMedia, removeMedia, retakeMeasurement, updateMeasurement, approveMeasurement, approveCapture, approveBackground, reportConnectionState, reportGuidance, reportLocalGuidance, reportState, publishCameraStream, getListingHandoff }), [approveBackground, approveCapture, approveMeasurement, getListingHandoff, publishCameraStream, recordMedia, recordMeasurement, removeMedia, replaceMedia, reportConnectionState, reportGuidance, reportLocalGuidance, reportState, retakeMeasurement, retryConnection, selectSlot, start, state, stop, updateMeasurement]);
 };

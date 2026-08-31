@@ -146,6 +146,20 @@ export type CapturePhase =
   | "error"
   | "ready";
 
+/**
+ * The workflow step is deliberately separate from CapturePhase.  A session
+ * can be in the same `measurement` phase while it is showing the preparation
+ * checklist, waiting for the shutter, or reviewing the generated draft.
+ */
+export type CaptureStep =
+  | "front"
+  | "back"
+  | "tag"
+  | "measurement-preparation"
+  | "measurement-capture"
+  | "measurement-review"
+  | "edit";
+
 export type CaptureSlotStatus = "pending" | "captured" | "approved";
 
 export interface AcceptedImageSlot {
@@ -198,6 +212,8 @@ export type PendingCapture = PendingImageCapture | PendingMeasurementCapture;
 export interface CaptureState {
   readonly sessionId: string;
   readonly phase: CapturePhase;
+  /** Authoritative workflow step; never derived from an AI nextAction. */
+  readonly currentStep: CaptureStep;
   readonly currentSlot: SessionSlot;
   readonly slots: CaptureSlots;
   readonly pendingCapture: PendingCapture | null;

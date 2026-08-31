@@ -11,12 +11,12 @@ import type { MeasurementDraft, ShotAssessment } from "./types.ts";
 
 const blob = (label: string): Blob => new Blob([label], { type: "image/jpeg" });
 
-const assessment = (slot: "front" | "back" | "tag"): ShotAssessment => ({
+const assessment = (slot: "front" | "back" | "tag", nextAction: ShotAssessment["nextAction"] = slot === "tag" ? "COMPLETE" : "REQUEST_NEXT"): ShotAssessment => ({
   shotType: slot,
   quality: "ok",
   issues: [],
   missingShots: [],
-  nextAction: slot === "tag" ? "COMPLETE" : "REQUEST_NEXT",
+  nextAction,
 });
 
 const draft: MeasurementDraft = {
@@ -58,6 +58,7 @@ test("reducer completes all four slots without trusting nextAction", () => {
   state = acceptImage(state, "tag", 3);
 
   assert.equal(state.currentSlot, "measurement");
+  assert.equal(state.currentStep, "measurement-preparation");
   assert.equal(state.phase, "measurement");
   assert.equal(state.slots.measurement, null);
 
@@ -66,11 +67,13 @@ test("reducer completes all four slots without trusting nextAction", () => {
     state,
     captureActions.submit(sessionId, "measurement", blob("measurement"), "blob:measurement", measurementRequest, 4),
   );
+  assert.equal(state.currentStep, "measurement-capture");
   state = captureReducer(
     state,
     captureActions.measurementDrafted(sessionId, draft, measurementRequest, 4),
   );
   assert.equal(state.phase, "measurement");
+  assert.equal(state.currentStep, "measurement-review");
   assert.equal(state.slots.measurement?.kind, "measurement");
   assert.equal(canEnterEdit(state), false);
 
@@ -83,8 +86,28 @@ test("reducer completes all four slots without trusting nextAction", () => {
     }, 5),
   );
   assert.equal(state.phase, "ready");
+  assert.equal(state.currentStep, "edit");
   assert.equal(state.currentSlot, "measurement");
   assert.equal(canEnterEdit(state), true);
+});
+
+test("workflow step advances from accepted slots and ignores a premature COMPLETE nextAction", () => {
+  const sessionId = "session-step";
+  let state = createInitialCaptureState(sessionId);
+  assert.equal(state.currentStep, "front");
+
+  const requestId = "front-step";
+  state = captureReducer(state, captureActions.submit(sessionId, "front", blob("front"), "blob:front", requestId, 1));
+  state = captureReducer(state, captureActions.assessed(sessionId, "front", assessment("front", "COMPLETE"), requestId, 1));
+  assert.equal(state.currentSlot, "back");
+  assert.equal(state.currentStep, "back");
+
+  state = acceptImage(state, "back", 2);
+  assert.equal(state.currentSlot, "tag");
+  assert.equal(state.currentStep, "tag");
+  state = acceptImage(state, "tag", 3);
+  assert.equal(state.currentSlot, "measurement");
+  assert.equal(state.currentStep, "measurement-preparation");
 });
 
 test("stale session, sequence, and request results are ignored by identity", () => {
@@ -124,6 +147,51 @@ test("stale session, sequence, and request results are ignored by identity", () 
     }, 20),
   );
   assert.strictEqual(staleSequence, newer);
+
+  const wrongShot = captureReducer(
+    newer,
+    captureActions.guidance({
+      sessionId: "session-current",
+      sequence: 2,
+      shot: "front",
+      code: "READY",
+      message: "撮影できます。",
+      confidence: 1,
+      observedAt: 20,
+      expiresAt: 100,
+    }, 30),
+  );
+  assert.strictEqual(wrongShot, newer);
+});
+
+test("a retry gets a new request identity and fences the old provider result", () => {
+  const sessionId = "session-provider-retry";
+  const submitted = captureReducer(
+    createInitialCaptureState(sessionId),
+    captureActions.submit(sessionId, "front", blob("front"), "blob:front", "request-1", 1),
+  );
+  const errored = captureReducer(
+    submitted,
+    captureActions.providerError(sessionId, "request-1", 1, {
+      provider: "shot-assessor",
+      code: "TIMEOUT",
+      message: "timeout",
+      retryable: true,
+    }),
+  );
+  assert.equal(errored.phase, "error");
+  const retried = captureReducer(errored, captureActions.retry(sessionId, "request-2", 2));
+  assert.equal(retried.phase, "analyzing");
+  assert.equal(retried.pendingCapture?.requestId, "request-2");
+
+  const sameRequestRetry = captureReducer(errored, captureActions.retry(sessionId, "request-1", 2));
+  assert.strictEqual(sameRequestRetry, errored);
+
+  const oldResult = captureReducer(retried, captureActions.assessed(sessionId, "front", assessment("front"), "request-1", 1));
+  assert.strictEqual(oldResult, retried);
+  const accepted = captureReducer(retried, captureActions.assessed(sessionId, "front", assessment("front"), "request-2", 2));
+  assert.equal(accepted.slots.front?.kind, "image");
+  assert.equal(accepted.currentSlot, "back");
 });
 
 test("retake clears only the requested slot and preserves accepted peers", () => {

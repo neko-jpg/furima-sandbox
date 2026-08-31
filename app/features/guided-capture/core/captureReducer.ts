@@ -1,10 +1,13 @@
 import {
+  GUIDANCE_CODES,
   IMAGE_SLOTS,
+  MEASUREMENT_ENDPOINT_KEYS,
   SESSION_SLOTS,
   type ApprovedMeasurement,
   type CaptureAction,
   type CapturePhase,
   type CaptureReducer,
+  type CaptureStep,
   type CaptureSlotRecord,
   type CaptureSlots,
   type CaptureState,
@@ -36,6 +39,7 @@ export function createInitialCaptureState(sessionId: string): CaptureState {
   return {
     sessionId,
     phase: "capturing",
+    currentStep: "front",
     currentSlot: "front",
     slots: emptySlots(),
     pendingCapture: null,
@@ -96,8 +100,24 @@ export function nextPendingSlot(slots: CaptureSlots): SessionSlot | "edit" {
   return "edit";
 }
 
+/** Derives the user-facing workflow step from accepted slots only. */
+export function nextCaptureStep(slots: CaptureSlots): CaptureStep {
+  const next = nextPendingSlot(slots);
+  if (next === "edit") {
+    return "edit";
+  }
+  if (next === "measurement") {
+    return "measurement-preparation";
+  }
+  return next;
+}
+
 function isValidSequence(sequence: number): boolean {
   return Number.isInteger(sequence) && sequence >= 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 function acceptsNewSequence(state: CaptureState, sequence: number): boolean {
@@ -133,14 +153,16 @@ function replaceSlot(
 function nextPhaseForSlots(slots: CaptureSlots): {
   readonly currentSlot: SessionSlot;
   readonly phase: CapturePhase;
+  readonly currentStep: CaptureStep;
 } {
   const next = nextPendingSlot(slots);
   if (next === "edit") {
-    return { currentSlot: "measurement", phase: "ready" };
+    return { currentSlot: "measurement", phase: "ready", currentStep: "edit" };
   }
   return {
     currentSlot: next,
     phase: next === "measurement" ? "measurement" : "capturing",
+    currentStep: next === "measurement" ? "measurement-preparation" : next,
   };
 }
 
@@ -151,45 +173,81 @@ function acceptedAssessment(
   return assessment.quality === "ok" && assessment.shotType === slot;
 }
 
-function isMeasurementDraft(value: MeasurementDraft): boolean {
+function isMeasurementDraft(value: unknown): value is MeasurementDraft {
+  if (typeof value !== "object" || value === null) return false;
+  const draft = value as MeasurementDraft;
+  if (
+    !isNonEmptyString(draft.imageId) ||
+    draft.endpoints === null ||
+    typeof draft.endpoints !== "object" ||
+    Array.isArray(draft.endpoints) ||
+    Object.keys(draft.endpoints).length !== MEASUREMENT_ENDPOINT_KEYS.length ||
+    !MEASUREMENT_ENDPOINT_KEYS.every((key) => Object.prototype.hasOwnProperty.call(draft.endpoints, key))
+  ) {
+    return false;
+  }
   return (
-    value.status === "needs_review" &&
-    value.imageId.trim() !== "" &&
-    Number.isFinite(value.lengthCm) &&
-    value.lengthCm > 0 &&
-    Number.isFinite(value.widthCm) &&
-    value.widthCm > 0 &&
-    (value.confidence === undefined || (
-      Number.isFinite(value.confidence) &&
-      value.confidence >= 0 &&
-      value.confidence <= 1
+    draft.status === "needs_review" &&
+    (draft.source === "ai" || draft.source === "contour" || draft.source === "user") &&
+    Number.isFinite(draft.lengthCm) &&
+    draft.lengthCm > 0 &&
+    Number.isFinite(draft.widthCm) &&
+    draft.widthCm > 0 &&
+    Object.values(draft.endpoints).every((point) => (
+      typeof point === "object" &&
+      point !== null &&
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      point.x >= 0 &&
+      point.x <= 1 &&
+      point.y >= 0 &&
+      point.y <= 1
+    )) &&
+    (draft.confidence === undefined || (
+      Number.isFinite(draft.confidence) &&
+      draft.confidence >= 0 &&
+      draft.confidence <= 1
     ))
   );
 }
 
-function isApprovedMeasurement(value: ApprovedMeasurement): boolean {
+function isApprovedMeasurement(value: unknown): value is ApprovedMeasurement {
+  if (typeof value !== "object" || value === null) return false;
+  const measurement = value as ApprovedMeasurement;
   return (
-    Number.isFinite(value.lengthCm) &&
-    value.lengthCm > 0 &&
-    Number.isFinite(value.widthCm) &&
-    value.widthCm > 0 &&
-    (value.source === "approved_cv" || value.source === "approved_manual")
+    Number.isFinite(measurement.lengthCm) &&
+    measurement.lengthCm > 0 &&
+    Number.isFinite(measurement.widthCm) &&
+    measurement.widthCm > 0 &&
+    (measurement.source === "approved_cv" || measurement.source === "approved_manual")
   );
 }
 
 function shouldAcceptGuidance(
   state: CaptureState,
-  event: GuidanceEvent,
+  event: unknown,
   now: number,
 ): boolean {
+  if (typeof event !== "object" || event === null) return false;
+  const guidance = event as GuidanceEvent;
   return (
-    sameSession(state, event.sessionId) &&
-    Number.isInteger(event.sequence) &&
-    event.sequence > state.lastSequence &&
-    Number.isFinite(event.observedAt) &&
-    Number.isFinite(event.expiresAt) &&
-    event.expiresAt > event.observedAt &&
-    now < event.expiresAt
+    isNonEmptyString(guidance.sessionId) &&
+    sameSession(state, guidance.sessionId) &&
+    guidance.shot === state.currentSlot &&
+    (GUIDANCE_CODES as readonly string[]).includes(guidance.code) &&
+    isNonEmptyString(guidance.message) &&
+    Number.isFinite(guidance.confidence) &&
+    guidance.confidence >= 0 &&
+    guidance.confidence <= 1 &&
+    Number.isSafeInteger(guidance.sequence) &&
+    guidance.sequence > state.lastSequence &&
+    Number.isFinite(guidance.observedAt) &&
+    guidance.observedAt >= 0 &&
+    Number.isFinite(guidance.expiresAt) &&
+    guidance.expiresAt > guidance.observedAt &&
+    Number.isFinite(now) &&
+    now >= 0 &&
+    now < guidance.expiresAt
   );
 }
 
@@ -217,10 +275,10 @@ export const captureReducer: CaptureReducer = (state, action) => {
         state.pendingCapture !== null ||
         state.currentSlot !== action.slot ||
         (action.slot === "measurement"
-          ? state.phase !== "measurement"
-          : state.phase !== "capturing") ||
+          ? state.phase !== "measurement" || state.currentStep === "measurement-review"
+          : state.phase !== "capturing" || state.currentStep !== action.slot) ||
         !acceptsNewSequence(state, action.sequence) ||
-        action.requestId.trim() === ""
+        !isNonEmptyString(action.requestId)
       ) {
         return state;
       }
@@ -248,6 +306,7 @@ export const captureReducer: CaptureReducer = (state, action) => {
       return {
         ...state,
         phase: "analyzing",
+        currentStep: action.slot === "measurement" ? "measurement-capture" : action.slot,
         pendingCapture: pending,
         lastAssessment: null,
         providerError: null,
@@ -272,6 +331,7 @@ export const captureReducer: CaptureReducer = (state, action) => {
         return {
           ...state,
           phase: "capturing",
+          currentStep: action.slot,
           pendingCapture: null,
           lastAssessment: action.assessment,
           providerError: null,
@@ -328,6 +388,7 @@ export const captureReducer: CaptureReducer = (state, action) => {
       return {
         ...state,
         phase: "measurement",
+        currentStep: "measurement-review",
         currentSlot: "measurement",
         pendingCapture: null,
         slots: replaceSlot(state.slots, "measurement", measurement),
@@ -364,8 +425,9 @@ export const captureReducer: CaptureReducer = (state, action) => {
         state.phase !== "error" ||
         pending === null ||
         !state.providerError ||
+        action.requestId === pending.requestId ||
         !acceptsNewSequence(state, action.sequence) ||
-        action.requestId.trim() === ""
+        !isNonEmptyString(action.requestId)
       ) {
         return state;
       }
@@ -405,6 +467,7 @@ export const captureReducer: CaptureReducer = (state, action) => {
       return {
         ...state,
         phase: "ready",
+        currentStep: "edit",
         currentSlot: "measurement",
         slots: replaceSlot(state.slots, "measurement", approvedSlot),
         approvedMeasurement: action.measurement,
@@ -432,24 +495,28 @@ export const captureReducer: CaptureReducer = (state, action) => {
         return {
           ...state,
           phase: "measurement",
+          currentStep: "measurement-preparation",
           currentSlot: "measurement",
           pendingCapture: null,
           slots: replaceSlot(state.slots, "measurement", null),
           measurementDraft: null,
           approvedMeasurement: null,
           providerError: null,
+          latestGuidance: null,
+          lastAssessment: null,
         };
       }
 
       return {
         ...state,
         phase: "capturing",
+        currentStep: action.slot,
         currentSlot: action.slot,
         pendingCapture: null,
         slots: replaceSlot(state.slots, action.slot, null),
-        measurementDraft: null,
-        approvedMeasurement: null,
         providerError: null,
+        latestGuidance: null,
+        lastAssessment: null,
       };
     }
 
@@ -457,7 +524,7 @@ export const captureReducer: CaptureReducer = (state, action) => {
       if (!sameSession(state, action.sessionId) || !canEnterEdit(state)) {
         return state;
       }
-      return { ...state, phase: "ready", providerError: null };
+      return { ...state, phase: "ready", currentStep: "edit", providerError: null };
 
     default:
       return state;

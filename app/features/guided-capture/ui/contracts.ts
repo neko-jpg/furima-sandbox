@@ -7,6 +7,7 @@
  */
 
 import type { Homography, ImageDimensions, QuadrilateralCorners } from '../measurement/geometry';
+import type { GuidanceCandidate } from '../core/guidanceSelector';
 
 export const GUIDED_CAPTURE_SLOTS = ['front', 'back', 'tag', 'measurement'] as const;
 export type SessionSlot = (typeof GUIDED_CAPTURE_SLOTS)[number];
@@ -15,6 +16,7 @@ export type CaptureImageSlot = Exclude<SessionSlot, 'measurement'>;
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 export type TransportKind = 'fixture' | 'live';
 export type GuidedCapturePhase = 'idle' | 'connecting' | 'capturing' | 'measurement' | 'review' | 'ready' | 'fallback';
+export type GuidedCaptureStep = SessionSlot | 'measurement-preparation' | 'measurement-capture' | 'measurement-review' | 'edit';
 export type SlotStatus = 'pending' | 'active' | 'captured' | 'approved';
 export type BackgroundApproval = 'not_started' | 'preview' | 'approved';
 export type CaptureSource = 'camera' | 'album';
@@ -113,11 +115,16 @@ export interface SlotProgress {
 export interface GuidedCaptureState {
   sessionId: string | null;
   phase: GuidedCapturePhase;
+  /** Explicit workflow step; never inferred from an assessor's nextAction. */
+  currentStep: GuidedCaptureStep;
   connectionState: ConnectionState;
   transport: TransportKind | null;
   activeSlot: SessionSlot;
   slots: Record<SessionSlot, SlotProgress>;
+  lastAssessment: ShotAssessment | null;
   latestGuidance: GuidanceEvent | null;
+  primaryGuidance: GuidanceCandidate | null;
+  guidanceAcknowledgement: string | null;
   measurementDraft: MeasurementDraft | null;
   measurement: ApprovedMeasurement | null;
   backgroundApproval: BackgroundApproval;
@@ -137,6 +144,10 @@ export interface CaptureRequest {
 export interface MeasurementRequest {
   sessionId: string;
   blob: Blob;
+  /** Request identity is optional for old adapters but supplied by the controller. */
+  requestId?: string;
+  sequence?: number;
+  mediaId?: string;
 }
 
 export interface AdapterConnection {

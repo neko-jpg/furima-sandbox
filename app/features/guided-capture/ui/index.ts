@@ -17,6 +17,7 @@ export type {
   GuidedCaptureDraft,
   GuidedCaptureHandoff,
   GuidedCapturePhase,
+  GuidedCaptureStep,
   GuidedCaptureState,
   GuidanceCode,
   GuidanceEvent,
