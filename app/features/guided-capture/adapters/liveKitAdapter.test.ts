@@ -10,6 +10,9 @@ import {
 class FakeRoom implements LiveKitRoomPort {
   public connected = false;
   public readonly sent: Uint8Array[] = [];
+  public readonly cameraOperations: string[] = [];
+  public maxConcurrentCameraPublishes = 0;
+  private activeCameraPublishes = 0;
   private readonly listeners = {
     connectionStateChanged: new Set<(state: "connecting" | "connected" | "reconnecting" | "disconnected") => void>(),
     dataReceived: new Set<(payload: LiveKitDataPayload) => void>(),
@@ -19,16 +22,29 @@ class FakeRoom implements LiveKitRoomPort {
     this.connected = true;
   }
 
-  public async disconnect(): Promise<void> {
-    this.connected = false;
-  }
-
   public async publishTrack(): Promise<void> {
     return undefined;
   }
 
+  public async publishCameraStream(stream: MediaStream): Promise<void> {
+    this.activeCameraPublishes += 1;
+    this.maxConcurrentCameraPublishes = Math.max(this.maxConcurrentCameraPublishes, this.activeCameraPublishes);
+    this.cameraOperations.push(`publish:${streamLabel(stream)}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    this.activeCameraPublishes -= 1;
+  }
+
+  public async unpublishCameraStream(): Promise<void> {
+    this.cameraOperations.push("unpublish");
+  }
+
   public async sendData(payload: Uint8Array): Promise<void> {
     this.sent.push(payload);
+  }
+
+  public async disconnect(): Promise<void> {
+    this.connected = false;
+    this.cameraOperations.push("disconnect");
   }
 
   public on(event: "connectionStateChanged" | "dataReceived", listener: (value: never) => void): () => void {
@@ -44,6 +60,10 @@ class FakeRoom implements LiveKitRoomPort {
   public emitData(payload: LiveKitDataPayload): void {
     for (const listener of this.listeners.dataReceived) listener(payload);
   }
+}
+
+function streamLabel(stream: MediaStream): string {
+  return (stream as unknown as { readonly label: string }).label;
 }
 
 const event = (sequence: number, overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -166,4 +186,55 @@ test("malformed data and expired events are ignored without throwing", async () 
   room.emitData("not-json");
   room.emitData(event(1, { expiresAt: 1 }));
   assert.deepEqual(errors, []);
+});
+
+test("camera stream replacement unpublishes the previous stream and serializes concurrent publishes", async () => {
+  const room = new FakeRoom();
+  const adapter = new LiveKitAdapter(room, {
+    getToken: async () => ({
+      token: "token",
+      participantIdentity: "participant",
+      roomName: "room",
+      expiresAt: 1_900_000_000,
+      livekitUrl: "wss://livekit.example.test",
+    }),
+  });
+  const first = { label: "first" } as unknown as MediaStream;
+  const second = { label: "second" } as unknown as MediaStream;
+
+  await adapter.connect("live-session");
+  await Promise.all([
+    adapter.publishCameraStream(first),
+    adapter.publishCameraStream(second),
+  ]);
+  assert.deepEqual(room.cameraOperations, ["publish:first", "unpublish", "publish:second"]);
+  assert.equal(room.maxConcurrentCameraPublishes, 1);
+
+  await adapter.disconnect();
+  assert.deepEqual(room.cameraOperations, [
+    "publish:first",
+    "unpublish",
+    "publish:second",
+    "unpublish",
+    "disconnect",
+  ]);
+});
+
+test("publishing the same camera stream twice does not create a duplicate track", async () => {
+  const room = new FakeRoom();
+  const adapter = new LiveKitAdapter(room, {
+    getToken: async () => ({
+      token: "token",
+      participantIdentity: "participant",
+      roomName: "room",
+      expiresAt: 1_900_000_000,
+      livekitUrl: "wss://livekit.example.test",
+    }),
+  });
+  const stream = { label: "same" } as unknown as MediaStream;
+
+  await adapter.connect("live-session");
+  await adapter.publishCameraStream(stream);
+  await adapter.publishCameraStream(stream);
+  assert.deepEqual(room.cameraOperations, ["publish:same"]);
 });

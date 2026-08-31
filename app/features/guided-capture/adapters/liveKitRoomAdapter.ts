@@ -24,6 +24,8 @@ const mapConnectionState = (value: LiveKitConnectionState | string): LiveKitRoom
 /** LiveKit SDK implementation of the small room port used by LiveKitAdapter. */
 export class LiveKitClientRoomPort implements LiveKitRoomPort {
   public readonly room: Room;
+  private publishedCameraTrack: LocalVideoTrack | null = null;
+  private cameraOperation: Promise<void> = Promise.resolve();
 
   public constructor(room = new Room()) {
     this.room = room;
@@ -34,7 +36,20 @@ export class LiveKitClientRoomPort implements LiveKitRoomPort {
   }
 
   public async disconnect(): Promise<void> {
-    await this.room.disconnect();
+    await this.enqueueCameraOperation(async () => {
+      let firstError: unknown = null;
+      try {
+        await this.unpublishPublishedCameraTrack();
+      } catch (error) {
+        firstError = error;
+      }
+      try {
+        await this.room.disconnect();
+      } catch (error) {
+        if (firstError === null) firstError = error;
+      }
+      if (firstError !== null) throw firstError;
+    });
   }
 
   public async publishTrack(track: LiveKitCameraTrack): Promise<void> {
@@ -65,14 +80,47 @@ export class LiveKitClientRoomPort implements LiveKitRoomPort {
 
   /** Create a camera track from a browser MediaStream without exposing credentials. */
   public async publishCameraStream(stream: MediaStream): Promise<void> {
-    const mediaStreamTrack = stream.getVideoTracks()[0];
-    if (!mediaStreamTrack) throw new TypeError('A camera video track is required.');
-    const { LocalVideoTrack: LocalVideoTrackConstructor } = await import('livekit-client');
-    await this.room.localParticipant.publishTrack(new LocalVideoTrackConstructor(mediaStreamTrack));
+    await this.enqueueCameraOperation(async () => {
+      const mediaStreamTrack = stream.getVideoTracks()[0];
+      if (!mediaStreamTrack) throw new TypeError('A camera video track is required.');
+      if (this.publishedCameraTrack?.mediaStreamTrack === mediaStreamTrack) return;
+
+      await this.unpublishPublishedCameraTrack();
+      const { LocalVideoTrack: LocalVideoTrackConstructor } = await import('livekit-client');
+      const nextTrack = new LocalVideoTrackConstructor(mediaStreamTrack);
+      try {
+        await this.room.localParticipant.publishTrack(nextTrack);
+        this.publishedCameraTrack = nextTrack;
+      } catch (error) {
+        nextTrack.stop();
+        throw error;
+      }
+    });
+  }
+
+  public async unpublishCameraStream(): Promise<void> {
+    await this.enqueueCameraOperation(() => this.unpublishPublishedCameraTrack());
   }
 
   public closePublishedCamera(publication?: TrackPublication): void {
     publication?.track?.stop();
+  }
+
+  private async unpublishPublishedCameraTrack(): Promise<void> {
+    const track = this.publishedCameraTrack;
+    if (track === null) return;
+    this.publishedCameraTrack = null;
+    try {
+      await this.room.localParticipant.unpublishTrack(track, true);
+    } finally {
+      track.stop();
+    }
+  }
+
+  private enqueueCameraOperation(operation: () => Promise<void> | void): Promise<void> {
+    const next = this.cameraOperation.catch(() => undefined).then(operation);
+    this.cameraOperation = next.catch(() => undefined);
+    return next;
   }
 }
 

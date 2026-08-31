@@ -56,6 +56,8 @@ export interface LiveKitRoomPort {
   disconnect(): Promise<void> | void;
   publishTrack(track: LiveKitCameraTrack): Promise<void>;
   publishCameraStream?(stream: MediaStream): Promise<void>;
+  /** Remove the camera track owned by publishCameraStream, when supported. */
+  unpublishCameraStream?(): Promise<void> | void;
   sendData(payload: Uint8Array, options: { readonly reliable: boolean; readonly topic?: string }): Promise<void>;
   on(event: "connectionStateChanged", listener: (state: LiveKitRoomConnectionState) => void): () => void;
   on(event: "dataReceived", listener: (payload: LiveKitDataPayload) => void): () => void;
@@ -214,6 +216,8 @@ export class LiveKitAdapter {
   private latestSequence = 0;
   private needsResync = false;
   private resyncInFlight: Promise<void> | null = null;
+  private publishedCameraStream: MediaStream | null = null;
+  private cameraOperation: Promise<void> = Promise.resolve();
 
   public constructor(
     room: LiveKitRoomPort,
@@ -274,8 +278,9 @@ export class LiveKitAdapter {
   public async disconnect(): Promise<void> {
     this.removeRoomListeners();
     try {
-      await this.room.disconnect();
+      await this.enqueueCameraOperation(() => this.disconnectRoom());
     } finally {
+      this.publishedCameraStream = null;
       this.sessionId = null;
       this.latestSequence = 0;
       this.needsResync = false;
@@ -292,13 +297,28 @@ export class LiveKitAdapter {
   }
 
   public async publishCameraStream(stream: MediaStream): Promise<void> {
-    if (this.state !== "connected") {
-      throw new LiveKitAdapterError("UNAVAILABLE", "LiveKit room is not connected.");
-    }
-    if (!this.room.publishCameraStream) {
-      throw new LiveKitAdapterError("UNAVAILABLE", "This LiveKit room port cannot publish a camera stream.");
-    }
-    await this.room.publishCameraStream(stream);
+    await this.enqueueCameraOperation(async () => {
+      if (this.state !== "connected") {
+        throw new LiveKitAdapterError("UNAVAILABLE", "LiveKit room is not connected.");
+      }
+      if (!this.room.publishCameraStream) {
+        throw new LiveKitAdapterError("UNAVAILABLE", "This LiveKit room port cannot publish a camera stream.");
+      }
+      if (this.publishedCameraStream === stream) return;
+      if (this.publishedCameraStream !== null) {
+        await this.room.unpublishCameraStream?.();
+      }
+      this.publishedCameraStream = null;
+      await this.room.publishCameraStream(stream);
+      this.publishedCameraStream = stream;
+    });
+  }
+
+  public async unpublishCameraStream(): Promise<void> {
+    await this.enqueueCameraOperation(async () => {
+      await this.room.unpublishCameraStream?.();
+      this.publishedCameraStream = null;
+    });
   }
 
   public async sendGuidanceRpc(
@@ -397,6 +417,31 @@ export class LiveKitAdapter {
     } catch {
       // Error observers cannot be allowed to break transport handling.
     }
+  }
+
+  /** Serialize camera replacement and teardown without making FakeRoom ports implement a mutex. */
+  private enqueueCameraOperation(operation: () => Promise<void> | void): Promise<void> {
+    const next = this.cameraOperation.catch(() => undefined).then(operation);
+    this.cameraOperation = next.catch(() => undefined);
+    return next;
+  }
+
+  private async disconnectRoom(): Promise<void> {
+    let firstError: unknown = null;
+    if (this.publishedCameraStream !== null) {
+      try {
+        await this.room.unpublishCameraStream?.();
+      } catch (error) {
+        firstError = error;
+      }
+    }
+    this.publishedCameraStream = null;
+    try {
+      await this.room.disconnect();
+    } catch (error) {
+      if (firstError === null) firstError = error;
+    }
+    if (firstError !== null) throw firstError;
   }
 }
 
