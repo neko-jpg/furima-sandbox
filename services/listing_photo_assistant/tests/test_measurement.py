@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import math
 
 import pytest
@@ -10,6 +11,7 @@ from services.listing_photo_assistant.providers.measurement import (
     MARKER_KNOWN_SIDE_CM,
     MARKER_KNOWN_SIDE_MM,
     MAX_IMAGE_BYTES,
+    MEASUREMENT_PUBLIC_ERROR_CODES,
     FixtureMeasurementLineProvider,
     MeasurementContractError,
     MeasurementFailure,
@@ -17,10 +19,15 @@ from services.listing_photo_assistant.providers.measurement import (
     MeasurementLineInput,
     MeasurementMarker,
     MeasurementPointSuggestion,
+    ProviderError,
     ProviderErrorCode,
+    ResponsesMeasurementLineProvider,
     UnavailableLiveMeasurementLineProvider,
     create_measurement_line_provider,
     validate_measurement_suggestion,
+)
+from services.listing_photo_assistant.image_normalization import (
+    normalize_measurement_image,
 )
 
 
@@ -206,3 +213,50 @@ def test_live_timeout_is_distinguished_from_generic_unavailable() -> None:
 def test_failure_result_requires_a_provider_error() -> None:
     with pytest.raises(ValueError):
         MeasurementFailure("not-an-error")  # type: ignore[arg-type]
+
+
+def test_transport_request_id_is_strict_and_never_sent_as_model_data() -> None:
+    payload = {
+        "image": {"data": MEASUREMENT_IMAGE, "mimeType": "image/png"},
+        "requestId": "measurement-retry-1",
+    }
+    input_value = MeasurementLineInput.from_mapping(payload)
+
+    assert input_value.request_id == "measurement-retry-1"
+    request = ResponsesMeasurementLineProvider.request_for(input_value, "test-model")
+    assert "requestId" not in request
+    assert MEASUREMENT_PUBLIC_ERROR_CODES == {
+        ProviderErrorCode.TIMEOUT,
+        ProviderErrorCode.UNAVAILABLE,
+        ProviderErrorCode.INVALID_RESPONSE,
+        ProviderErrorCode.INVALID_INPUT,
+        ProviderErrorCode.UNKNOWN,
+    }
+
+
+def test_internal_provider_codes_are_normalized_before_failure_serialization() -> None:
+    failure = MeasurementFailure(
+        ProviderError(
+            ProviderErrorCode.INVALID_MASK,
+            "internal detail must not cross the measurement boundary",
+        )
+    )
+
+    assert failure.error.code is ProviderErrorCode.UNKNOWN
+    assert failure.to_payload()["error"]["code"] == "UNKNOWN"
+    assert failure.recovery_action in {"retry", "manual_placement", "manual_input"}
+
+
+def test_measurement_normalization_is_canonical_and_deterministic() -> None:
+    from PIL import Image
+
+    source = BytesIO()
+    Image.new("RGB", (4, 3), (32, 96, 160)).save(source, format="PNG")
+
+    first = normalize_measurement_image(source.getvalue(), "image/png")
+    second = normalize_measurement_image(source.getvalue(), "image/png")
+
+    assert first == second
+    assert first.mime_type == "image/png"
+    assert first.is_srgb is True
+    assert (first.width, first.height) == (4, 3)

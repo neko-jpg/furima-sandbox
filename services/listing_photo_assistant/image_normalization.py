@@ -203,6 +203,30 @@ class PillowImageNormalizer:
         return normalize_upload_for_analysis(data, mime_type)
 
 
+# Measurement has its own HTTP/provider boundary, but it must use the same
+# disposable canonical copy as post-capture analysis.  Keeping a named seam
+# makes that separation explicit and lets tests inject a measurement-only
+# normalizer without touching ShotAssessor.
+def normalize_measurement_image(
+    original_bytes: bytes,
+    mime_type: str | None = None,
+) -> NormalizedAnalysisImage:
+    """Create the disposable sRGB PNG sent to the measurement provider."""
+
+    return normalize_upload_for_analysis(original_bytes, mime_type)
+
+
+normalize_measurement_image_for_analysis = normalize_measurement_image
+normalize_upload_for_measurement = normalize_measurement_image
+
+
+class MeasurementImageNormalizer:
+    """Named normalizer seam for the dedicated measurement route."""
+
+    def normalize(self, data: bytes, mime_type: str) -> NormalizedAnalysisImage:
+        return normalize_measurement_image(data, mime_type)
+
+
 AnalysisImage = NormalizedAnalysisImage
 
 
@@ -217,6 +241,7 @@ __all__ = [
     "InvalidImageInputError",
     "MAX_ANALYSIS_BYTES",
     "MAX_ANALYSIS_PIXELS",
+    "MeasurementImageNormalizer",
     "NormalizedAnalysisImage",
     "PillowImageNormalizer",
     "PillowUnavailableError",
@@ -224,5 +249,8 @@ __all__ = [
     "UnsupportedImageFormatError",
     "normalize_image",
     "normalize_image_for_analysis",
+    "normalize_measurement_image",
+    "normalize_measurement_image_for_analysis",
+    "normalize_upload_for_measurement",
     "normalize_upload_for_analysis",
 ]

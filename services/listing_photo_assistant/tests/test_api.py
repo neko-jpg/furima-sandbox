@@ -1,15 +1,55 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
+
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from services.listing_photo_assistant.app import create_app
+from services.listing_photo_assistant.image_normalization import NormalizedAnalysisImage
+from services.listing_photo_assistant.image_routes import (
+    get_measurement_image_normalizer,
+    get_measurement_line_provider,
+    get_measurement_timeout_seconds,
+)
 from services.listing_photo_assistant.providers.background import validate_background_png
 from services.listing_photo_assistant.providers.image_utils import encode_grayscale_png
 from services.listing_photo_assistant.providers.mask import validate_mask_png
+from services.listing_photo_assistant.providers.measurement import MeasurementLineInput
 
 
 def _fixture_png() -> bytes:
     return encode_grayscale_png(2, 2, lambda x, y: 255 if (x + y) % 2 == 0 else 0)
+
+
+@dataclass
+class _RecordingMeasurementProvider:
+    result: object
+    requests: list[MeasurementLineInput] = field(default_factory=list)
+
+    async def suggest(self, input: MeasurementLineInput) -> object:
+        self.requests.append(input)
+        return self.result
+
+
+class _HangingMeasurementProvider:
+    async def suggest(self, input: MeasurementLineInput) -> object:
+        del input
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class _LeakyMeasurementProvider:
+    async def suggest(self, input: MeasurementLineInput) -> object:
+        del input
+        raise HTTPException(status_code=418, detail={"secret": "must not escape"})
+
+
+class _CanonicalMeasurementNormalizer:
+    def normalize(self, data: bytes, mime_type: str) -> NormalizedAnalysisImage:
+        del data, mime_type
+        return NormalizedAnalysisImage(b"canonical-analysis-copy", 2, 2)
 
 
 def test_health_preserves_contract() -> None:
@@ -75,6 +115,90 @@ def test_fixture_measurement_returns_only_four_normalized_points() -> None:
         "widthStart": {"x": 0.22, "y": 0.48},
         "widthEnd": {"x": 0.78, "y": 0.48},
     }
+
+
+def test_measurement_route_normalizes_the_analysis_copy_and_echoes_request_id() -> None:
+    provider = _RecordingMeasurementProvider(
+        {
+            "lengthStart": {"x": 0.5, "y": 0.2},
+            "lengthEnd": {"x": 0.5, "y": 0.82},
+            "widthStart": {"x": 0.22, "y": 0.48},
+            "widthEnd": {"x": 0.78, "y": 0.48},
+        }
+    )
+    app = create_app()
+    app.dependency_overrides[get_measurement_line_provider] = lambda: provider
+    app.dependency_overrides[get_measurement_image_normalizer] = _CanonicalMeasurementNormalizer
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/suggest-measurement-points",
+            headers={"X-Request-ID": "measurement-retry-1"},
+            files={"file": ("measurement.png", _fixture_png(), "image/png")},
+        )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-request-id"] == "measurement-retry-1"
+    assert len(provider.requests) == 1
+    assert provider.requests[0].image.data == b"canonical-analysis-copy"
+    assert provider.requests[0].image.mime_type == "image/png"
+    assert (provider.requests[0].image.width, provider.requests[0].image.height) == (2, 2)
+
+
+def test_measurement_timeout_is_a_finite_error_and_cancels_provider_task() -> None:
+    app = create_app()
+    app.dependency_overrides[get_measurement_line_provider] = lambda: _HangingMeasurementProvider()
+    app.dependency_overrides[get_measurement_timeout_seconds] = lambda: 0.001
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/suggest-measurement-points",
+            files={"file": ("measurement.png", _fixture_png(), "image/png")},
+        )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 504
+    assert response.json()["detail"] == {
+        "provider": "measurement-line",
+        "code": "TIMEOUT",
+        "message": "Measurement endpoint suggestion timed out",
+        "retryable": True,
+    }
+
+
+def test_measurement_provider_http_exception_cannot_leak_details() -> None:
+    app = create_app()
+    app.dependency_overrides[get_measurement_line_provider] = lambda: _LeakyMeasurementProvider()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/suggest-measurement-points",
+            files={"file": ("measurement.png", _fixture_png(), "image/png")},
+        )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "provider": "measurement-line",
+        "code": "UNAVAILABLE",
+        "message": "Measurement endpoint suggestion is unavailable",
+        "retryable": True,
+    }
+    assert "secret" not in response.text
+
+
+def test_measurement_request_id_is_rejected_when_it_is_not_bounded() -> None:
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/suggest-measurement-points",
+            headers={"X-Request-ID": "x" * 201},
+            files={"file": ("measurement.png", _fixture_png(), "image/png")},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "INVALID_INPUT"
 
 
 def test_fixture_mask_is_mask_only_and_background_is_style_allowlisted() -> None:

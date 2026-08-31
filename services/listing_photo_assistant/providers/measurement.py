@@ -26,6 +26,24 @@ ALLOWED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 MARKER_KNOWN_SIDE_MM = 50
 MARKER_KNOWN_SIDE_CM = 5
 MEASUREMENT_ENDPOINT_KEYS = ("lengthStart", "lengthEnd", "widthStart", "widthEnd")
+MAX_REQUEST_ID_LENGTH = 200
+
+# These are the only provider failures that may cross the HTTP boundary.
+# ``ProviderErrorCode`` is shared with the other providers and intentionally
+# contains a few internal adapter values; measurement never exposes those
+# values directly.
+MEASUREMENT_PUBLIC_ERROR_CODES = frozenset(
+    {
+        ProviderErrorCode.TIMEOUT,
+        ProviderErrorCode.UNAVAILABLE,
+        ProviderErrorCode.INVALID_RESPONSE,
+        ProviderErrorCode.INVALID_INPUT,
+        ProviderErrorCode.UNKNOWN,
+    }
+)
+MEASUREMENT_RECOVERY_ACTIONS = frozenset(
+    {"retry", "manual_placement", "manual_input"}
+)
 
 
 class MeasurementLineContractError(ValueError):
@@ -70,6 +88,23 @@ def _normalized(value: object, field: str) -> float:
     if not 0.0 <= converted <= 1.0:
         raise MeasurementLineContractError(f"{field} must be between 0 and 1")
     return converted
+
+
+def validate_measurement_request_id(value: object) -> str:
+    """Validate opaque transport correlation IDs without interpreting them."""
+
+    if not isinstance(value, str):
+        raise MeasurementLineContractError("requestId must be a string")
+    request_id = value.strip()
+    if not request_id:
+        raise MeasurementLineContractError("requestId must not be empty")
+    if len(request_id) > MAX_REQUEST_ID_LENGTH:
+        raise MeasurementLineContractError(
+            f"requestId must be at most {MAX_REQUEST_ID_LENGTH} characters"
+        )
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in request_id):
+        raise MeasurementLineContractError("requestId must not contain control characters")
+    return request_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +293,7 @@ class MeasurementLineInput:
     image: MeasurementImage
     projection_corrected: bool = True
     marker: MeasurementMarker | None = None
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.image, MeasurementImage):
@@ -268,19 +304,23 @@ class MeasurementLineInput:
             raise MeasurementLineContractError("measurement image must be projection-corrected")
         if self.marker is not None and not isinstance(self.marker, MeasurementMarker):
             raise MeasurementLineContractError("input.marker must be a MeasurementMarker")
+        if self.request_id is not None:
+            object.__setattr__(self, "request_id", validate_measurement_request_id(self.request_id))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "MeasurementLineInput":
         if not isinstance(value, Mapping):
             raise MeasurementLineContractError("measurement input must be an object")
-        allowed = {"image", "projectionCorrected", "marker"}
+        allowed = {"image", "projectionCorrected", "marker", "requestId"}
         if set(value) - allowed or "image" not in value:
             raise MeasurementLineContractError("measurement input contains unknown or missing fields")
         raw_image = value["image"]
         image = MeasurementImage.from_mapping(raw_image) if isinstance(raw_image, Mapping) else MeasurementImage(raw_image)  # type: ignore[arg-type]
         raw_marker = value.get("marker")
         marker = None if raw_marker is None else MeasurementMarker.from_mapping(raw_marker)  # type: ignore[arg-type]
-        return cls(image, value.get("projectionCorrected", True), marker)  # type: ignore[arg-type]
+        raw_request_id = value.get("requestId")
+        request_id = None if raw_request_id is None else validate_measurement_request_id(raw_request_id)
+        return cls(image, value.get("projectionCorrected", True), marker, request_id)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +330,17 @@ class MeasurementFailure:
     def __post_init__(self) -> None:
         if not isinstance(self.error, ProviderError):
             raise ValueError("measurement failures require ProviderError")
+        if self.error.code not in MEASUREMENT_PUBLIC_ERROR_CODES:
+            object.__setattr__(
+                self,
+                "error",
+                ProviderError(
+                    ProviderErrorCode.UNKNOWN,
+                    "Measurement line provider is unavailable",
+                    retryable=True,
+                    provider="measurement-line",
+                ),
+            )
 
     @property
     def ok(self) -> bool:
@@ -306,6 +357,26 @@ class MeasurementFailure:
     @property
     def data(self) -> None:
         return None
+
+    @property
+    def recovery_action(self) -> str:
+        """Return a finite, application-neutral fallback capability.
+
+        This is deliberately not a navigation command.  The browser decides
+        whether to retry, place four points, or enter manual values while
+        retaining the measurement photo.  In particular, no failure selects
+        the fixture provider implicitly.
+        """
+
+        if self.error.code is ProviderErrorCode.TIMEOUT:
+            return "retry"
+        if self.error.code is ProviderErrorCode.INVALID_INPUT:
+            return "manual_placement"
+        return "manual_input"
+
+    @property
+    def fallback_action(self) -> str:
+        return self.recovery_action
 
     def to_payload(self) -> dict[str, object]:
         return {"ok": False, "error": self.error.to_payload()}
@@ -599,9 +670,12 @@ __all__ = [
     "MAX_IMAGE_BYTES",
     "MAX_IMAGE_DIMENSION",
     "MAX_IMAGE_PIXELS",
+    "MAX_REQUEST_ID_LENGTH",
     "MEASUREMENT_ENDPOINT_KEYS",
     "MEASUREMENT_ENDPOINTS_JSON_SCHEMA",
     "MEASUREMENT_LINE_JSON_SCHEMA",
+    "MEASUREMENT_PUBLIC_ERROR_CODES",
+    "MEASUREMENT_RECOVERY_ACTIONS",
     "MeasurementContractError",
     "MeasurementEndpoints",
     "MeasurementEndpointsResult",
@@ -626,6 +700,7 @@ __all__ = [
     "validate_measurement_endpoints",
     "validate_measurement_input",
     "validate_measurement_points",
+    "validate_measurement_request_id",
     "validate_measurement_suggestion",
     "validate_normalized_point",
 ]
