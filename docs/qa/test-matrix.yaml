@@ -4,6 +4,112 @@ policy:
   missingCoverage: fail
   unknownSourceItem: fail
   noUnclassifiedInteractiveControl: fail
+openspec:
+  change: "build-listing-photo-assistant-mvp"
+  requirements:
+    - id: "8.1"
+      status: "fixture-not-run"
+      evidence:
+        - "scripts/run-listing-photo-assistant-fixture-e2e.mjs"
+        - "tests/e2e/listing-photo-assistant-fixture.spec.mjs"
+      gap: "HTTP adapter/provider契約とUI保存境界を2回比較するfixture E2Eを実装したが、今回の専用Playwright実行は長時間化のため中断し完走未実施。UIはlocal fixture transportであり、LiveKit Roomとライブ助言も未実施。"
+    - id: "8.2"
+      status: "manual-not-run"
+      evidence:
+        - "docs/runbooks/listing-photo-assistant.md"
+      gap: "実画像、基準iPhone、外部LiveKit、実LLMを使う操作と性能計測はこのQA環境では未実施。"
+    - id: "8.3"
+      status: "fixture-not-run"
+      evidence:
+        - "tests/e2e/listing-photo-assistant-fixture.spec.mjs"
+        - "docs/runbooks/listing-photo-assistant.md"
+      gap: "HTTP adapterの背面の理由付きretryと保存境界をfixture E2Eへ実装したが完走未実施。UI内LiveKit retry、切断・解析不可・mask・背景・実機権限の失敗はfailure matrixの手動確認へ分離。"
+    - id: "8.4"
+      status: "manual-not-run"
+      evidence:
+        - "docs/runbooks/listing-photo-assistant.md"
+        - "docs/wiki/Listing-Flow.md"
+      gap: "iPhone実機Safari、safe area、screen reader、200%文字拡大、実画像のvisual QAは未実施。"
+    - id: "8.5"
+      status: "fixture-not-run"
+      evidence:
+        - "tests/e2e/listing-photo-assistant-fixture.spec.mjs"
+        - "docs/runbooks/listing-photo-assistant.md"
+      gap: "measurement画像の非保存と保存Blob hash比較をfixture E2Eへ実装したが完走未実施。実Room・Worker・全lifecycleの実機確認も未実施。"
+    - id: "8.6"
+      status: "fixture-verified"
+      evidence:
+        - "scripts/run-listing-photo-assistant-fixture-e2e.mjs"
+        - "docs/runbooks/listing-photo-assistant.md"
+      gap: "fixture起動とhealthは自動化済み。LiveKit、OpenCV.js/WASM、50mm印刷・実測、rembg prewarmは手動チェック未実施。"
+    - id: "8.7"
+      status: "selected-checks"
+      evidence:
+        - "scripts/run-listing-photo-assistant-fixture-e2e.mjs"
+        - "docs/runbooks/listing-photo-assistant.md"
+      gap: "この変更で実行するのはfixture E2Eと指定された利用可能な検証。clean install一式と実機console 0件は別のリリースゲート。"
+    - id: "8.8"
+      status: "docs-verified"
+      evidence:
+        - "docs/qa/test-matrix.yaml"
+        - "docs/runbooks/listing-photo-assistant.md"
+        - "docs/wiki/Listing-Flow.md"
+      gap: "OpenSpec CLI自体はfurima-sandboxに含まれず、このQA変更では実行していない。"
+failureMatrix:
+  - id: "FM-01"
+    trigger: "LiveKit RoomまたはAgentが切断"
+    mode: "manual-live"
+    status: "not-run"
+    expected: "現在step、受理済みslot、固定ガイド、手動撮影を維持し、再接続後は同期済みの新sequenceだけを表示する。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-02"
+    trigger: "順序逆転、別session、期限切れのGuidanceEvent"
+    mode: "manual-live-or-contract"
+    status: "not-run"
+    expected: "イベントを表示・状態遷移へ反映せず、現在の助言とstepを変更しない。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-03"
+    trigger: "端末内Canvas/Worker解析不可、カメラ権限拒否"
+    mode: "manual-device"
+    status: "not-run"
+    expected: "固定ガイドと手動撮影を残し、端末の画像入力へフォールバックする。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-04"
+    trigger: "撮影後AIがretryまたはtimeout"
+    mode: "fixture-e2e"
+    status: "implemented-not-run"
+    expected: "HTTP adapter契約ではGARMENT_CROPPEDの理由を示して対象slotだけをretryし、UI fixtureでは他slotと画像の保存境界を確認する。timeout時は画像を保持し再試行を提示する。今回のPlaywright完走は未実施。"
+    evidence: "tests/e2e/listing-photo-assistant-fixture.spec.mjs"
+  - id: "FM-05"
+    trigger: "marker missing/multiple/too small/occluded、segmentation失敗、端点提案失敗"
+    mode: "manual-fixture-or-live"
+    status: "not-run"
+    expected: "採寸画像を保持し、有限の理由、撮り直し、端点配置または手入力を提示する。未承認のままeditへ進めない。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-06"
+    trigger: "rembg timeoutまたは空・全面・寸法不一致mask"
+    mode: "manual-live-or-fixture-injection"
+    status: "not-run"
+    expected: "合成previewを承認不可にし、再試行または正面原本採用を提示する。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-07"
+    trigger: "背景生成timeout、エラー、利用不能画像"
+    mode: "manual-live-or-fixture-injection"
+    status: "not-run"
+    expected: "4slotと承認済み採寸を保持し、再試行または固定背景・正面原本採用へ進める。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-08"
+    trigger: "終了、unmount、pagehide、再取得"
+    mode: "manual-device-or-live"
+    status: "not-run"
+    expected: "camera track、Room、Worker、object URLを解放し、画像・判定・助言・採寸値を永続出品データへ残さない。"
+    evidence: "docs/runbooks/listing-photo-assistant.md"
+  - id: "FM-09"
+    trigger: "fixture縦スライスの再実行"
+    mode: "fixture-e2e"
+    status: "implemented-not-run"
+    expected: "2回の正規化最終state、採寸値、保存済みfrontのSHA-256が一致し、measurementの一時データが下書きへ入らない。"
+    evidence: "tests/e2e/listing-photo-assistant-fixture.spec.mjs"
 inventories:
   routes:
     source: "app/api/**/route.ts"
@@ -34,6 +140,10 @@ inventories:
     source: "compose.yaml"
     suite: listing-photo-assistant-compose
     evidence: "npm run qa:assistant-compose、docker compose config --quiet、npm run smoke:assistant-compose"
+  listingPhotoAssistantFixtureE2E:
+    source: "scripts/run-listing-photo-assistant-fixture-e2e.mjs, tests/e2e/listing-photo-assistant-fixture.spec.mjs"
+    suite: listing-photo-assistant-fixture-e2e
+    evidence: "ローカルfixture backendを起動し、Playwrightで撮り直しから下書き保存までを2回連続実行してstateと保存front hashを比較"
 suites:
   - id: seller-regression
     tests: ["tests/e2e/seller-mypage.spec.mjs"]
@@ -86,4 +196,9 @@ suites:
     tests:
       - "scripts/validate-assistant-compose.mjs"
       - "scripts/smoke-listing-photo-assistant.mjs"
+    priority: P0
+  - id: listing-photo-assistant-fixture-e2e
+    tests:
+      - "scripts/run-listing-photo-assistant-fixture-e2e.mjs"
+      - "tests/e2e/listing-photo-assistant-fixture.spec.mjs"
     priority: P0
