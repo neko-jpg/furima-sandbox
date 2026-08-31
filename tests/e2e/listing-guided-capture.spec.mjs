@@ -44,3 +44,40 @@ test('fixture guided capture reaches ready without persisting the measurement im
 
   await assertNoPageErrors(errors);
 });
+
+test('guided camera exposes accessible full-screen controls and closes with Escape', async ({ page }) => {
+  const errors = await installPageGuards(page);
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '出品', exact: true }).last().click();
+  await page.getByTestId('open-listing-flow').click();
+  await page.getByTestId('guided-capture-toggle').click();
+  const preparation = page.getByTestId('guided-capture-preparation');
+  await expect(preparation).toBeVisible();
+  await expect(preparation).toContainText('半袖');
+  await expect(preparation).toContainText('クルーネック');
+  await expect(preparation).toContainText('平置き');
+  await expect(preparation).toContainText('5cmマーカー');
+  await expect(preparation).toContainText('長袖');
+  await expect(preparation).toContainText('パーカー');
+  await expect(preparation).toContainText('襟付き');
+  await expect(preparation).toContainText('ボトムス');
+  await expect(preparation).toContainText('カテゴリ未選択でも固定ガイドで進められます');
+  await page.getByTestId('guided-capture-start').click();
+  await expect(page.getByTestId('guided-capture-connection')).toContainText('接続済み');
+
+  await page.getByTestId('guided-capture-open-camera').click();
+  await expect(page.getByTestId('guided-capture-camera')).toBeVisible();
+  await expect(page.getByTestId('guided-capture-camera-progress')).toBeVisible();
+  await expect(page.getByTestId('guided-capture-camera-back')).toBeVisible();
+  await expect(page.getByTestId('guided-capture-camera-help-toggle')).toBeVisible();
+  await expect(page.getByTestId('guided-capture-camera-light')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('guided-capture-camera-shutter')).toHaveAttribute('aria-label', '表面を撮影');
+
+  await page.getByTestId('guided-capture-camera-help-toggle').click();
+  await expect(page.getByTestId('guided-capture-camera-help')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('guided-capture-camera')).toBeHidden();
+
+  await assertNoPageErrors(errors);
+});
