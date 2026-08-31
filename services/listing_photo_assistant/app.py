@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Response
+import re
+import uuid
+
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .analyze_shot import analyze_shot_router, get_shot_assessor
@@ -18,6 +21,19 @@ from .providers.background import create_background_generator
 from .providers.mask import create_garment_masker
 from .providers.measurement import create_measurement_line_provider
 from .providers.shot_assessor_factory import create_shot_assessor
+
+
+_API_PATH_PREFIX = "/api/"
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _bounded_request_id(value: str | None) -> str:
+    """Return a safe correlation id that is bounded for response headers."""
+
+    candidate = "" if value is None else value.strip()
+    if _REQUEST_ID_PATTERN.fullmatch(candidate):
+        return candidate
+    return uuid.uuid4().hex
 
 
 def create_app(settings: BackendSettings | None = None) -> FastAPI:
@@ -42,10 +58,28 @@ def create_app(settings: BackendSettings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=list(resolved_settings.assistant_cors_origins),
         allow_methods=["GET", "POST"],
-        allow_headers=["accept", "content-type"],
+        # The browser adapter sends a bounded correlation id on every
+        # mutating request.  Keep the allowlist explicit so the header does
+        # not turn into a silent CORS preflight failure in live UI mode.
+        allow_headers=["accept", "content-type", "x-request-id"],
+        expose_headers=["x-request-id"],
         allow_credentials=False,
     )
     app.state.settings = resolved_settings
+
+    @app.middleware("http")
+    async def apply_api_boundary_headers(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(_API_PATH_PREFIX):
+            # These responses can contain user uploads, generated images, or
+            # provider-derived data.  Never allow an intermediary or browser
+            # cache to retain them, and prevent content-type sniffing.
+            response.headers["cache-control"] = "no-store"
+            response.headers["x-content-type-options"] = "nosniff"
+            response.headers["x-request-id"] = _bounded_request_id(
+                request.headers.get("x-request-id")
+            )
+        return response
 
     # Providers are constructed once per application instance.  Besides
     # avoiding a client allocation for every upload, this guarantees that all

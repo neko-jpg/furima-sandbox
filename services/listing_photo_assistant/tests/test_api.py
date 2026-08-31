@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from services.listing_photo_assistant.app import create_app
 from services.listing_photo_assistant.image_normalization import NormalizedAnalysisImage
 from services.listing_photo_assistant.image_routes import (
+    get_garment_masker,
     get_measurement_image_normalizer,
     get_measurement_line_provider,
     get_measurement_timeout_seconds,
@@ -46,6 +47,14 @@ class _LeakyMeasurementProvider:
         raise HTTPException(status_code=418, detail={"secret": "must not escape"})
 
 
+class _LeakyGarmentMasker:
+    async def mask(self, input):
+        del input
+        from services.listing_photo_assistant.providers.mask import ProviderError
+
+        raise ProviderError("UNAVAILABLE", "upstream secret: https://internal.example", retryable=True)
+
+
 class _CanonicalMeasurementNormalizer:
     def normalize(self, data: bytes, mime_type: str) -> NormalizedAnalysisImage:
         del data, mime_type
@@ -59,6 +68,42 @@ def test_health_preserves_contract() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_api_boundary_headers_are_consistent_and_request_id_is_bounded() -> None:
+    with TestClient(create_app()) as client:
+        echoed = client.get("/api/health", headers={"X-Request-ID": "trace-123"})
+        generated = client.get("/api/health", headers={"X-Request-ID": "x" * 129})
+
+    assert echoed.headers["x-request-id"] == "trace-123"
+    assert echoed.headers["cache-control"] == "no-store"
+    assert echoed.headers["x-content-type-options"] == "nosniff"
+    assert 1 <= len(generated.headers["x-request-id"]) <= 128
+    assert generated.headers["x-request-id"] != "x" * 129
+    assert generated.headers["cache-control"] == "no-store"
+    assert generated.headers["x-content-type-options"] == "nosniff"
+
+
+def test_cors_allows_the_browser_correlation_header() -> None:
+    with TestClient(create_app()) as client:
+        preflight = client.options(
+            "/api/analyze-shot",
+            headers={
+                "Origin": "http://127.0.0.1:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type, x-request-id",
+            },
+        )
+        actual = client.get(
+            "/api/health",
+            headers={"Origin": "http://127.0.0.1:3000"},
+        )
+
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
+    assert "x-request-id" in preflight.headers["access-control-allow-headers"].lower()
+    assert actual.status_code == 200
+    assert actual.headers["access-control-expose-headers"].lower() == "x-request-id"
 
 
 def test_fixture_analyze_shot_accepts_only_front_back_tag() -> None:
@@ -187,6 +232,27 @@ def test_measurement_provider_http_exception_cannot_leak_details() -> None:
         "retryable": True,
     }
     assert "secret" not in response.text
+
+
+def test_image_provider_error_message_is_mapped_to_public_text() -> None:
+    app = create_app()
+    app.dependency_overrides[get_garment_masker] = lambda: _LeakyGarmentMasker()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/remove-background",
+            files={"file": ("front.png", _fixture_png(), "image/png")},
+        )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "provider": "garment-masker",
+        "code": "UNAVAILABLE",
+        "message": "Provider is unavailable",
+        "retryable": True,
+    }
+    assert "internal.example" not in response.text
 
 
 def test_measurement_request_id_is_rejected_when_it_is_not_bounded() -> None:

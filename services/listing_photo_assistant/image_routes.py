@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -58,6 +58,13 @@ _MEASUREMENT_ERROR_MESSAGES = {
     "INVALID_INPUT": "Measurement image or request is invalid",
     "UNKNOWN": "Measurement endpoint suggestion is unavailable",
 }
+_PUBLIC_PROVIDER_ERROR_MESSAGES: Final[dict[str, str]] = {
+    "INVALID_INPUT": "Provider input is invalid",
+    "INVALID_RESPONSE": "Provider returned an invalid response",
+    "TIMEOUT": "Provider request timed out",
+    "UNAVAILABLE": "Provider is unavailable",
+    "UNKNOWN": "Provider is unavailable",
+}
 
 
 class _MeasurementProviderFailure(Exception):
@@ -81,7 +88,10 @@ def _http_provider_error(provider: str, error: Exception) -> HTTPException:
         "INVALID_MASK": "INVALID_RESPONSE",
         "PROVIDER_FAILURE": "UNKNOWN",
     }.get(code, code if code in {"TIMEOUT", "UNAVAILABLE", "INVALID_RESPONSE", "INVALID_INPUT", "UNKNOWN"} else "UNKNOWN")
-    message = getattr(error, "message", "Provider is unavailable")
+    # Provider messages can contain upstream URLs, model details, prompt
+    # fragments, or other deployment information.  Only expose this finite
+    # public vocabulary at the HTTP boundary.
+    message = _PUBLIC_PROVIDER_ERROR_MESSAGES[code]
     retryable = bool(getattr(error, "retryable", True))
     status_code = {
         "INVALID_INPUT": status.HTTP_422_UNPROCESSABLE_ENTITY,
