@@ -26,6 +26,14 @@ inventories:
     source: "app/media/listingMediaStore.ts, app/domain/sandboxIdbStore.ts, app/domain/sandboxStore.ts, app/api/sandbox/state/route.ts, db/schema.ts"
     suite: persistence-boundaries
     evidence: "Memory/Fake IndexedDB/Fake D1/実D1契約"
+  listingPhotoAssistantBackend:
+    source: "services/listing_photo_assistant/**/*.py"
+    suite: listing-photo-assistant-backend
+    evidence: "uv run --frozen --no-sync pytest（fixture provider、API、provider契約、Agent状態機械）"
+  listingPhotoAssistantCompose:
+    source: "compose.yaml"
+    suite: listing-photo-assistant-compose
+    evidence: "npm run qa:assistant-compose、docker compose config --quiet、npm run smoke:assistant-compose"
 suites:
   - id: seller-regression
     tests: ["tests/e2e/seller-mypage.spec.mjs"]
@@ -62,4 +70,20 @@ suites:
     priority: P0
   - id: follow-relations
     tests: ["tests/domain-engine.test.mjs", "tests/e2e/sandbox-hardening.spec.mjs"]
+    priority: P0
+  - id: listing-photo-assistant-backend
+    tests:
+      - "services/listing_photo_assistant/tests/test_api.py"
+      - "services/listing_photo_assistant/tests/test_config_and_factory.py"
+      - "services/listing_photo_assistant/tests/test_guidance_and_live.py"
+      - "services/listing_photo_assistant/tests/test_livekit_token.py"
+      - "services/listing_photo_assistant/tests/test_mask.py"
+      - "services/listing_photo_assistant/tests/test_measurement.py"
+      - "services/listing_photo_assistant/tests/test_shot_assessor_contract.py"
+      - "tests/test_measurement_provider.py"
+    priority: P0
+  - id: listing-photo-assistant-compose
+    tests:
+      - "scripts/validate-assistant-compose.mjs"
+      - "scripts/smoke-listing-photo-assistant.mjs"
     priority: P0

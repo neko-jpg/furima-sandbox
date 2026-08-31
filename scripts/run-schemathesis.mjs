@@ -302,9 +302,10 @@ try {
 
   const command = await schemathesisCommand();
   const plannedPaths = '^/api/(listings|wallet|profile|follows)';
+  const pythonServicePaths = '^/api/(livekit-token|analyze-shot|suggest-measurement-points|remove-background|generate-background)$';
   await runSuite(command.command, [...command.prefix, ...schemathesisArguments({
     token: apiToken,
-    exclude: `^/api/sandbox/(state|reset|seed|replay|preview|commit)$|${plannedPaths}`,
+    exclude: `^/api/sandbox/(state|reset|seed|replay|preview|commit)$|${plannedPaths}|${pythonServicePaths}`,
     phases: 'examples,coverage,fuzzing',
     reportPath: resolve(outputDirectory, 'schemathesis-data.xml'),
   })]);

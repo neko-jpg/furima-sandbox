@@ -9,6 +9,10 @@ services:
       NODE_ENV: development
       FURIMA_LOCAL_FIXTURE_MODE: "true"
       FURIMA_STORAGE_MODE: memory
+      # This is a browser-visible URL. Provider credentials stay in
+      # assistant-api/assistant-agent and are never exposed through VITE_*.
+      VITE_LISTING_ASSISTANT_API_URL: http://127.0.0.1:3001
+      VITE_LISTING_ASSISTANT_MODE: ${VITE_LISTING_ASSISTANT_MODE:-fixture}
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
       WRANGLER_WRITE_LOGS: "false"
@@ -16,6 +20,9 @@ services:
       MINIFLARE_REGISTRY_PATH: /workspace/.wrangler/registry
     ports:
       - "3000:3000"
+    depends_on:
+      assistant-api:
+        condition: service_healthy
     volumes:
       - type: volume
         source: node_modules
@@ -62,6 +69,101 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  assistant-api:
+    build:
+      context: .
+      dockerfile: services/listing_photo_assistant/Dockerfile
+    working_dir: /workspace
+    init: true
+    environment:
+      PROVIDER_MODE: ${PROVIDER_MODE:-fixture}
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      ASSISTANT_CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+      REMBG_URL: http://rembg:7000/api/remove
+      BACKGROUND_GENERATOR_URL: ${BACKGROUND_GENERATOR_URL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      SHOT_ASSESSOR_MODEL: ${SHOT_ASSESSOR_MODEL:-gpt-4.1-mini-2025-04-14}
+      MEASUREMENT_LINE_MODEL: ${MEASUREMENT_LINE_MODEL:-gpt-4.1-mini-2025-04-14}
+      VISION_GUIDANCE_MODEL: ${VISION_GUIDANCE_MODEL:-gpt-4.1-mini-2025-04-14}
+      BACKGROUND_MODEL: ${BACKGROUND_MODEL:-gpt-image-1}
+      LIVEKIT_TOKEN_TTL_SECONDS: ${LIVEKIT_TOKEN_TTL_SECONDS:-90}
+      LIVEKIT_TOKEN_MAX_TTL_SECONDS: ${LIVEKIT_TOKEN_MAX_TTL_SECONDS:-300}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+    ports:
+      - "3001:3001"
+    command:
+      - uv
+      - run
+      - --frozen
+      - --no-sync
+      - python
+      - -m
+      - services.listing_photo_assistant.server
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:3001/api/health', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  assistant-agent:
+    profiles: [live]
+    build:
+      context: .
+      dockerfile: services/listing_photo_assistant/Dockerfile
+    working_dir: /workspace
+    init: true
+    environment:
+      # The live profile is intentionally live-only. Do not use it as a
+      # credentialed way to get an implicit fixture fallback.
+      PROVIDER_MODE: live
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      SHOT_ASSESSOR_MODEL: ${SHOT_ASSESSOR_MODEL:-gpt-4.1-mini-2025-04-14}
+      MEASUREMENT_LINE_MODEL: ${MEASUREMENT_LINE_MODEL:-gpt-4.1-mini-2025-04-14}
+      VISION_GUIDANCE_MODEL: ${VISION_GUIDANCE_MODEL:-gpt-4.1-mini-2025-04-14}
+      BACKGROUND_MODEL: ${BACKGROUND_MODEL:-gpt-image-1}
+      LIVEKIT_TOKEN_TTL_SECONDS: ${LIVEKIT_TOKEN_TTL_SECONDS:-90}
+      LIVEKIT_TOKEN_MAX_TTL_SECONDS: ${LIVEKIT_TOKEN_MAX_TTL_SECONDS:-300}
+    command:
+      - uv
+      - run
+      - --frozen
+      - --no-sync
+      - python
+      - -m
+      - services.listing_photo_assistant.agent
+
+  rembg:
+    profiles: [live]
+    image: docker.io/danielgatis/rembg:2.0.81
+    command:
+      - s
+      - --host
+      - 0.0.0.0
+      - --port
+      - "7000"
+      - --log_level
+      - warning
+      - --threads
+      - "1"
+      - --no-ui
+    expose:
+      - "7000"
 
 volumes:
   node_modules:

@@ -20,6 +20,8 @@ npm run dev
 
 ブラウザで<http://localhost:3000>を開きます。UI/fixture開発では外部D1や本番の資格情報は不要です。`.env.example`を`.env.local`へコピーする場合も、値はローカル開発用のままにしてください。
 
+出品写真アシスタントのfixture APIも同時に使う場合は、Composeを利用してください。UIは<http://localhost:3000>、FastAPIは<http://localhost:3001/api/health>で確認できます。通常のfixture起動ではOpenAI、LiveKit、rembgの資格情報は不要です。
+
 通常の`npm run dev`は、Vinextの3つの開発環境でsourcemap生成を省き、コールド初回表示を優先します。サーバーやhydrationのスタックをソース位置まで追うときは、起動前に`FURIMA_DEV_SOURCEMAPS=true`を設定してください。
 
 ### DockerでUI/fixtureを起動する
@@ -53,6 +55,11 @@ Node/Vite/vinext dev または Docker Compose (ui)
        ├─ localStorage: 小さな設定、旧データ移行、actor別下書きメタデータ
        └─ /api/*: FURIMA_LOCAL_FIXTURE_MODE=true のローカルfixture
 
+Docker Compose (assistant-api)
+  └─ FastAPI: 出品写真解析、採寸端点、mask、背景provider契約
+       ├─ fixture: 資格情報なしの決定的なローカル応答
+       └─ live profile: LiveKit Agent、OpenAI provider、rembg sidecar
+
 npm run dev:edge
   └─ Wrangler local Worker ── DB binding ── Cloudflare D1 (利用可能な場合)
 
@@ -82,6 +89,8 @@ npm run lint
 npm run build
 npm test
 npm run assets:audit
+uv sync --frozen
+uv run pytest -q
 ~~~
 
 Cloudflare Worker/D1相当を確認する場合は`npm run dev:edge`を使います。D1 migrationは対象とbindingを確認してから実行してください。
@@ -97,6 +106,7 @@ npm run types:worker
 ## APIドキュメントと運用資料
 
 - 正本: [`docs/api/openapi.yaml`](docs/api/openapi.yaml)
+- 出品写真アシスタント手順: [`docs/runbooks/listing-photo-assistant.md`](docs/runbooks/listing-photo-assistant.md)
 - Scalar API参照: [Cloudflare Pages](https://mercari-ui-kit-api-docs.pages.dev/)
 - チーム運用資料: [`docs/wiki/`](docs/wiki/)
 - 開発者向け手順: [`CONTRIBUTING.md`](CONTRIBUTING.md)

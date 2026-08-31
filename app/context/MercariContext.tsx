@@ -37,6 +37,7 @@ import { SandboxEngine, createTrustedPrincipal, type ConfirmPurchaseResult, type
 import { SandboxCommandBus, compactImagePayloadForFingerprint, fingerprint } from '../domain/commandBus';
 import { SandboxCommandExecutor } from '../domain/commandExecutor';
 import { applyPreviewOperation } from '../domain/previewOperations';
+import { createListingPhotoAssistantDraftPatch, type ListingPhotoAssistantHandoffInput } from '../domain/listingPhotoAssistantHandoff';
 import { IndexedDbSandboxStateStore } from '../domain/sandboxIdbStore';
 import type { SandboxCommandRecord, SandboxStateRecord } from '../domain/sandboxStore';
 
@@ -146,6 +147,7 @@ const cloneItem = (item: MercariItem): MercariItem => ({
   ...item,
   images: [...item.images],
   category: [...item.category],
+  ...(item.garmentMeasurements ? { garmentMeasurements: { ...item.garmentMeasurements } } : {}),
   searchTags: item.searchTags ? [...item.searchTags] : undefined,
   attributes: item.attributes ? { ...item.attributes } : undefined,
   seller: { ...item.seller },
@@ -287,6 +289,7 @@ interface MercariContextType {
   addNewItem: (item: Partial<MercariItem>) => ActionResult<MercariItem>;
   createListingDraft: (item: Partial<MercariItem>) => ActionResult<{ draftId: string }>;
   updateListingDraft: (draftId: string, item: Partial<MercariItem>) => ActionResult<{ draftId: string }>;
+  handoffListingPhotoAssistant: (draftId: string, input: ListingPhotoAssistantHandoffInput) => ActionResult<{ draftId: string }>;
   getListingDrafts: () => ListingDraftSummary[];
   deleteListingDraft: (draftId: string) => ActionResult<{ draftId: string }>;
   submitListing: (draftId: string) => ActionResult<{ itemId: string }>;
@@ -1081,6 +1084,16 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return result;
   });
 
+  const handoffListingPhotoAssistant = (draftId: string, input: ListingPhotoAssistantHandoffInput): ActionResult<{ draftId: string }> => {
+    if (!sandboxHydratedRef.current) return failure('SANDBOX_NOT_READY', stateVersionRef.current, 'Sandbox状態を復元しています。準備完了後にもう一度お試しください。');
+    const currentDraft = sandboxEngine.getListingDrafts(activeActor.id).find((draft) => draft.draftId === draftId);
+    if (!currentDraft) return failure('DRAFT_NOT_FOUND', sandboxEngine.getStateVersion(), '引き渡し先の出品下書きが見つかりません。');
+    const prepared = createListingPhotoAssistantDraftPatch(input, currentDraft.fields);
+    if (!prepared.ok) return failure('INVALID_INPUT', sandboxEngine.getStateVersion(), prepared.message, { code: prepared.code });
+    // Only the sanitized patch enters the command bus and durable draft state.
+    return updateListingDraft(draftId, prepared.patch);
+  };
+
   const deleteListingDraft = (draftId: string): ActionResult<{ draftId: string }> => runUiCommand('deleteListingDraft', { draftId }, () => {
     const result = sandboxEngine.deleteListingDraft(draftId, { actorId: activeActor.id });
     if (result.ok) syncFromEngine();
@@ -1530,7 +1543,7 @@ export const MercariProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return result;
   });
 
-    return <MercariContext.Provider value={{ isAuthenticated, activeActor, sandboxSnapshot: liveSnapshot, isSandboxReady, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, myPagePanel, setMyPagePanel, openMyPagePanel, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, createListingDraft, updateListingDraft, getListingDrafts: () => sandboxEngine.getListingDrafts(activeActor.id), deleteListingDraft, submitListing, updateListing, pauseListing, resumeListing, relistItem, addComment, recentlyViewedIds, savedItemIds, user, profile, wallet, getWallet, depositWallet, withdrawWallet, updateProfile, getFollowList, getFollowSummary, followUser, unfollowUser, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame, getTransactions: (actorId) => sandboxEngine.getVisibleTransactions(actorId), getDomainEvents: () => sandboxEngine.getVisibleDomainEvents(), shipOrder, markDelivered, reviewOrder, cancelOrder }}>{children}</MercariContext.Provider>;
+    return <MercariContext.Provider value={{ isAuthenticated, activeActor, sandboxSnapshot: liveSnapshot, isSandboxReady, isLoginPromptOpen, loginPromptReason, requestLogin, closeLoginPrompt, mainTab, setMainTab, myPagePanel, setMyPagePanel, openMyPagePanel, homeTab, setHomeTab, navigateToTab, categoryName, setCategoryName, openCategory, isSearchOpen, setIsSearchOpen, searchQuery, setSearchQuery, searchHistory, addSearchHistory, clearSearchHistory, selectedItemId, setSelectedItemId, selectedItem, setSelectedItem, openItem, closeItem, buyingItemId, setBuyingItemId, buyingItem, setBuyingItem, startPurchase, purchaseItem, placeBid, isPurchaseCompleteOpen, setIsPurchaseCompleteOpen, isListingModalOpen, setIsListingModalOpen, items, toggleLikeItem, setLiked, setSaved, addNewItem, createListingDraft, updateListingDraft, handoffListingPhotoAssistant, getListingDrafts: () => sandboxEngine.getListingDrafts(activeActor.id), deleteListingDraft, submitListing, updateListing, pauseListing, resumeListing, relistItem, addComment, recentlyViewedIds, savedItemIds, user, profile, wallet, getWallet, depositWallet, withdrawWallet, updateProfile, getFollowList, getFollowSummary, followUser, unfollowUser, notifications, activeNotification, openNotification, setActiveNotification, isDeviceFrame, setIsDeviceFrame, getTransactions: (actorId) => sandboxEngine.getVisibleTransactions(actorId), getDomainEvents: () => sandboxEngine.getVisibleDomainEvents(), shipOrder, markDelivered, reviewOrder, cancelOrder }}>{children}</MercariContext.Provider>;
 };
 
 export const useMercari = () => {
