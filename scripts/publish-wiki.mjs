@@ -32,7 +32,8 @@ for (const file of required) {
 for (const [sourceFile, wikiFile] of mirroredPages) {
   const sourceText = await readFile(resolve(root, sourceFile), 'utf8');
   const wikiText = await readFile(join(source, wikiFile), 'utf8');
-  if (sourceText !== wikiText) throw new Error(`[wiki] mirrored page drift: ${wikiFile} must exactly match ${sourceFile}`);
+  const normalizeLineEndings = (text) => text.replaceAll('\r\n', '\n');
+  if (normalizeLineEndings(sourceText) !== normalizeLineEndings(wikiText)) throw new Error(`[wiki] mirrored page drift: ${wikiFile} must exactly match ${sourceFile}`);
 }
 if (checkOnly) { console.log(`[wiki] checked ${required.length} source pages`); process.exit(0); }
 if (syncOnly) { console.log(`[wiki] synchronized and checked ${mirroredPages.length} API guide pages; remote publish skipped`); process.exit(0); }

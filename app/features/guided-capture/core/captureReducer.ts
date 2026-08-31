@@ -159,9 +159,11 @@ function isMeasurementDraft(value: MeasurementDraft): boolean {
     value.lengthCm > 0 &&
     Number.isFinite(value.widthCm) &&
     value.widthCm > 0 &&
-    Number.isFinite(value.confidence) &&
-    value.confidence >= 0 &&
-    value.confidence <= 1
+    (value.confidence === undefined || (
+      Number.isFinite(value.confidence) &&
+      value.confidence >= 0 &&
+      value.confidence <= 1
+    ))
   );
 }
 

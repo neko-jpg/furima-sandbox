@@ -6,6 +6,7 @@ info:
     Furima Sandboxのカタログ、Sandbox状態、出品下書き・出品ライフサイクルAPI。
     このファイルがAPI契約の正本です。GitHub Wikiはチーム向けの読み物として本ファイルへリンクします。
     /api/catalog、/api/catalog/{itemId}、/api/sandbox/state、/api/sandbox/health、/api/sandbox/preview、/api/sandbox/commit、/api/sandbox/reset、/api/sandbox/seed、/api/sandbox/replayは現在のHTTP実装です。
+    撮影アシスタントの5 APIはfixture/liveのPythonサービスが実装するHTTP契約です。Team-D backendの統合基準は最新mainのcd7b42a207fc3912fdd5e8e76ac2e91f7f5f5abeです（初期基準be5ee304febe14b280fa546fa3cc9704b84e6e8から更新）。画像はmultipartのbinaryとして扱い、秘密値や画像Data URLをこの仕様へ含めません。
     /api/listings、/api/wallet、/api/profile、/api/follows系はplanned contractです。現時点のHTTP runtimeは未実装で、実行経路はBrowser APIです。planned操作にはx-implementation-status: plannedを付けています。
 servers:
   - url: /
@@ -17,6 +18,7 @@ tags:
   - name: Wallet
   - name: Profile
   - name: Social
+  - name: Guided Capture
 paths:
   /api/catalog:
     get:
@@ -269,6 +271,129 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { description: command列の途中で失敗した }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/livekit-token:
+    x-implementation-status: python-service
+    post:
+      tags: [Guided Capture]
+      operationId: issueLiveKitToken
+      summary: 撮影セッション用の短期LiveKit tokenを発行する
+      description: LiveKitの秘密鍵はサーバー内に保持し、ブラウザには撮影用の短期tokenと接続メタデータだけを返します。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveKitTokenRequest' }
+      responses:
+        '200':
+          description: 撮影セッション用LiveKit接続情報
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveKitTokenResponse' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/ProviderFailure' }
+  /api/analyze-shot:
+    x-implementation-status: python-service
+    post:
+      tags: [Guided Capture]
+      operationId: analyzeShot
+      summary: 撮影後の正面・背面・タグ画像を判定する
+      description: measurement画像はこのAPIへ送信せず、撮影後のShotAssessmentは採寸幾何検証と分離します。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/ShotAnalysisUpload' }
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 厳格に検証された撮影判定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShotAssessment' }
+        '413': { $ref: '#/components/responses/ProviderFailure' }
+        '415': { $ref: '#/components/responses/ProviderFailure' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { $ref: '#/components/responses/ProviderFailure' }
+        '503': { $ref: '#/components/responses/ProviderFailure' }
+        '504': { $ref: '#/components/responses/ProviderFailure' }
+  /api/suggest-measurement-points:
+    x-implementation-status: python-service
+    post:
+      tags: [Guided Capture]
+      operationId: suggestMeasurementPoints
+      summary: 採寸画像から4端点を提案する
+      description: 出力は0〜1の正規化された4端点だけです。cm値、confidence、画面遷移、UI文言は返しません。採寸値の算出、必要に応じた射影補正、端点編集、承認はブラウザ側で行います。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/MeasurementPointsUpload' }
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 採寸4端点の未承認提案
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeasurementPointSuggestion' }
+        '413': { $ref: '#/components/responses/ProviderFailure' }
+        '415': { $ref: '#/components/responses/ProviderFailure' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { $ref: '#/components/responses/ProviderFailure' }
+        '503': { $ref: '#/components/responses/ProviderFailure' }
+        '504': { $ref: '#/components/responses/ProviderFailure' }
+  /api/remove-background:
+    x-implementation-status: python-service
+    post:
+      tags: [Guided Capture]
+      operationId: removeBackground
+      summary: 正面原本からmask-only PNGを作る
+      description: 正面原本だけを内部のmask providerへ送り、商品RGBを含まないmask-only PNGを返します。rembgはブラウザへ公開しません。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/FrontImageUpload' }
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 正面原本と同じ寸法のmask-only PNG
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '413': { $ref: '#/components/responses/ProviderFailure' }
+        '415': { $ref: '#/components/responses/ProviderFailure' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { $ref: '#/components/responses/ProviderFailure' }
+        '503': { $ref: '#/components/responses/ProviderFailure' }
+        '504': { $ref: '#/components/responses/ProviderFailure' }
+  /api/generate-background:
+    x-implementation-status: python-service
+    post:
+      tags: [Guided Capture]
+      operationId: generateBackground
+      summary: 許可されたstyleから商品を含まない背景を生成する
+      description: styleIdを固定promptへ変換し、背景生成サービスへテキストだけを送ります。商品画像、mask、タグ画像、採寸画像はrequestに含めません。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BackgroundGenerationRequest' }
+      responses:
+        '200':
+          description: 商品を含まない背景PNG候補
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { $ref: '#/components/responses/ProviderFailure' }
+        '503': { $ref: '#/components/responses/ProviderFailure' }
+        '504': { $ref: '#/components/responses/ProviderFailure' }
   /api/listings:
     x-implementation-status: planned
     get:
@@ -565,7 +690,234 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ProviderFailure:
+      description: 撮影アシスタントのproviderが入力不正、timeout、利用不能、または不正な応答を返した
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ProviderErrorResponse' }
+    ValidationError:
+      description: リクエストの形式または値が不正
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationErrorResponse' }
   schemas:
+    SessionSlot:
+      type: string
+      enum: [front, back, tag, measurement]
+      description: 撮影セッション内の固定4slot。measurementは出品画像へ使用しません。
+    ShotSlot:
+      type: string
+      enum: [front, back, tag]
+      description: 撮影後ShotAssessmentが判定できる3slot。measurementは含みません。
+    GuidanceCode:
+      type: string
+      enum: [MOVE_CLOSER, MOVE_FARTHER, CENTER_GARMENT, SHOW_FULL_GARMENT, WRONG_SIDE, MOVE_TO_TAG, PLACE_MARKER, MARKER_NOT_VISIBLE, FLATTEN_GARMENT, CAMERA_OVERHEAD, HOLD_STEADY, READY, AGENT_UNAVAILABLE]
+    GuidanceEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, shot, code, message, confidence, observedAt, expiresAt]
+      properties:
+        sessionId: { type: string, minLength: 1, maxLength: 96, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$' }
+        sequence: { type: integer, minimum: 1 }
+        shot: { $ref: '#/components/schemas/SessionSlot' }
+        code: { $ref: '#/components/schemas/GuidanceCode' }
+        message: { type: string, minLength: 1, maxLength: 240 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        observedAt: { type: integer, minimum: 0, description: Unix epoch milliseconds }
+        expiresAt: { type: integer, minimum: 0, description: Unix epoch milliseconds。observedAtより後である必要があります。 }
+    ConnectionState:
+      type: string
+      enum: [connecting, connected, reconnecting, disconnected]
+    ProviderName:
+      type: string
+      enum: [shot-assessor, vision-guidance, measurement-line, background-generator, garment-masker]
+    ProviderErrorCode:
+      type: string
+      enum: [TIMEOUT, UNAVAILABLE, INVALID_RESPONSE, INVALID_INPUT, UNKNOWN]
+    ProviderError:
+      type: object
+      additionalProperties: false
+      required: [provider, code, message, retryable]
+      properties:
+        provider: { $ref: '#/components/schemas/ProviderName' }
+        code: { $ref: '#/components/schemas/ProviderErrorCode' }
+        message: { type: string, minLength: 1, maxLength: 240 }
+        retryable: { type: boolean }
+    ProviderErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - { type: string, minLength: 1, maxLength: 120 }
+            - { $ref: '#/components/schemas/ProviderError' }
+    ValidationErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - { type: string, minLength: 1, maxLength: 240 }
+            - type: array
+              items: { type: object, additionalProperties: true }
+    LiveKitTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [sessionId]
+      properties:
+        sessionId: { type: string, minLength: 1, maxLength: 96, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$' }
+    LiveKitTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [token, participantIdentity, roomName, expiresAt, livekitUrl]
+      properties:
+        token: { type: string, minLength: 1, description: 短期のブラウザ接続token。実値やsecretは公開仕様へ記載しません。 }
+        participantIdentity: { type: string, minLength: 1, maxLength: 128 }
+        roomName: { type: string, minLength: 1, maxLength: 128 }
+        expiresAt: { type: integer, minimum: 1, description: Unix epoch seconds }
+        livekitUrl: { type: string, pattern: '^(https|wss)://[^\s]+$' }
+    ShotIssueCode:
+      type: string
+      enum: [TOO_DARK, TOO_BRIGHT, TOO_BLURRY, BLURRY, GARMENT_CROPPED, TAG_UNREADABLE, WRONG_SHOT]
+    ShotType:
+      type: string
+      enum: [front, back, tag, unknown]
+    ShotQuality:
+      type: string
+      enum: [ok, retry]
+    NextAction:
+      type: string
+      enum: [RETAKE, REQUEST_NEXT, COMPLETE]
+    ShotAssessment:
+      type: object
+      additionalProperties: false
+      required: [shotType, quality, issues, missingShots, nextAction]
+      properties:
+        shotType: { $ref: '#/components/schemas/ShotType' }
+        quality: { $ref: '#/components/schemas/ShotQuality' }
+        issues:
+          type: array
+          maxItems: 7
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ShotIssueCode' }
+        missingShots:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ShotSlot' }
+        nextAction: { $ref: '#/components/schemas/NextAction' }
+    NormalizedPoint:
+      type: object
+      additionalProperties: false
+      required: [x, y]
+      properties:
+        x: { type: number, minimum: 0, maximum: 1 }
+        y: { type: number, minimum: 0, maximum: 1 }
+    MeasurementEndpoints:
+      type: object
+      additionalProperties: false
+      required: [lengthStart, lengthEnd, widthStart, widthEnd]
+      properties:
+        lengthStart: { $ref: '#/components/schemas/NormalizedPoint' }
+        lengthEnd: { $ref: '#/components/schemas/NormalizedPoint' }
+        widthStart: { $ref: '#/components/schemas/NormalizedPoint' }
+        widthEnd: { $ref: '#/components/schemas/NormalizedPoint' }
+    MeasurementPointSuggestion:
+      type: object
+      additionalProperties: false
+      required: [lengthStart, lengthEnd, widthStart, widthEnd]
+      properties:
+        lengthStart: { $ref: '#/components/schemas/NormalizedPoint' }
+        lengthEnd: { $ref: '#/components/schemas/NormalizedPoint' }
+        widthStart: { $ref: '#/components/schemas/NormalizedPoint' }
+        widthEnd: { $ref: '#/components/schemas/NormalizedPoint' }
+    MeasurementMarker:
+      type: object
+      additionalProperties: false
+      required: [knownSideCm, corners, pxPerCm]
+      properties:
+        knownSideCm: { const: 5, description: 専用マーカー外形1辺のcm値 }
+        corners:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { $ref: '#/components/schemas/NormalizedPoint' }
+        pxPerCm: { type: number, exclusiveMinimum: 0 }
+    MeasurementLine:
+      type: object
+      additionalProperties: false
+      required: [start, end, valueCm]
+      properties:
+        start: { $ref: '#/components/schemas/NormalizedPoint' }
+        end: { $ref: '#/components/schemas/NormalizedPoint' }
+        valueCm: { type: number, exclusiveMinimum: 0 }
+    MeasurementSource:
+      type: string
+      enum: [ai, contour, user]
+    MeasurementStatus:
+      type: string
+      enum: [needs_review, approved_cv, approved_manual]
+    MeasurementFailureCode:
+      type: string
+      enum: [MARKER_MISSING, MARKER_MULTIPLE, MARKER_TOO_SMALL, MARKER_OCCLUDED, GARMENT_OUT_OF_FRAME, GARMENT_MARKER_OVERLAP, SEGMENTATION_FAILED, ENDPOINTS_INVALID]
+    MeasurementDraft:
+      type: object
+      additionalProperties: false
+      required: [imageId, marker, length, width, source, status]
+      properties:
+        imageId: { type: string, minLength: 1, maxLength: 160, description: セッション内の一時参照。出品データへ保存しません。 }
+        marker:
+          oneOf:
+            - { $ref: '#/components/schemas/MeasurementMarker' }
+            - { type: 'null' }
+        length: { $ref: '#/components/schemas/MeasurementLine' }
+        width: { $ref: '#/components/schemas/MeasurementLine' }
+        source: { $ref: '#/components/schemas/MeasurementSource' }
+        status: { $ref: '#/components/schemas/MeasurementStatus' }
+    ApprovedMeasurement:
+      type: object
+      additionalProperties: false
+      required: [imageId, marker, length, width, source, status]
+      properties:
+        imageId: { type: string, minLength: 1, maxLength: 160, description: セッション内の一時参照。出品データへ保存しません。 }
+        marker:
+          oneOf:
+            - { $ref: '#/components/schemas/MeasurementMarker' }
+            - { type: 'null' }
+        length: { $ref: '#/components/schemas/MeasurementLine' }
+        width: { $ref: '#/components/schemas/MeasurementLine' }
+        source: { $ref: '#/components/schemas/MeasurementSource' }
+        status: { type: string, enum: [approved_cv, approved_manual] }
+    BackgroundStyleId:
+      type: string
+      enum: [studio_white, warm_neutral, light_wood]
+    BackgroundGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [styleId]
+      properties:
+        styleId: { $ref: '#/components/schemas/BackgroundStyleId' }
+    ShotAnalysisUpload:
+      type: object
+      additionalProperties: false
+      required: [requestedShot, file]
+      properties:
+        requestedShot: { $ref: '#/components/schemas/ShotSlot' }
+        file: { type: string, format: binary, description: JPEG、PNG、またはWebPの撮影画像。最大10MiB。 }
+    MeasurementPointsUpload:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file: { type: string, format: binary, description: JPEG、PNG、またはWebPの採寸画像。最大10MiB。 }
+    FrontImageUpload:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file: { type: string, format: binary, description: front原本。mask生成専用で、生成背景へ転送しません。 }
     ListingMediaRef:
       type: object
       required: [id, source, status, mimeType, createdAt]
@@ -701,6 +1053,15 @@ components:
         isAnonymousShipping: { type: boolean }
         inventoryPolicy: { type: string, enum: [SINGLE, MULTI] }
         inventoryQuantity: { type: integer, minimum: 0 }
+        garmentMeasurements:
+          type: object
+          additionalProperties: false
+          required: [lengthCm, widthCm, source]
+          description: 明示承認後に出品下書きへ渡す採寸メタデータだけ。画像・端点・scaleは保存しません。
+          properties:
+            lengthCm: { type: number, exclusiveMinimum: 0 }
+            widthCm: { type: number, exclusiveMinimum: 0 }
+            source: { type: string, enum: [approved_cv, approved_manual] }
     ListingUpdate:
       type: object
       minProperties: 1

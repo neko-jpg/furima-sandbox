@@ -420,6 +420,27 @@ test("listing drafts are owned by their creating actor", () => {
    assert.deepEqual(engine.assertInvariants(), []);
 });
 
+test("approved garment measurements survive draft submission without capture intermediates", () => {
+  const engine = createEngine();
+  assert.equal(engine.switchActor("seller_01", controlOptions).ok, true);
+  const draft = engine.createListingDraft({
+    title: "採寸付きTシャツ",
+    description: "承認済み採寸の出品です",
+    price: 1200,
+    category: ["レディース", "トップス"],
+    condition: "新品",
+    shippingMethod: "配送",
+    imageRefs: ["media_front", "media_back", "media_tag"],
+    garmentMeasurements: { lengthCm: 70.5, widthCm: 52, source: "approved_cv" },
+  }, { actorId: "seller_01" });
+  assert.equal(draft.ok, true);
+  if (!draft.ok) return;
+  const submitted = engine.submitListing(draft.data.draftId, { actorId: "seller_01" });
+  assert.equal(submitted.ok, true);
+  if (!submitted.ok) return;
+  assert.deepEqual(engine.getItem(submitted.data.itemId)?.garmentMeasurements, { lengthCm: 70.5, widthCm: 52, source: "approved_cv" });
+});
+
 test("state import rejects malformed or inconsistent sandbox payloads", () => {
   const engine = createEngine();
    assert.equal(engine.importState(JSON.stringify({ version: "1", items: [], transactions: [], events: [] }), controlOptions).error, "INVALID_INPUT");

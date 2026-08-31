@@ -43,6 +43,20 @@ stateDiagram-v2
 
 実際のAI審査ではなく、画像ファイル名と固定ルールを使ったモック候補です。title、description、category、condition、colorの各候補は個別に採用・破棄でき、入力済みのユーザー値を上書きしません。公開前に必ず人が確認します。
 
+## AI撮影アシスタント（任意）
+
+写真ステップには、既存のカメラ／アルバム入力を残したまま、半袖クルーネックTシャツ向けの撮影アシスタントを折りたたみ式で組み込みます。対象外カテゴリでも通常出品は利用でき、`READY`を待たずに手動撮影を続けられます。
+
+- セッション内のslotは`front`、`back`、`tag`、`measurement`の4つ。ShotAssessorへ送るのは最初の3つだけで、採寸画像は専用APIへ分離する。
+- fixture経路では外部資格情報なしに4slotを2回連続で完走できる。live経路ではブラウザのLiveKit WebRTC映像とAgentのdata packet／RPCを使い、ライブ映像をHTTP multipartへ流さない。
+- 受信イベントは`sessionId`、`sequence`、`observedAt`、`expiresAt`を検証し、別セッション、古いsequence、期限切れイベントを破棄する。画面遷移は受理済みslotと明示承認をReducerが決める。
+- 採寸APIの結果は0〜1の正規化された4端点だけを返す。ブラウザが画像寸法と5cmマーカーのscaleからcm換算し、必要に応じて四隅のhomographyによる射影補正と端点編集を行う。confidence、cm値、補正値、マーカーscale、着丈・身幅の入力／修正はHTTP providerへ渡さずセッション内で行い、着丈・身幅を利用者が明示承認するまで出品へ渡さない。
+- `front`、`back`、`tag`の画像と承認済み`garmentMeasurements`が揃った後、利用者が出品へ進む操作をした場合だけ既存下書きへ引き渡す。measurement画像、端点、scale、イベント、AI途中結果は保存しない。
+- 背景編集は正面原本だけをmask providerへ渡し、背景生成には`styleId`だけを渡す。検証済みmaskと正面原本をCanvas合成し、元画像と生成画像を比較して明示承認した後だけ通常の正面画像を置き換える。
+- 閉じる、終了、unmountではBlob、object URL、LiveKit、Workerを解放する。通常の既存写真がある場合、アシスタントの結果を自動マージ・自動上書きしない。
+
+HTTP契約の正本は[`docs/api/openapi.yaml`](./openapi.yaml)です。FastAPIは`services/listing_photo_assistant/`、ブラウザの任意機能は`app/features/guided-capture/`と`app/features/background-edit/`に分離します。
+
 ## 完了条件
 
 公開前に以下をすべて確認します。

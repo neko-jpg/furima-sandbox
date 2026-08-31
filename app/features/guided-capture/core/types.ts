@@ -127,7 +127,8 @@ export interface MeasurementDraft {
   readonly endpoints: MeasurementEndpoints;
   readonly lengthCm: number;
   readonly widthCm: number;
-  readonly confidence: number;
+  /** Optional local quality metadata; never required by the HTTP wire shape. */
+  readonly confidence?: number;
   readonly source: "ai" | "contour" | "user";
   readonly status: "needs_review";
 }
@@ -282,4 +283,3 @@ export type CaptureReducer = (
   state: CaptureState,
   action: CaptureAction,
 ) => CaptureState;
-

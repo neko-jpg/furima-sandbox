@@ -23,9 +23,20 @@ if (!document?.paths || typeof document.paths !== 'object') fail('OpenAPI paths 
 if (!document?.components?.schemas?.MercariItem) fail('MercariItem schema is required');
 if (!document?.components?.schemas?.ListingMediaRef) fail('ListingMediaRef schema is required');
 
-for (const path of ['/api/catalog', '/api/catalog/{itemId}', '/api/sandbox/state', '/api/sandbox/health', '/api/sandbox/preview', '/api/sandbox/commit', '/api/sandbox/reset', '/api/sandbox/seed', '/api/sandbox/replay', '/api/listings', '/api/listings/{itemId}', '/api/follows', '/api/follows/{actorId}', '/api/follows/{actorId}/summary']) {
+for (const path of ['/api/catalog', '/api/catalog/{itemId}', '/api/sandbox/state', '/api/sandbox/health', '/api/sandbox/preview', '/api/sandbox/commit', '/api/sandbox/reset', '/api/sandbox/seed', '/api/sandbox/replay', '/api/livekit-token', '/api/analyze-shot', '/api/suggest-measurement-points', '/api/remove-background', '/api/generate-background', '/api/listings', '/api/listings/{itemId}', '/api/follows', '/api/follows/{actorId}', '/api/follows/{actorId}/summary']) {
   if (!document.paths[path]) fail(`missing documented path ${path}`);
 }
+
+for (const path of ['/api/livekit-token', '/api/analyze-shot', '/api/suggest-measurement-points', '/api/remove-background', '/api/generate-background']) {
+  if (document.paths[path]['x-implementation-status'] !== 'python-service') fail(`${path} must be marked as a Python service contract`);
+}
+if (!document.info.description.includes('cd7b42a207fc3912fdd5e8e76ac2e91f7f5f5abe')) fail('Team-D backend baseline is missing from the API contract');
+const measurementPointSuggestion = document.components.schemas.MeasurementPointSuggestion;
+if (!measurementPointSuggestion || measurementPointSuggestion.properties.confidence || JSON.stringify(measurementPointSuggestion.required) !== JSON.stringify(['lengthStart', 'lengthEnd', 'widthStart', 'widthEnd'])) {
+  fail('measurement point API must expose exactly four normalized endpoints');
+}
+const providerError = document.components.schemas.ProviderError;
+if (!providerError || JSON.stringify(providerError.required) !== JSON.stringify(['provider', 'code', 'message', 'retryable'])) fail('ProviderError contract is incomplete');
 
 const itemSchema = document.components.schemas.MercariItem;
 if (itemSchema.properties.title.maxLength !== 40) fail('title maxLength must be 40');

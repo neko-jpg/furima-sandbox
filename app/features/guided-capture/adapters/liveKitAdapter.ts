@@ -6,16 +6,42 @@ import {
   type ProviderError,
 } from "../core/types.ts";
 
+const GUIDANCE_MESSAGES: Readonly<Record<GuidanceEvent["code"], string>> = {
+  MOVE_CLOSER: "カメラを少し近づけてください。",
+  MOVE_FARTHER: "カメラを少し離してください。",
+  CENTER_GARMENT: "衣類をガイドの中央に合わせてください。",
+  SHOW_FULL_GARMENT: "衣類全体が入るようにカメラを離してください。",
+  WRONG_SIDE: "衣類を裏返して、指定された面を見せてください。",
+  MOVE_TO_TAG: "タグが見える位置へ移動してください。",
+  PLACE_MARKER: "専用マーカーを衣類の右下に置いてください。",
+  MARKER_NOT_VISIBLE: "専用マーカー全体が見えるようにしてください。",
+  FLATTEN_GARMENT: "襟、袖、裾を広げて、しわを伸ばしてください。",
+  CAMERA_OVERHEAD: "カメラを衣類の真上に構えてください。",
+  HOLD_STEADY: "カメラを動かさず、そのまま保ってください。",
+  READY: "撮影できます。",
+  AGENT_UNAVAILABLE: "ライブ案内を利用できません。固定ガイドで撮影できます。",
+};
+
 export interface LiveKitTokenResponse {
   readonly token: string;
   readonly participantIdentity: string;
   readonly roomName: string;
-  readonly expiresAt: string;
+  /** Unix epoch seconds as returned by the Python token endpoint. */
+  readonly expiresAt: number;
   readonly livekitUrl: string;
 }
 
 export interface LiveKitTokenProvider {
   getToken(sessionId: string): Promise<LiveKitTokenResponse>;
+}
+
+export interface LiveKitStateEvent {
+  readonly type: "shot_changed" | "resync";
+  readonly sessionId: string;
+  readonly sequence: number;
+  readonly shot: GuidanceEvent["shot"] | null;
+  readonly code: GuidanceEvent["code"] | null;
+  readonly observedAt: number;
 }
 
 export type LiveKitRoomConnectionState = ConnectionState;
@@ -29,6 +55,7 @@ export interface LiveKitRoomPort {
   connect(url: string, token: string): Promise<void>;
   disconnect(): Promise<void> | void;
   publishTrack(track: LiveKitCameraTrack): Promise<void>;
+  publishCameraStream?(stream: MediaStream): Promise<void>;
   sendData(payload: Uint8Array, options: { readonly reliable: boolean; readonly topic?: string }): Promise<void>;
   on(event: "connectionStateChanged", listener: (state: LiveKitRoomConnectionState) => void): () => void;
   on(event: "dataReceived", listener: (payload: LiveKitDataPayload) => void): () => void;
@@ -37,7 +64,9 @@ export interface LiveKitRoomPort {
 export interface LiveKitAdapterOptions {
   readonly now?: () => number;
   readonly onGuidance?: (event: GuidanceEvent) => void;
+  readonly onState?: (event: LiveKitStateEvent) => void;
   readonly onError?: (error: ProviderError) => void;
+  readonly onConnectionState?: (state: ConnectionState) => void;
 }
 
 export class LiveKitAdapterError extends Error {
@@ -78,22 +107,61 @@ function isSessionSlot(value: unknown): value is GuidanceEvent["shot"] {
   return typeof value === "string" && (SESSION_SLOTS as readonly string[]).includes(value);
 }
 
-function parseGuidanceEvent(
-  payload: LiveKitDataPayload,
-  sessionId: string,
-  latestSequence: number,
-  now: number,
-): GuidanceEvent | null {
+function isFiniteNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+}
+
+function decodeJsonObject(payload: LiveKitDataPayload): Record<string, unknown> | null {
   let raw: unknown;
   try {
     raw = JSON.parse(decodePayload(payload));
   } catch {
     return null;
   }
-  if (typeof raw !== "object" || raw === null) {
+  return typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : null;
+}
+
+function parseStateEvent(
+  payload: LiveKitDataPayload,
+  sessionId: string,
+  latestSequence: number,
+): LiveKitStateEvent | null {
+  const value = decodeJsonObject(payload);
+  if (
+    value === null
+    || Object.keys(value).length !== 6
+    || value.type !== "shot_changed" && value.type !== "resync"
+    || value.sessionId !== sessionId
+    || !Number.isInteger(value.sequence)
+    || (value.sequence as number) <= latestSequence
+    || (value.shot !== null && !isSessionSlot(value.shot))
+    || (value.code !== null && !isGuidanceCode(value.code))
+    || !isFiniteNonNegativeInteger(value.observedAt)
+  ) {
     return null;
   }
-  const value = raw as Record<string, unknown>;
+  return {
+    type: value.type,
+    sessionId,
+    sequence: value.sequence as number,
+    shot: value.shot as LiveKitStateEvent["shot"],
+    code: value.code as LiveKitStateEvent["code"],
+    observedAt: value.observedAt,
+  };
+}
+
+function parseGuidanceEvent(
+  payload: LiveKitDataPayload,
+  sessionId: string,
+  latestSequence: number,
+  now: number,
+): GuidanceEvent | null {
+  const value = decodeJsonObject(payload);
+  if (value === null || Object.keys(value).length !== 8) {
+    return null;
+  }
   if (
     value.sessionId !== sessionId ||
     !Number.isInteger(value.sequence) ||
@@ -101,6 +169,7 @@ function parseGuidanceEvent(
     !isSessionSlot(value.shot) ||
     !isGuidanceCode(value.code) ||
     !nonEmptyString(value.message) ||
+    value.message !== GUIDANCE_MESSAGES[value.code] ||
     typeof value.confidence !== "number" ||
     !Number.isFinite(value.confidence) ||
     value.confidence < 0 ||
@@ -136,11 +205,15 @@ export class LiveKitAdapter {
   private readonly tokenProvider: LiveKitTokenProvider;
   private readonly now: () => number;
   private readonly onGuidance?: (event: GuidanceEvent) => void;
+  private readonly onState?: (event: LiveKitStateEvent) => void;
   private readonly onError?: (error: ProviderError) => void;
+  private readonly onConnectionState?: (state: ConnectionState) => void;
   private readonly unsubscribe: Array<() => void> = [];
   private sessionId: string | null = null;
   private state: ConnectionState = "disconnected";
   private latestSequence = 0;
+  private needsResync = false;
+  private resyncInFlight: Promise<void> | null = null;
 
   public constructor(
     room: LiveKitRoomPort,
@@ -151,7 +224,9 @@ export class LiveKitAdapter {
     this.tokenProvider = tokenProvider;
     this.now = options.now ?? (() => Date.now());
     this.onGuidance = options.onGuidance;
+    this.onState = options.onState;
     this.onError = options.onError;
+    this.onConnectionState = options.onConnectionState;
   }
 
   public get connectionState(): ConnectionState {
@@ -175,6 +250,8 @@ export class LiveKitAdapter {
     }
     this.sessionId = sessionId;
     this.latestSequence = 0;
+    this.needsResync = false;
+    this.resyncInFlight = null;
     this.setState("connecting");
     try {
       const token = await this.tokenProvider.getToken(sessionId);
@@ -183,7 +260,7 @@ export class LiveKitAdapter {
       }
       this.registerRoomListeners();
       await this.room.connect(token.livekitUrl, token.token);
-      this.setState("connected");
+      this.handleConnectionState("connected");
     } catch (error) {
       this.setState("disconnected");
       const mapped = error instanceof LiveKitAdapterError
@@ -201,6 +278,8 @@ export class LiveKitAdapter {
     } finally {
       this.sessionId = null;
       this.latestSequence = 0;
+      this.needsResync = false;
+      this.resyncInFlight = null;
       this.setState("disconnected");
     }
   }
@@ -210,6 +289,16 @@ export class LiveKitAdapter {
       throw new LiveKitAdapterError("UNAVAILABLE", "LiveKit room is not connected.");
     }
     await this.room.publishTrack(track);
+  }
+
+  public async publishCameraStream(stream: MediaStream): Promise<void> {
+    if (this.state !== "connected") {
+      throw new LiveKitAdapterError("UNAVAILABLE", "LiveKit room is not connected.");
+    }
+    if (!this.room.publishCameraStream) {
+      throw new LiveKitAdapterError("UNAVAILABLE", "This LiveKit room port cannot publish a camera stream.");
+    }
+    await this.room.publishCameraStream(stream);
   }
 
   public async sendGuidanceRpc(
@@ -229,7 +318,7 @@ export class LiveKitAdapter {
   private registerRoomListeners(): void {
     this.removeRoomListeners();
     this.unsubscribe.push(
-      this.room.on("connectionStateChanged", (state) => this.setState(state)),
+      this.room.on("connectionStateChanged", (state) => this.handleConnectionState(state)),
       this.room.on("dataReceived", (payload) => this.handleData(payload)),
     );
   }
@@ -242,10 +331,56 @@ export class LiveKitAdapter {
 
   private setState(state: ConnectionState): void {
     this.state = state;
+    this.onConnectionState?.(state);
+  }
+
+  private handleConnectionState(state: ConnectionState): void {
+    const previous = this.state;
+    if (state === "reconnecting" || state === "disconnected") {
+      this.needsResync = true;
+    }
+    this.setState(state);
+    if (state === "connected" && previous !== "connected" && this.needsResync) {
+      void this.resyncAfterReconnect();
+    }
+  }
+
+  private async resyncAfterReconnect(): Promise<void> {
+    if (this.resyncInFlight !== null || this.sessionId === null || this.state !== "connected") {
+      return this.resyncInFlight ?? Promise.resolve();
+    }
+    const sessionId = this.sessionId;
+    const task = (async () => {
+      try {
+        await this.sendGuidanceRpc(
+          { type: "resync", sessionId },
+          { reliable: true, topic: "capture" },
+        );
+        if (this.sessionId === sessionId) this.needsResync = false;
+      } catch (error) {
+        this.report(providerError("UNAVAILABLE", "LiveKit resync failed.", true));
+        throw error;
+      }
+    })();
+    this.resyncInFlight = task;
+    try {
+      await task;
+    } catch {
+      // Connection observers receive the mapped error; the next connected
+      // transition can retry the reliable resync.
+    } finally {
+      if (this.resyncInFlight === task) this.resyncInFlight = null;
+    }
   }
 
   private handleData(payload: LiveKitDataPayload): void {
     if (this.sessionId === null) {
+      return;
+    }
+    const stateEvent = parseStateEvent(payload, this.sessionId, this.latestSequence);
+    if (stateEvent !== null) {
+      this.latestSequence = stateEvent.sequence;
+      this.onState?.(stateEvent);
       return;
     }
     const event = parseGuidanceEvent(payload, this.sessionId, this.latestSequence, this.now());

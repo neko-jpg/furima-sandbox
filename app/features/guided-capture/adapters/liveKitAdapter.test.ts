@@ -51,7 +51,7 @@ const event = (sequence: number, overrides: Record<string, unknown> = {}) => JSO
   sequence,
   shot: "front",
   code: "READY",
-  message: "ready",
+  message: "撮影できます。",
   confidence: 1,
   observedAt: 1_000,
   expiresAt: 2_000,
@@ -67,7 +67,7 @@ test("LiveKit adapter connects through an injected room port and filters stale g
       token: "opaque-token",
       participantIdentity: "participant",
       roomName: "room",
-      expiresAt: "2030-01-01T00:00:00.000Z",
+      expiresAt: 1_900_000_000,
       livekitUrl: "wss://livekit.example.test",
     }),
   }, { now: () => now, onGuidance: (value) => guidance.push(value.sequence) });
@@ -86,10 +86,68 @@ test("LiveKit adapter connects through an injected room port and filters stale g
   room.emitState("reconnecting");
   assert.equal(adapter.connectionState, "reconnecting");
   room.emitState("connected");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(room.sent[0])), {
+    type: "resync",
+    sessionId: "live-session",
+  });
   await adapter.sendGuidanceRpc({ type: "ping" }, { reliable: false, topic: "capture" });
-  assert.equal(room.sent.length, 1);
+  assert.equal(room.sent.length, 2);
   await adapter.disconnect();
   assert.equal(adapter.connectionState, "disconnected");
+});
+
+test("LiveKit adapter fences reliable state packets and resyncs after reconnect", async () => {
+  const room = new FakeRoom();
+  const states: number[] = [];
+  const adapter = new LiveKitAdapter(room, {
+    getToken: async () => ({
+      token: "token",
+      participantIdentity: "participant",
+      roomName: "room",
+      expiresAt: 1_900_000_000,
+      livekitUrl: "wss://livekit.example.test",
+    }),
+  }, { onState: (value) => states.push(value.sequence) });
+
+  await adapter.connect("live-session");
+  room.emitData(JSON.stringify({
+    type: "shot_changed",
+    sessionId: "live-session",
+    sequence: 2,
+    shot: "back",
+    code: null,
+    observedAt: 1_000,
+  }));
+  room.emitData(event(1));
+  assert.deepEqual(states, [2]);
+  assert.equal(adapter.lastSequence, 2);
+
+  room.emitState("reconnecting");
+  room.emitState("connected");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.equal(room.sent.length, 1);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(room.sent[0])), {
+    type: "resync",
+    sessionId: "live-session",
+  });
+});
+
+test("LiveKit adapter rejects provider-controlled guidance copy", async () => {
+  const room = new FakeRoom();
+  const guidance: number[] = [];
+  const adapter = new LiveKitAdapter(room, {
+    getToken: async () => ({
+      token: "token",
+      participantIdentity: "participant",
+      roomName: "room",
+      expiresAt: 1_900_000_000,
+      livekitUrl: "wss://livekit.example.test",
+    }),
+  }, { onGuidance: (value) => guidance.push(value.sequence) });
+  await adapter.connect("live-session");
+  room.emitData(event(1, { message: "untrusted" }));
+  assert.deepEqual(guidance, []);
 });
 
 test("malformed data and expired events are ignored without throwing", async () => {
@@ -100,7 +158,7 @@ test("malformed data and expired events are ignored without throwing", async () 
       token: "token",
       participantIdentity: "participant",
       roomName: "room",
-      expiresAt: "2030-01-01T00:00:00.000Z",
+      expiresAt: 1_900_000_000,
       livekitUrl: "wss://livekit.example.test",
     }),
   }, { onError: (error) => errors.push(error) });

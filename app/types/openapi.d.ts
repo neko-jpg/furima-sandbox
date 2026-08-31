@@ -242,6 +242,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/livekit-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 撮影セッション用の短期LiveKit tokenを発行する
+         * @description LiveKitの秘密鍵はサーバー内に保持し、ブラウザには撮影用の短期tokenと接続メタデータだけを返します。
+         */
+        post: operations["issueLiveKitToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/analyze-shot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 撮影後の正面・背面・タグ画像を判定する
+         * @description measurement画像はこのAPIへ送信せず、撮影後のShotAssessmentは採寸幾何検証と分離します。
+         */
+        post: operations["analyzeShot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/suggest-measurement-points": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 採寸画像から4端点を提案する
+         * @description 出力は0〜1の正規化された4端点だけです。cm値、confidence、画面遷移、UI文言は返しません。採寸値の算出、必要に応じた射影補正、端点編集、承認はブラウザ側で行います。
+         */
+        post: operations["suggestMeasurementPoints"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remove-background": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 正面原本からmask-only PNGを作る
+         * @description 正面原本だけを内部のmask providerへ送り、商品RGBを含まないmask-only PNGを返します。rembgはブラウザへ公開しません。
+         */
+        post: operations["removeBackground"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/generate-background": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 許可されたstyleから商品を含まない背景を生成する
+         * @description styleIdを固定promptへ変換し、背景生成サービスへテキストだけを送ります。商品画像、mask、タグ画像、採寸画像はrequestに含めません。
+         */
+        post: operations["generateBackground"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/listings": {
         parameters: {
             query?: never;
@@ -714,6 +814,159 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description 撮影セッション内の固定4slot。measurementは出品画像へ使用しません。
+         * @enum {string}
+         */
+        SessionSlot: "front" | "back" | "tag" | "measurement";
+        /**
+         * @description 撮影後ShotAssessmentが判定できる3slot。measurementは含みません。
+         * @enum {string}
+         */
+        ShotSlot: "front" | "back" | "tag";
+        /** @enum {string} */
+        GuidanceCode: "MOVE_CLOSER" | "MOVE_FARTHER" | "CENTER_GARMENT" | "SHOW_FULL_GARMENT" | "WRONG_SIDE" | "MOVE_TO_TAG" | "PLACE_MARKER" | "MARKER_NOT_VISIBLE" | "FLATTEN_GARMENT" | "CAMERA_OVERHEAD" | "HOLD_STEADY" | "READY" | "AGENT_UNAVAILABLE";
+        GuidanceEvent: {
+            sessionId: string;
+            sequence: number;
+            shot: components["schemas"]["SessionSlot"];
+            code: components["schemas"]["GuidanceCode"];
+            message: string;
+            confidence: number;
+            /** @description Unix epoch milliseconds */
+            observedAt: number;
+            /** @description Unix epoch milliseconds。observedAtより後である必要があります。 */
+            expiresAt: number;
+        };
+        /** @enum {string} */
+        ConnectionState: "connecting" | "connected" | "reconnecting" | "disconnected";
+        /** @enum {string} */
+        ProviderName: "shot-assessor" | "vision-guidance" | "measurement-line" | "background-generator" | "garment-masker";
+        /** @enum {string} */
+        ProviderErrorCode: "TIMEOUT" | "UNAVAILABLE" | "INVALID_RESPONSE" | "INVALID_INPUT" | "UNKNOWN";
+        ProviderError: {
+            provider: components["schemas"]["ProviderName"];
+            code: components["schemas"]["ProviderErrorCode"];
+            message: string;
+            retryable: boolean;
+        };
+        ProviderErrorResponse: {
+            detail: string | components["schemas"]["ProviderError"];
+        };
+        ValidationErrorResponse: {
+            detail: string | {
+                [key: string]: unknown;
+            }[];
+        };
+        LiveKitTokenRequest: {
+            sessionId: string;
+        };
+        LiveKitTokenResponse: {
+            /** @description 短期のブラウザ接続token。実値やsecretは公開仕様へ記載しません。 */
+            token: string;
+            participantIdentity: string;
+            roomName: string;
+            /** @description Unix epoch seconds */
+            expiresAt: number;
+            livekitUrl: string;
+        };
+        /** @enum {string} */
+        ShotIssueCode: "TOO_DARK" | "TOO_BRIGHT" | "TOO_BLURRY" | "BLURRY" | "GARMENT_CROPPED" | "TAG_UNREADABLE" | "WRONG_SHOT";
+        /** @enum {string} */
+        ShotType: "front" | "back" | "tag" | "unknown";
+        /** @enum {string} */
+        ShotQuality: "ok" | "retry";
+        /** @enum {string} */
+        NextAction: "RETAKE" | "REQUEST_NEXT" | "COMPLETE";
+        ShotAssessment: {
+            shotType: components["schemas"]["ShotType"];
+            quality: components["schemas"]["ShotQuality"];
+            issues: components["schemas"]["ShotIssueCode"][];
+            missingShots: components["schemas"]["ShotSlot"][];
+            nextAction: components["schemas"]["NextAction"];
+        };
+        NormalizedPoint: {
+            x: number;
+            y: number;
+        };
+        MeasurementEndpoints: {
+            lengthStart: components["schemas"]["NormalizedPoint"];
+            lengthEnd: components["schemas"]["NormalizedPoint"];
+            widthStart: components["schemas"]["NormalizedPoint"];
+            widthEnd: components["schemas"]["NormalizedPoint"];
+        };
+        MeasurementPointSuggestion: {
+            lengthStart: components["schemas"]["NormalizedPoint"];
+            lengthEnd: components["schemas"]["NormalizedPoint"];
+            widthStart: components["schemas"]["NormalizedPoint"];
+            widthEnd: components["schemas"]["NormalizedPoint"];
+        };
+        MeasurementMarker: {
+            /**
+             * @description 専用マーカー外形1辺のcm値
+             * @constant
+             */
+            knownSideCm: 5;
+            corners: components["schemas"]["NormalizedPoint"][];
+            pxPerCm: number;
+        };
+        MeasurementLine: {
+            start: components["schemas"]["NormalizedPoint"];
+            end: components["schemas"]["NormalizedPoint"];
+            valueCm: number;
+        };
+        /** @enum {string} */
+        MeasurementSource: "ai" | "contour" | "user";
+        /** @enum {string} */
+        MeasurementStatus: "needs_review" | "approved_cv" | "approved_manual";
+        /** @enum {string} */
+        MeasurementFailureCode: "MARKER_MISSING" | "MARKER_MULTIPLE" | "MARKER_TOO_SMALL" | "MARKER_OCCLUDED" | "GARMENT_OUT_OF_FRAME" | "GARMENT_MARKER_OVERLAP" | "SEGMENTATION_FAILED" | "ENDPOINTS_INVALID";
+        MeasurementDraft: {
+            /** @description セッション内の一時参照。出品データへ保存しません。 */
+            imageId: string;
+            marker: components["schemas"]["MeasurementMarker"] | null;
+            length: components["schemas"]["MeasurementLine"];
+            width: components["schemas"]["MeasurementLine"];
+            source: components["schemas"]["MeasurementSource"];
+            status: components["schemas"]["MeasurementStatus"];
+        };
+        ApprovedMeasurement: {
+            /** @description セッション内の一時参照。出品データへ保存しません。 */
+            imageId: string;
+            marker: components["schemas"]["MeasurementMarker"] | null;
+            length: components["schemas"]["MeasurementLine"];
+            width: components["schemas"]["MeasurementLine"];
+            source: components["schemas"]["MeasurementSource"];
+            /** @enum {string} */
+            status: "approved_cv" | "approved_manual";
+        };
+        /** @enum {string} */
+        BackgroundStyleId: "studio_white" | "warm_neutral" | "light_wood";
+        BackgroundGenerationRequest: {
+            styleId: components["schemas"]["BackgroundStyleId"];
+        };
+        ShotAnalysisUpload: {
+            requestedShot: components["schemas"]["ShotSlot"];
+            /**
+             * Format: binary
+             * @description JPEG、PNG、またはWebPの撮影画像。最大10MiB。
+             */
+            file: string;
+        };
+        MeasurementPointsUpload: {
+            /**
+             * Format: binary
+             * @description JPEG、PNG、またはWebPの採寸画像。最大10MiB。
+             */
+            file: string;
+        };
+        FrontImageUpload: {
+            /**
+             * Format: binary
+             * @description front原本。mask生成専用で、生成背景へ転送しません。
+             */
+            file: string;
+        };
         ListingMediaRef: {
             id: string;
             /** @enum {string} */
@@ -820,6 +1073,13 @@ export interface components {
             /** @enum {string} */
             inventoryPolicy?: "SINGLE" | "MULTI";
             inventoryQuantity?: number;
+            /** @description 明示承認後に出品下書きへ渡す採寸メタデータだけ。画像・端点・scaleは保存しません。 */
+            garmentMeasurements?: {
+                lengthCm: number;
+                widthCm: number;
+                /** @enum {string} */
+                source: "approved_cv" | "approved_manual";
+            };
         } & (unknown | unknown);
         ListingUpdate: {
             title?: string;
@@ -1082,6 +1342,24 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["ErrorResponse"];
+            };
+        };
+        /** @description 撮影アシスタントのproviderが入力不正、timeout、利用不能、または不正な応答を返した */
+        ProviderFailure: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ProviderErrorResponse"];
+            };
+        };
+        /** @description リクエストの形式または値が不正 */
+        ValidationError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ValidationErrorResponse"];
             };
         };
     };
@@ -1362,6 +1640,150 @@ export interface operations {
                 content?: never;
             };
             503: components["responses"]["Unavailable"];
+        };
+    };
+    issueLiveKitToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LiveKitTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description 撮影セッション用LiveKit接続情報 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveKitTokenResponse"];
+                };
+            };
+            422: components["responses"]["ValidationError"];
+            503: components["responses"]["ProviderFailure"];
+        };
+    };
+    analyzeShot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["ShotAnalysisUpload"];
+            };
+        };
+        responses: {
+            /** @description 厳格に検証された撮影判定 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShotAssessment"];
+                };
+            };
+            413: components["responses"]["ProviderFailure"];
+            415: components["responses"]["ProviderFailure"];
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["ProviderFailure"];
+            503: components["responses"]["ProviderFailure"];
+            504: components["responses"]["ProviderFailure"];
+        };
+    };
+    suggestMeasurementPoints: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["MeasurementPointsUpload"];
+            };
+        };
+        responses: {
+            /** @description 採寸4端点の未承認提案 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasurementPointSuggestion"];
+                };
+            };
+            413: components["responses"]["ProviderFailure"];
+            415: components["responses"]["ProviderFailure"];
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["ProviderFailure"];
+            503: components["responses"]["ProviderFailure"];
+            504: components["responses"]["ProviderFailure"];
+        };
+    };
+    removeBackground: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["FrontImageUpload"];
+            };
+        };
+        responses: {
+            /** @description 正面原本と同じ寸法のmask-only PNG */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            413: components["responses"]["ProviderFailure"];
+            415: components["responses"]["ProviderFailure"];
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["ProviderFailure"];
+            503: components["responses"]["ProviderFailure"];
+            504: components["responses"]["ProviderFailure"];
+        };
+    };
+    generateBackground: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackgroundGenerationRequest"];
+            };
+        };
+        responses: {
+            /** @description 商品を含まない背景PNG候補 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            422: components["responses"]["ValidationError"];
+            502: components["responses"]["ProviderFailure"];
+            503: components["responses"]["ProviderFailure"];
+            504: components["responses"]["ProviderFailure"];
         };
     };
 }

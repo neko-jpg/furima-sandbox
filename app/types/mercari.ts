@@ -56,6 +56,20 @@ export interface ListingMediaRef {
   errorCode?: string;
 }
 
+/**
+ * The only measurement data that may cross from the guided-capture session
+ * into a listing draft. Session-scoped image/point/scale data stays transient.
+ * The source values match the approved measurement statuses in the API
+ * contract; this is a listing-domain projection, not the full CV result.
+ */
+export type GarmentMeasurementSource = 'approved_cv' | 'approved_manual';
+
+export interface GarmentMeasurements {
+  lengthCm: number;
+  widthCm: number;
+  source: GarmentMeasurementSource;
+}
+
 export interface ListingImageOrder {
   mediaId: string;
   order: number;
@@ -74,6 +88,8 @@ export interface ListingDraft {
 export type MercariItem = Omit<components["schemas"]["MercariItem"], "condition" | "images"> & {
   condition: string;
   images: string[];
+  /** Explicitly approved listing metadata; capture intermediates never belong here. */
+  garmentMeasurements?: GarmentMeasurements;
   sellerId?: string;
   isLiked?: boolean;
   likesCount: number;

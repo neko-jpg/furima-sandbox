@@ -1,7 +1,7 @@
 # Release Runbook
 
 1. 変更対象を確認し、画像Blob・secret・参考assetを公開対象へ混ぜない。
-2. `npm run typecheck`、`npm run lint`、`npm run docs:check`、`npm run qa:matrix`、`npm test`、`npm run security:audit`、`npm run qa:static`、`npm run security:mcp`、`npm run security:schemathesis`、`npm run e2e:pr`、`npm run load:smoke`を通す。
+2. API／provider／Compose変更では、次の順序を崩さず実行する。`npm run docs:check`、`npm run qa:matrix`、`npm run docs:site`、`npm run docs:validate-public`、`npm run typecheck`、`npm run lint`、`npm test`、`npm run test:backend:fixture`、`npm run qa:assistant-compose`、`docker compose config --quiet`、`npm run docs:wiki:check`。続けて`npm run security:audit`、`npm run qa:static`、`npm run security:mcp`、`npm run security:schemathesis`、`npm run e2e:pr`、`npm run load:smoke`を通す。
    MCP-Scanは常にローカル`inspect`でMCP定義を検査し、秘密管理した`SNYK_TOKEN`が利用できる場合はhosted解析も自動実行する。hosted解析を必須にする環境では`MCP_SCAN_REQUIRE_HOSTED=true`と`SNYK_TOKEN`を同時に設定する。hosted必須時のsecret欠落、scanner未導入、検出、空の解析結果はいずれも失敗としてリリースを止める。
 3. Cloudflare PagesはDirect Uploadで`main`だけへdeployする。`verify` workflow成功後、APIドキュメント生成元に変更がある場合だけ`docs-cloudflare-pages.yml`のdeployジョブが動き、UI、CI、Runbook、Wikiだけの変更ではskipされ、`docs-status`が成功することを確認する。明示的な手動実行は差分にかかわらず検証後にdeployする。進行中のdeploymentは後続runで中断せず直列に処理する。デプロイ前後にcanonical URL用と`*.mercari-ui-kit-api-docs.pages.dev`用のAccess ApplicationおよびAllow policyを確認し、両URLが未認証で拒否されることを確認する。
 4. Wikiは`docs/wiki`を正本として`npm run docs:wiki:check`後にWikiへ同期する。
@@ -11,3 +11,5 @@
 
 Cloudflare PagesにはAPI参照のみを出し、内部の復旧手順、状態payload、個人情報、secret値は載せません。PagesはCloudflare Accessで招待ユーザーだけに公開し、チーム限定の運用資料はWikiへ置きます。
 canonical URLは完全一致のAccess Application、個別のdeployment/Preview URLは`*.mercari-ui-kit-api-docs.pages.dev`のワイルドカードApplicationで保護します。最新の両URLが未認証でCloudflare Accessへリダイレクトされることを確認するまで共有せず、200を返す場合はAccess範囲を修正するまでリリースを止めます。
+
+撮影アシスタントのCompose統合はローカルfixtureとCI smokeまでを対象とし、`assistant-agent`とrembgは`live` profileに限定します。Cloudflare Pages、Access設定、production Workerへのデプロイはこの統合変更では実行しません。

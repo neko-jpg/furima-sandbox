@@ -22,12 +22,15 @@ async function filesUnder(directory) {
 const matrix = YAML.parse(await read('docs/qa/test-matrix.yaml'));
 const openapi = YAML.parse(await read('docs/api/openapi.yaml'));
 const routeFiles = (await filesUnder('app/api')).filter((path) => path.endsWith('/route.ts'));
+const contractFirstPythonService = new Set(Object.entries(openapi.paths ?? {})
+  .filter(([, definition]) => definition?.['x-implementation-status'] === 'python-service')
+  .map(([path]) => path));
 const routePaths = routeFiles.map((path) => {
   const parts = path.replace(/^app\/api\//u, '').replace(/\/route\.ts$/u, '').split('/').filter(Boolean);
   return `/api/${parts.map((part) => part.startsWith('[') && part.endsWith(']') ? `{${part.slice(1, -1)}}` : part).join('/')}`;
 });
 for (const route of routePaths) if (!openapi.paths[route]) fail(`route is not in OpenAPI: ${route}`);
-for (const path of Object.keys(openapi.paths)) if (path.startsWith('/api/') && !routePaths.includes(path) && !['/api/listings', '/api/listings/{itemId}', '/api/wallet', '/api/wallet/deposit', '/api/wallet/withdraw', '/api/profile', '/api/follows', '/api/follows/{actorId}', '/api/follows/{actorId}/summary'].includes(path)) fail(`OpenAPI path has no implementation or explicit contract-first exception: ${path}`);
+for (const path of Object.keys(openapi.paths)) if (path.startsWith('/api/') && !routePaths.includes(path) && !contractFirstPythonService.has(path) && !['/api/listings', '/api/listings/{itemId}', '/api/wallet', '/api/wallet/deposit', '/api/wallet/withdraw', '/api/profile', '/api/follows', '/api/follows/{actorId}', '/api/follows/{actorId}/summary'].includes(path)) fail(`OpenAPI path has no implementation or explicit contract-first exception: ${path}`);
 
 const types = await read('app/types/mercari.ts');
 const apiBlock = types.match(/export interface MercariAgentAPI \{([\s\S]*?)\n\}/u)?.[1] ?? '';
@@ -58,8 +61,24 @@ for (const suite of matrix.suites ?? []) {
     try { await stat(join(root, testPath)); } catch { fail(`suite ${suite.id} references missing evidence: ${testPath}`); }
   }
 }
-for (const inventory of Object.values(matrix.inventories ?? {})) {
+for (const [inventoryName, inventory] of Object.entries(matrix.inventories ?? {})) {
   if (!matrix.suites.some((suite) => suite.id === inventory.suite)) fail(`inventory has no suite: ${inventory.suite}`);
+  const sourceDeclaration = typeof inventory.source === 'string' ? inventory.source : '';
+  const sources = sourceDeclaration.split(',').map((source) => source.split('#', 1)[0].trim()).filter(Boolean);
+  if (sources.length === 0) fail(`inventory ${inventoryName} must declare a source`);
+  for (const source of sources) {
+    if (source.endsWith('/**') || source.includes('**/')) {
+      const baseDirectory = source.split('/**', 1)[0];
+      const sourceFiles = (await filesUnder(baseDirectory)).filter((path) => {
+        if (source.endsWith('*.py')) return path.endsWith('.py');
+        return true;
+      });
+      if (sourceFiles.length === 0) fail(`inventory ${inventoryName} source has no files: ${source}`);
+    } else {
+      try { await stat(join(root, source)); } catch { fail(`inventory ${inventoryName} source is missing: ${source}`); }
+    }
+  }
 }
 
-console.log(`[qa:matrix] routes=${routePaths.length}, browserApiMethods=${browserMethods.length}, errorCodes=${errorCodes.length}, interactiveFiles=${interactiveFiles}, interactiveMarkers=${interactiveMarkers}, policy=${matrix.policy.missingCoverage}`);
+const backendPythonFiles = (await filesUnder('services/listing_photo_assistant')).filter((path) => path.endsWith('.py'));
+console.log(`[qa:matrix] routes=${routePaths.length}, browserApiMethods=${browserMethods.length}, errorCodes=${errorCodes.length}, interactiveFiles=${interactiveFiles}, interactiveMarkers=${interactiveMarkers}, backendPythonFiles=${backendPythonFiles.length}, policy=${matrix.policy.missingCoverage}`);

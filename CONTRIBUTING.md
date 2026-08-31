@@ -6,6 +6,8 @@
 - `npm run check:shared`: 固定Nodeと共有用コンテナファイルの最小チェックです。変更前後に実行します。
 - `npm run dev`: 軽量UI開発。ローカルfixtureで起動し、通常の編集/HMRに使います。既定URLは<http://localhost:3000>です。
 - `docker compose up --build`: Node版UI/fixtureを起動します。編集中のソースを自動同期する場合は`docker compose up --build --watch`を使います。Dockerは本番Cloudflare Workerと同じruntimeではありません。
+- ComposeにはFurima UIと出品写真アシスタントFastAPIが含まれます。通常は`fixture`で起動し、LiveKit Agentとrembgは`--profile live`を付けた場合だけ起動します。
+- Python依存はルートの`pyproject.toml`と`uv.lock`を正本にします。`uv sync --frozen`で開発依存を含めて再現し、`uv run pytest -q`でPythonテストを実行します。
 - `npm run dev:edge`: WranglerでCloudflare Worker/D1相当を確認します。UI/fixture用Composeとは別経路です。
 - `npm run build`: `dist`と`.next`を削除してからクリーンビルドします。
 

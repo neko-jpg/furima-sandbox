@@ -28,17 +28,85 @@ jobs:
           python-version: '3.11'
       - run: npm ci
       - run: python -m pip install --disable-pip-version-check semgrep==1.173.0
-      - run: npm run typecheck
-      - run: npm run framework:check
-      - run: npx wrangler types worker/generated-env.d.ts --include-runtime=false --check
+      # Keep the API-doc contract order from AGENTS.md reproducible in CI.
+      - run: npm run docs:check
+      - run: npm run qa:matrix
+      - run: npm run docs:site
+      - run: npm run docs:validate-public
       - run: npm run types:sync
       - run: git diff --quiet app/types/openapi.d.ts app/types/mercari.ts
       - run: git diff --quiet worker/generated-env.d.ts
+      - run: npm run typecheck
+      - run: npm run framework:check
+      - run: npx wrangler types worker/generated-env.d.ts --include-runtime=false --check
       - run: npm run lint
       - run: npm run qa:static
-      - run: npm run qa:matrix
-      - run: npm run docs:check
       - run: npm run assets:audit
+      - run: npm run docs:wiki:check
+
+  backend-fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.7
+      - name: Verify Python lockfile
+        run: |
+          test -f pyproject.toml
+          test -f uv.lock
+          uv lock --check
+          uv sync --frozen
+      - name: Run backend fixture tests
+        env:
+          PROVIDER_MODE: fixture
+          OPENAI_API_KEY: ''
+          LIVEKIT_URL: ''
+          LIVEKIT_API_KEY: ''
+          LIVEKIT_API_SECRET: ''
+          BACKGROUND_GENERATOR_URL: ''
+          REMBG_URL: ''
+        run: uv run --frozen --no-sync pytest -q services/listing_photo_assistant/tests tests/test_measurement_provider.py
+
+  assistant-compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - name: Validate assistant Compose boundaries
+        run: npm run qa:assistant-compose
+      - name: Validate fixture Compose configuration
+        env:
+          PROVIDER_MODE: fixture
+          VITE_LISTING_ASSISTANT_MODE: fixture
+          OPENAI_API_KEY: ''
+          LIVEKIT_URL: ''
+          LIVEKIT_API_KEY: ''
+          LIVEKIT_API_SECRET: ''
+        run: |
+          docker compose config --quiet
+          docker compose --profile live config --quiet
+      - name: Start fixture Compose services
+        env:
+          PROVIDER_MODE: fixture
+          VITE_LISTING_ASSISTANT_MODE: fixture
+          OPENAI_API_KEY: ''
+          LIVEKIT_URL: ''
+          LIVEKIT_API_KEY: ''
+          LIVEKIT_API_SECRET: ''
+        run: docker compose up --build --detach assistant-api ui
+      - name: Run assistant health and CORS smoke
+        run: npm run smoke:assistant-compose
+      - if: always()
+        run: docker compose down --remove-orphans
 
   unit:
     runs-on: ubuntu-latest

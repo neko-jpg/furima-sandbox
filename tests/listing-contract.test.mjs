@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createListingPhotoAssistantDraftPatch } from '../app/domain/listingPhotoAssistantHandoff.ts';
+import { createListingHandoff } from '../app/features/guided-capture/ui/contracts.ts';
+import { MeasurementPointSuggestionSchema } from '../app/types/measurement.ts';
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
@@ -62,6 +65,113 @@ test('listing domain enforces official price and condition bounds', async () => 
   assert.match(source, /MAX_LISTING_PRICE = 9_999_999/);
   assert.match(source, /全体的に状態が悪い/);
   assert.match(source, /imageReferenceError/);
+});
+
+test('listing photo assistant handoff keeps only approved media refs and measurements', () => {
+  const result = createListingPhotoAssistantDraftPatch({
+    proceedToListing: true,
+    approvedImages: {
+      front: { id: 'media_front', status: 'ready', measurementImage: 'media_measurement' },
+      back: { id: 'media_back', status: 'ready', points: { x: 0.5, y: 0.5 } },
+      tag: { id: 'media_tag', status: 'ready', scale: 12 },
+    },
+    garmentMeasurements: { lengthCm: 70.5, widthCm: 52, source: 'approved_cv' },
+    guidanceEvent: { sessionId: 'transient', sequence: 4 },
+    background: { status: 'unapproved', image: 'data:image/png;base64,secret' },
+  }, { imageRefs: ['media_existing'] });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.patch.imageRefs, ['media_existing', 'media_front', 'media_back', 'media_tag']);
+  assert.deepEqual(result.patch.garmentMeasurements, { lengthCm: 70.5, widthCm: 52, source: 'approved_cv' });
+  assert.deepEqual(Object.keys(result.patch).sort(), ['garmentMeasurements', 'imageRefs']);
+  assert.equal('measurementImage' in result.patch, false);
+  assert.equal('points' in result.patch, false);
+  assert.equal('scale' in result.patch, false);
+  assert.equal('guidanceEvent' in result.patch, false);
+  assert.equal('background' in result.patch, false);
+});
+
+test('listing photo assistant handoff requires explicit progression and ready unique images', () => {
+  const base = {
+    approvedImages: {
+      front: { id: 'media_front', status: 'ready' },
+      back: { id: 'media_back', status: 'ready' },
+      tag: { id: 'media_tag', status: 'ready' },
+    },
+    garmentMeasurements: { lengthCm: 70, widthCm: 50, source: 'approved_manual' },
+  };
+  const notApproved = createListingPhotoAssistantDraftPatch({ ...base, proceedToListing: false });
+  assert.equal(notApproved.ok, false);
+  if (!notApproved.ok) assert.equal(notApproved.code, 'NOT_EXPLICITLY_APPROVED');
+
+  const notReady = createListingPhotoAssistantDraftPatch({
+    ...base,
+    proceedToListing: true,
+    approvedImages: { ...base.approvedImages, back: { id: 'media_back', status: 'processing' } },
+  });
+  assert.equal(notReady.ok, false);
+  if (!notReady.ok) assert.equal(notReady.code, 'INVALID_APPROVED_IMAGE');
+
+  const duplicate = createListingPhotoAssistantDraftPatch({
+    ...base,
+    proceedToListing: true,
+    approvedImages: { ...base.approvedImages, tag: { id: 'media_front', status: 'ready' } },
+  });
+  assert.equal(duplicate.ok, false);
+  if (!duplicate.ok) assert.equal(duplicate.code, 'DUPLICATE_APPROVED_IMAGE');
+
+  const invalidMeasurement = createListingPhotoAssistantDraftPatch({
+    ...base,
+    proceedToListing: true,
+    garmentMeasurements: { lengthCm: 0, widthCm: 50, source: 'approved_manual' },
+  });
+  assert.equal(invalidMeasurement.ok, false);
+  if (!invalidMeasurement.ok) assert.equal(invalidMeasurement.code, 'INVALID_MEASUREMENTS');
+});
+
+test('guided browser handoff exports only explicitly reviewed local media ids', () => {
+  const handoff = createListingHandoff({
+    sessionId: 'transient-session',
+    slots: {
+      front: { slot: 'front', status: 'captured', mediaId: 'media_front', previewUrl: 'blob:front', source: 'camera' },
+      back: { slot: 'back', status: 'approved', mediaId: 'media_back', previewUrl: 'blob:back', source: 'album' },
+      tag: { slot: 'tag', status: 'approved', mediaId: 'media_tag', previewUrl: 'blob:tag', source: 'album' },
+      measurement: { slot: 'measurement', status: 'approved' },
+    },
+    measurement: { lengthCm: 70, widthCm: 50, source: 'approved_manual' },
+    background: { status: 'approved', previewUrl: 'data:image/png;base64,transient' },
+  });
+
+  assert.deepEqual(handoff.images, [
+    { slot: 'back', mediaId: 'media_back' },
+    { slot: 'tag', mediaId: 'media_tag' },
+  ]);
+  assert.deepEqual(handoff.garmentMeasurements, { lengthCm: 70, widthCm: 50, source: 'approved_manual' });
+  assert.equal('sessionId' in handoff, false);
+  assert.equal('approvedBackground' in handoff, false);
+  assert.equal(JSON.stringify(handoff).includes('blob:'), false);
+  assert.equal(JSON.stringify(handoff).includes('data:image/'), false);
+});
+
+test('measurement point wire contract accepts four endpoints without confidence', () => {
+  const endpoints = {
+    lengthStart: { x: 0.5, y: 0.1 },
+    lengthEnd: { x: 0.5, y: 0.9 },
+    widthStart: { x: 0.2, y: 0.5 },
+    widthEnd: { x: 0.8, y: 0.5 },
+  };
+  assert.deepEqual(MeasurementPointSuggestionSchema.parse(endpoints), endpoints);
+  assert.equal(MeasurementPointSuggestionSchema.safeParse({ ...endpoints, confidence: 0.9 }).success, false);
+});
+
+test('context exposes the guarded listing photo assistant handoff', async () => {
+  const context = await read('app/context/MercariContext.tsx');
+  const types = await read('app/types/mercari.ts');
+  assert.match(context, /handoffListingPhotoAssistant/);
+  assert.match(context, /createListingPhotoAssistantDraftPatch/);
+  assert.match(types, /garmentMeasurements\?: GarmentMeasurements/);
+  assert.match(types, /approved_cv.*approved_manual/);
 });
 
 test('API source of truth and docs checks are wired', async () => {
