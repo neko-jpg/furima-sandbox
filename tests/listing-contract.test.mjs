@@ -24,6 +24,12 @@ test('listing flow exposes both photo inputs and the 20-image contract', async (
   assert.match(source, /MediaStreamTrack/);
   assert.match(source, /captureCameraFrame/);
   assert.match(source, /fixed.*inset-0/);
+  assert.match(source, /handleGuidedStreamReady/);
+  assert.match(source, /publishCameraStream: handleGuidedStreamReady/);
+  assert.match(source, /stopGuidedCaptureSession/);
+  assert.match(source, /guidedCameraStreamRef/);
+  assert.match(source, /readyState !== 'ended'/);
+  assert.match(source, /transient connection race/);
 });
 
 test('mobile home tabs and sandbox account contracts are shared and documented', async () => {
@@ -137,7 +143,7 @@ test('guided browser handoff exports only explicitly reviewed local media ids', 
       front: { slot: 'front', status: 'captured', mediaId: 'media_front', previewUrl: 'blob:front', source: 'camera' },
       back: { slot: 'back', status: 'approved', mediaId: 'media_back', previewUrl: 'blob:back', source: 'album' },
       tag: { slot: 'tag', status: 'approved', mediaId: 'media_tag', previewUrl: 'blob:tag', source: 'album' },
-      measurement: { slot: 'measurement', status: 'approved' },
+      measurement: { slot: 'measurement', status: 'approved', mediaId: 'media_measurement', previewUrl: 'blob:measurement', source: 'camera' },
     },
     measurement: { lengthCm: 70, widthCm: 50, source: 'approved_manual' },
     background: { status: 'approved', previewUrl: 'data:image/png;base64,transient' },
@@ -148,6 +154,7 @@ test('guided browser handoff exports only explicitly reviewed local media ids', 
     { slot: 'tag', mediaId: 'media_tag' },
   ]);
   assert.deepEqual(handoff.garmentMeasurements, { lengthCm: 70, widthCm: 50, source: 'approved_manual' });
+  assert.equal(handoff.images.some(({ mediaId }) => mediaId === 'media_measurement'), false);
   assert.equal('sessionId' in handoff, false);
   assert.equal('approvedBackground' in handoff, false);
   assert.equal(JSON.stringify(handoff).includes('blob:'), false);

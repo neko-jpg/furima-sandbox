@@ -152,12 +152,31 @@ const asListingInput = (form: DraftFormData, media: ListingMediaItem[], selected
 
 export const ListingView: React.FC = () => {
   const { isListingModalOpen, setIsListingModalOpen, createListingDraft, updateListingDraft, handoffListingPhotoAssistant, deleteListingDraft: deleteDomainListingDraft, submitListing, activeActor, isDeviceFrame } = useMercari();
-  const guidedCapture = useGuidedCaptureController();
-  const stopGuidedCapture = guidedCapture.stop;
-  const publishGuidedCameraStream = guidedCapture.publishCameraStream;
-  useEffect(() => {
-    if (!isListingModalOpen && guidedCapture.state.phase !== 'idle') stopGuidedCapture();
-  }, [guidedCapture.state.phase, isListingModalOpen, stopGuidedCapture]);
+  const rawGuidedCapture = useGuidedCaptureController();
+  const publishRawGuidedCameraStream = rawGuidedCapture.publishCameraStream;
+  const guidedCameraStreamRef = useRef<MediaStream | null>(null);
+  const stopGuidedCameraStream = useCallback(() => {
+    const stream = guidedCameraStreamRef.current;
+    guidedCameraStreamRef.current = null;
+    stream?.getTracks().forEach((track) => track.stop());
+  }, []);
+  const handleGuidedStreamReady = useCallback(async (stream: MediaStream): Promise<void> => {
+    const previousStream = guidedCameraStreamRef.current;
+    if (previousStream && previousStream !== stream) previousStream.getTracks().forEach((track) => track.stop());
+    guidedCameraStreamRef.current = stream;
+    await publishRawGuidedCameraStream(stream);
+  }, [publishRawGuidedCameraStream]);
+  const stopGuidedCapture = rawGuidedCapture.stop;
+  const publishGuidedCameraStream = publishRawGuidedCameraStream;
+  const stopGuidedCaptureSession = useCallback(() => {
+    stopGuidedCameraStream();
+    stopGuidedCapture();
+  }, [stopGuidedCameraStream, stopGuidedCapture]);
+  // GuidedCapturePanel forwards its optional onStreamReady callback to the
+  // controller when no override is supplied. Decorating the controller keeps
+  // the parent boundary compatible with both the old panel and the new camera
+  // callback API while retaining one LiveKit publisher and one cleanup path.
+  const guidedCapture = useMemo<GuidedCaptureController>(() => ({ ...rawGuidedCapture, publishCameraStream: handleGuidedStreamReady, stop: stopGuidedCaptureSession }), [handleGuidedStreamReady, rawGuidedCapture, stopGuidedCaptureSession]);
   const [form, setForm] = useState<DraftFormData>(initialForm);
   const [media, setMedia] = useState<ListingMediaItem[]>([]);
   const [step, setStep] = useState<ListingStep>('photos');
@@ -198,7 +217,12 @@ export const ListingView: React.FC = () => {
     cameraStreamRef.current = null;
     if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
   };
+
   const closeCamera = () => { stopCameraStream(); setIsCameraOpen(false); };
+
+  useEffect(() => {
+    if (!isListingModalOpen && guidedCapture.state.phase !== 'idle') stopGuidedCaptureSession();
+  }, [guidedCapture.state.phase, isListingModalOpen, stopGuidedCaptureSession]);
 
   const selectedFamily = useMemo(() => CATALOG_FAMILIES.find((family) => family.id === form.familyId), [form.familyId]);
   const availableVariants = useMemo(() => CATALOG_VARIANTS.filter((variant) => variant.familyId === form.familyId), [form.familyId]);
@@ -234,7 +258,7 @@ export const ListingView: React.FC = () => {
   const setCategory = (value: string) => setForm((current) => ({ ...current, category: value }));
 
   const resetForm = (remainingDrafts = drafts) => {
-    stopGuidedCapture();
+    stopGuidedCaptureSession();
     void cleanupUnusedMedia(media.map((item) => item.ref.id), remainingDrafts).catch(() => setError('不要な画像のクリーンアップに失敗しました。後で再試行してください。'));
     if (aiTimerRef.current !== null) window.clearTimeout(aiTimerRef.current);
     aiTimerRef.current = null;
@@ -247,9 +271,9 @@ export const ListingView: React.FC = () => {
     if (!force && isDirty && (form.title.trim() || form.price || media.length)) {
       if (!window.confirm('保存されていない変更があります。出品フローを閉じますか？')) return;
     }
-    stopGuidedCapture();
+    stopGuidedCaptureSession();
     setIsListingModalOpen(false);
-  }, [form.price, form.title, isDirty, media.length, setIsListingModalOpen, stopGuidedCapture]);
+  }, [form.price, form.title, isDirty, media.length, setIsListingModalOpen, stopGuidedCaptureSession]);
   useEffect(() => {
     closeFlowRef.current = closeFlow;
   }, [closeFlow]);
@@ -314,7 +338,20 @@ export const ListingView: React.FC = () => {
     }
   }, [guidedCapture.state.connectionState, publishGuidedCameraStream]);
 
-  useEffect(() => () => stopCameraStream(), []);
+  useEffect(() => {
+    if (guidedCapture.state.connectionState !== 'connected') return;
+    const stream = guidedCameraStreamRef.current;
+    if (!stream || !stream.getTracks().some((track) => track.readyState !== 'ended')) return;
+    // The camera can open while the room is still connecting. Retry the
+    // publish after LiveKit reaches connected so local capture remains usable
+    // without losing the first frame to a transient connection race.
+    void publishGuidedCameraStream(stream).catch(() => undefined);
+  }, [guidedCapture.state.connectionState, publishGuidedCameraStream]);
+
+  useEffect(() => () => {
+    stopCameraStream();
+    stopGuidedCameraStream();
+  }, [stopGuidedCameraStream]);
 
   const processFiles = async (fileList: FileList | File[], source: 'camera' | 'album') => {
     const files = Array.from(fileList);
@@ -527,22 +564,23 @@ export const ListingView: React.FC = () => {
       setError('AI撮影アシスタントを開始した場合は、front・back・tag、採寸、写真確認を完了してから出品してください。途中で通常の出品へ進む場合はアシスタントを終了してください。');
       return;
     }
+    const guidedHandoff = guidedActive ? guidedCapture.getListingHandoff() : null;
+    const approvedImages = guidedHandoff?.images.reduce<Record<string, ListingMediaRef>>((result, image) => {
+      const ref = media.find((candidate) => candidate.ref.id === image.mediaId)?.ref;
+      if (ref) result[image.slot] = ref;
+      return result;
+    }, {});
+    const approvedMeasurement = guidedHandoff?.garmentMeasurements;
+    if (guidedActive && (!approvedImages?.front || !approvedImages.back || !approvedImages.tag || !approvedMeasurement)) {
+      setError('AI撮影アシスタントのfront・back・tagと採寸承認を完了してから出品してください。');
+      return;
+    }
     const input = asListingInput(form, media, selectedFamily, selectedVariant);
     let created = currentDraftId ? updateListingDraft(currentDraftId, input) : createListingDraft(input);
     if (!created.ok && currentDraftId && created.error === 'DRAFT_NOT_FOUND') created = createListingDraft(input);
     if (!created.ok) { setError(created.message || '下書きを作成できませんでした。seller actorへ切り替えてください。'); return; }
-    const guidedHandoff = guidedActive ? guidedCapture.getListingHandoff() : null;
     if (guidedActive) {
-      const approvedImages = guidedHandoff?.images.reduce<Record<string, ListingMediaRef>>((result, image) => {
-        const ref = media.find((candidate) => candidate.ref.id === image.mediaId)?.ref;
-        if (ref) result[image.slot] = ref;
-        return result;
-      }, {});
-      const approvedMeasurement = guidedHandoff?.garmentMeasurements;
-      if (!approvedImages?.front || !approvedImages.back || !approvedImages.tag || !approvedMeasurement) {
-        setError('AI撮影アシスタントのfront・back・tagと採寸承認を完了してから出品してください。');
-        return;
-      }
+      if (!approvedImages?.front || !approvedImages.back || !approvedImages.tag || !approvedMeasurement) return;
       const handoff = handoffListingPhotoAssistant(created.data.draftId, {
         proceedToListing: true,
         approvedImages: { front: approvedImages.front, back: approvedImages.back, tag: approvedImages.tag },
