@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import struct
 import zlib
 from collections.abc import Awaitable, Callable, Mapping
@@ -27,6 +28,7 @@ MAX_INPUT_BYTES = 10 * 1024 * 1024
 MAX_MASK_PNG_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_DIMENSION = 16_384
 MAX_IMAGE_PIXELS = 16_777_216
+MASK_PROCESSING_TIMEOUT_SECONDS = 35.0
 ALLOWED_INPUT_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -149,16 +151,27 @@ class RembgBackend(Protocol):
 class HttpRembgBackend:
     """Minimal multipart client for the private rembg sidecar."""
 
-    def __init__(self, endpoint: str, *, timeout_seconds: float = 35.0) -> None:
+    def __init__(self, endpoint: str, *, timeout_seconds: float = MASK_PROCESSING_TIMEOUT_SECONDS) -> None:
         from urllib.parse import urlparse
 
         parsed = urlparse(endpoint.strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
             raise ValueError("rembg endpoint must be an absolute http(s) URL")
-        if timeout_seconds <= 0:
-            raise ValueError("rembg timeout must be positive")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(float(timeout_seconds))
+            or float(timeout_seconds) <= 0
+            or float(timeout_seconds) > 120
+        ):
+            raise ValueError("rembg timeout must be finite and between 0 and 120 seconds")
         self.endpoint = endpoint.strip()
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = float(timeout_seconds)
 
     def remove(self, source: bytes) -> bytes:
         boundary = "----furima-rembg-boundary"
@@ -179,8 +192,16 @@ class HttpRembgBackend:
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 result = response.read(MAX_MASK_PNG_BYTES + 1)
-        except (OSError, URLError) as error:
+        except TimeoutError as error:
+            raise _error("TIMEOUT", "rembg sidecar timed out", retryable=True) from error
+        except URLError as error:
+            if isinstance(getattr(error, "reason", None), TimeoutError):
+                raise _error("TIMEOUT", "rembg sidecar timed out", retryable=True) from error
             raise _error("UNAVAILABLE", "rembg sidecar is unavailable", retryable=True) from error
+        except OSError as error:
+            raise _error("UNAVAILABLE", "rembg sidecar is unavailable", retryable=True) from error
+        if not isinstance(result, bytes):
+            raise _error("INVALID_MASK", "rembg sidecar returned invalid bytes", retryable=True)
         if len(result) > MAX_MASK_PNG_BYTES:
             raise _error("INVALID_MASK", "rembg sidecar returned an oversized mask", retryable=True)
         return result
@@ -304,7 +325,10 @@ def _decode_png(data: bytes, *, allow_rgba: bool) -> tuple[MaskPngInfo, int]:
     ):
         raise _error("INVALID_MASK", "Mask PNG contains incomplete or unsupported chunks")
     try:
-        raw = zlib.decompress(idat)
+        decompressor = zlib.decompressobj()
+        raw = decompressor.decompress(idat) + decompressor.flush()
+        if not decompressor.eof or decompressor.unused_data:
+            raise zlib.error("incomplete or trailing compressed data")
     except zlib.error as error:
         raise _error("INVALID_MASK", "Mask PNG pixel data is not valid zlib") from error
     pixels = _unfilter_png(raw, width, height, channels)
@@ -448,8 +472,22 @@ class FixtureGarmentMasker:
 class RembgGarmentMasker:
     """Adapter seam for rembg or an equivalent live segmentation backend."""
 
-    def __init__(self, backend: RembgBackend | Callable[[bytes], bytes | Awaitable[bytes]]) -> None:
+    def __init__(
+        self,
+        backend: RembgBackend | Callable[[bytes], bytes | Awaitable[bytes]],
+        *,
+        timeout_seconds: float = MASK_PROCESSING_TIMEOUT_SECONDS,
+    ) -> None:
         self._backend = backend
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(float(timeout_seconds))
+            or float(timeout_seconds) <= 0
+            or float(timeout_seconds) > 120
+        ):
+            raise ValueError("rembg timeout must be finite and between 0 and 120 seconds")
+        self.timeout_seconds = float(timeout_seconds)
 
     async def mask(self, input: MaskInput) -> MaskResult:
         try:
@@ -458,9 +496,11 @@ class RembgGarmentMasker:
             # The HTTP rembg adapter is synchronous; never block FastAPI's
             # event loop while waiting on the sidecar.  Async test/injection
             # seams remain supported because their coroutine is awaited below.
-            raw = await asyncio.to_thread(remove, image.data)
-            if inspect.isawaitable(raw):
-                raw = await raw
+            async def invoke_backend() -> object:
+                raw = await asyncio.to_thread(remove, image.data)
+                return await raw if inspect.isawaitable(raw) else raw
+
+            raw = await asyncio.wait_for(invoke_backend(), timeout=self.timeout_seconds)
             if not isinstance(raw, bytes) or not raw:
                 raise _error("INVALID_MASK", "Live provider returned no mask")
             # Validate the provider PNG fully before extracting alpha.  RGBA
@@ -475,6 +515,8 @@ class RembgGarmentMasker:
             return MaskResult.success_result(png, info)
         except ProviderError as error:
             return MaskResult.failure(error)
+        except TimeoutError:
+            return MaskResult.failure(_error("TIMEOUT", "Live mask provider timed out", retryable=True))
         except Exception:
             return MaskResult.failure(_error("PROVIDER_FAILURE", "Live mask provider failed", retryable=True))
 
@@ -566,6 +608,7 @@ __all__ = [
     "MAX_IMAGE_PIXELS",
     "MAX_INPUT_BYTES",
     "MAX_MASK_PNG_BYTES",
+    "MASK_PROCESSING_TIMEOUT_SECONDS",
     "MAX_PNG_BYTES",
     "MaskContractError",
     "MaskInput",

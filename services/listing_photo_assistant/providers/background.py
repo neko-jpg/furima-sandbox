@@ -12,8 +12,8 @@ import asyncio
 import base64
 import binascii
 import inspect
-import math
 import json
+import math
 import struct
 import zlib
 from collections.abc import Awaitable, Callable, Mapping
@@ -33,6 +33,7 @@ _BACKGROUND_STYLE_ALLOWLIST = frozenset(BACKGROUND_STYLE_IDS)
 BACKGROUND_STYLE_ID_MAX_BYTES = 64
 MAX_BACKGROUND_PNG_BYTES = 10 * 1024 * 1024
 MAX_BACKGROUND_DIMENSION = 1600
+BACKGROUND_GENERATION_TIMEOUT_SECONDS = 60.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 BACKGROUND_PROMPTS: Mapping[BackgroundStyleId, str] = {
@@ -67,6 +68,18 @@ def validate_style_id(style_id: object) -> BackgroundStyleId:
 
 def background_prompt(style_id: object) -> str:
     return BACKGROUND_PROMPTS[validate_style_id(style_id)]
+
+
+def _validated_timeout(value: object, *, name: str, maximum: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+        or float(value) > maximum
+    ):
+        raise ValueError(f"{name} must be finite and between 0 and {maximum:g} seconds")
+    return float(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +173,10 @@ def validate_background_png(data: bytes) -> BackgroundPngInfo:
     if not idat:
         raise ProviderError("INVALID_RESPONSE", "Background PNG has no pixel data", retryable=True)
     try:
-        raw = zlib.decompress(idat)
+        decompressor = zlib.decompressobj()
+        raw = decompressor.decompress(idat) + decompressor.flush()
+        if not decompressor.eof or decompressor.unused_data:
+            raise zlib.error("incomplete or trailing compressed data")
     except zlib.error as error:
         raise ProviderError("INVALID_RESPONSE", "Background PNG pixel data is invalid", retryable=True) from error
     row_size = width * channels
@@ -275,13 +291,26 @@ class FixtureBackgroundGenerator:
 class LiveBackgroundGenerator:
     """Adapter seam for an injected text-only live generator."""
 
-    def __init__(self, client: TextPromptGenerator | PromptGeneratorCallable) -> None:
+    def __init__(
+        self,
+        client: TextPromptGenerator | PromptGeneratorCallable,
+        *,
+        timeout_seconds: float = BACKGROUND_GENERATION_TIMEOUT_SECONDS,
+    ) -> None:
         self._client = client
+        self.timeout_seconds = _validated_timeout(
+            timeout_seconds,
+            name="background timeout",
+            maximum=120.0,
+        )
 
     async def generate(self, style_id: str | BackgroundGenerationInput) -> BackgroundResult:
         try:
             request = _input(style_id)
-            raw = await _maybe_await(_call(self._client, background_prompt(request.style_id)))
+            async def invoke() -> object:
+                return await _maybe_await(_call(self._client, background_prompt(request.style_id)))
+
+            raw = await asyncio.wait_for(invoke(), timeout=self.timeout_seconds)
             return _validated(raw)
         except ProviderError as error:
             return BackgroundResult.failure(error)
@@ -324,6 +353,7 @@ class OpenAIBackgroundGenerator(LiveBackgroundGenerator):
         model: str = "gpt-image-1",
         *,
         size: str = "1024x1024",
+        timeout_seconds: float = BACKGROUND_GENERATION_TIMEOUT_SECONDS,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ProviderError("INVALID_INPUT", "Background model must be non-empty", retryable=False)
@@ -332,7 +362,7 @@ class OpenAIBackgroundGenerator(LiveBackgroundGenerator):
         self._client = client
         self._model = model
         self._size = size
-        super().__init__(self._generate_prompt)
+        super().__init__(self._generate_prompt, timeout_seconds=timeout_seconds)
 
     async def _generate_prompt(self, prompt: str) -> bytes:
         raw = self._client.generate(
@@ -373,17 +403,14 @@ class HttpBackgroundGenerator(LiveBackgroundGenerator):
             or parsed.password is not None
         ):
             raise ValueError("background endpoint must be an absolute http(s) URL")
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or float(timeout_seconds) <= 0
-            or float(timeout_seconds) > 120
-        ):
-            raise ValueError("background timeout must be finite and between 0 and 120 seconds")
+        timeout_seconds = _validated_timeout(
+            timeout_seconds,
+            name="background timeout",
+            maximum=120.0,
+        )
         self.endpoint = endpoint.strip()
-        self.timeout_seconds = float(timeout_seconds)
-        super().__init__(self._request_prompt)
+        self.timeout_seconds = timeout_seconds
+        super().__init__(self._request_prompt, timeout_seconds=timeout_seconds)
 
     async def _request_prompt(self, prompt: str) -> bytes:
         def request() -> bytes:
@@ -410,14 +437,14 @@ class HttpBackgroundGenerator(LiveBackgroundGenerator):
                         retryable=True,
                     )
                 return result
-            except (TimeoutError, OSError, URLError) as error:
-                code = "TIMEOUT" if isinstance(error, TimeoutError) else "UNAVAILABLE"
-                message = (
-                    "Background provider timed out"
-                    if code == "TIMEOUT"
-                    else "Background provider is unavailable"
-                )
-                raise ProviderError(code, message, retryable=True) from error
+            except TimeoutError as error:
+                raise ProviderError("TIMEOUT", "Background provider timed out", retryable=True) from error
+            except URLError as error:
+                if isinstance(getattr(error, "reason", None), TimeoutError):
+                    raise ProviderError("TIMEOUT", "Background provider timed out", retryable=True) from error
+                raise ProviderError("UNAVAILABLE", "Background provider is unavailable", retryable=True) from error
+            except OSError as error:
+                raise ProviderError("UNAVAILABLE", "Background provider is unavailable", retryable=True) from error
 
         return await asyncio.to_thread(request)
 
@@ -467,6 +494,7 @@ __all__ = [
     "BackgroundContractError", "BackgroundGenerationInput", "BackgroundGenerator",
     "BackgroundInput", "BackgroundPngInfo", "BackgroundProviderError", "BackgroundResult",
     "BackgroundStyleId", "FixtureBackgroundGenerator", "HttpBackgroundGenerator",
+    "BACKGROUND_GENERATION_TIMEOUT_SECONDS",
     "LiveBackgroundGenerator", "MAX_BACKGROUND_DIMENSION", "MAX_BACKGROUND_PNG_BYTES",
     "OpenAIBackgroundGenerator", "OpenAIImageClient", "OpenAIImagesBackgroundGenerator",
     "PNG_SIGNATURE", "ProviderError", "TextPromptGenerator", "UnavailableBackgroundGenerator",

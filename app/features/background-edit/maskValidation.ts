@@ -28,12 +28,15 @@ export class MaskValidationError extends Error {
  * type. RGB must be grayscale, and both foreground and background must exist.
  */
 export function validateMaskPixels(input: MaskPixelData): ValidatedMask {
+  if (typeof input !== 'object' || input === null) {
+    throw new MaskValidationError('INVALID_PIXELS', 'Mask pixel data is unavailable.');
+  }
   const { width, height, data } = input;
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
     throw new MaskValidationError('INVALID_DIMENSIONS', 'Mask dimensions must be positive integers.');
   }
   const pixelCount = width * height;
-  if (!Number.isSafeInteger(pixelCount) || data.length !== pixelCount * 4) {
+  if (!Number.isSafeInteger(pixelCount) || !data || !Number.isSafeInteger(data.length) || data.length !== pixelCount * 4) {
     throw new MaskValidationError('INVALID_PIXELS', 'Mask RGBA data does not match its dimensions.');
   }
 
@@ -45,7 +48,7 @@ export function validateMaskPixels(input: MaskPixelData): ValidatedMask {
     const green = data[offset + 1];
     const blue = data[offset + 2];
     const alpha = data[offset + 3];
-    if (![red, green, blue, alpha].every((value) => Number.isFinite(value) && value >= 0 && value <= 255)) {
+    if (![red, green, blue, alpha].every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) {
       throw new MaskValidationError('INVALID_PIXELS', 'Mask contains an invalid pixel value.');
     }
     if (red !== green || green !== blue) {

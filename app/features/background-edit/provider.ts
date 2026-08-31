@@ -17,9 +17,18 @@ export class BackgroundEditProviderError extends Error {
 export interface HttpBackgroundEditProviderOptions {
   baseUrl: string;
   fetchImpl?: typeof fetch;
+  maskTimeoutMs?: number;
+  backgroundTimeoutMs?: number;
 }
 
 const trimBaseUrl = (value: string): string => value.trim().replace(/\/+$/u, '');
+const MASK_TIMEOUT_MS = 35_000;
+const BACKGROUND_TIMEOUT_MS = 60_000;
+
+const validateTimeout = (value: number, label: string): number => {
+  if (!Number.isFinite(value) || value <= 0 || value > 120_000) throw new RangeError(`${label} must be between 1ms and 120s.`);
+  return value;
+};
 
 const readErrorMessage = async (response: Response, fallback: string): Promise<string> => {
   try {
@@ -43,30 +52,65 @@ const validateStyleId = (styleId: string): BackgroundStyleId => {
 export class HttpBackgroundEditProvider implements BackgroundEditProvider {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly maskTimeoutMs: number;
+  private readonly backgroundTimeoutMs: number;
 
   public constructor(options: HttpBackgroundEditProviderOptions) {
     this.baseUrl = trimBaseUrl(options.baseUrl);
     if (!this.baseUrl) throw new TypeError('baseUrl must not be empty');
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.maskTimeoutMs = validateTimeout(options.maskTimeoutMs ?? MASK_TIMEOUT_MS, 'mask timeout');
+    this.backgroundTimeoutMs = validateTimeout(options.backgroundTimeoutMs ?? BACKGROUND_TIMEOUT_MS, 'background timeout');
+  }
+
+  private async request(url: string, init: RequestInit, timeoutMs: number, timeoutMessage: string): Promise<Response> {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller?.abort();
+        reject(new BackgroundEditProviderError(timeoutMessage, true));
+      }, timeoutMs);
+    });
+    try {
+      const requestInit: RequestInit = controller ? { ...init, signal: controller.signal } : init;
+      return await Promise.race([this.fetchImpl(url, requestInit), timeout]);
+    } catch (error) {
+      if (error instanceof BackgroundEditProviderError) throw error;
+      if (timedOut || (typeof DOMException === 'function' && error instanceof DOMException && error.name === 'AbortError')) throw new BackgroundEditProviderError(timeoutMessage, true);
+      throw new BackgroundEditProviderError('背景処理サービスに接続できません。', true);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
 
   public async removeBackground(original: Blob): Promise<Blob> {
     const form = new FormData();
     form.append('file', original, 'front-original.jpg');
-    const response = await this.fetchImpl(`${this.baseUrl}/api/remove-background`, { method: 'POST', body: form, credentials: 'omit' });
-    if (!response.ok) throw new BackgroundEditProviderError(await readErrorMessage(response, '背景分離に失敗しました。'), response.status >= 500);
-    return response.blob();
+    const response = await this.request(`${this.baseUrl}/api/remove-background`, { method: 'POST', body: form, credentials: 'omit' }, this.maskTimeoutMs, '背景分離がタイムアウトしました。');
+    if (!response.ok) throw new BackgroundEditProviderError(await readErrorMessage(response, '背景分離に失敗しました。'), response.status >= 500 || response.status === 408);
+    try {
+      return await response.blob();
+    } catch {
+      throw new BackgroundEditProviderError('背景分離の画像を読み込めませんでした。', true);
+    }
   }
 
   public async generateBackground(styleId: BackgroundStyleId): Promise<Blob> {
-    const response = await this.fetchImpl(`${this.baseUrl}/api/generate-background`, {
+    const response = await this.request(`${this.baseUrl}/api/generate-background`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ styleId: validateStyleId(styleId) }),
       credentials: 'omit',
-    });
-    if (!response.ok) throw new BackgroundEditProviderError(await readErrorMessage(response, '背景生成に失敗しました。'), response.status >= 500);
-    return response.blob();
+    }, this.backgroundTimeoutMs, '背景生成がタイムアウトしました。');
+    if (!response.ok) throw new BackgroundEditProviderError(await readErrorMessage(response, '背景生成に失敗しました。'), response.status >= 500 || response.status === 408);
+    try {
+      return await response.blob();
+    } catch {
+      throw new BackgroundEditProviderError('背景生成の画像を読み込めませんでした。', true);
+    }
   }
 }
 
