@@ -29,6 +29,34 @@ const { d1 = "DB", r2 } = hostingConfig;
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const devSourcemapsEnabled = process.env.FURIMA_DEV_SOURCEMAPS === "true";
 
+const OPENCV_BROWSER_MODULE_ID = "\0furima-opencv-browser";
+
+/**
+ * @techstark/opencv-js ships the official OpenCV.js UMD bundle. Vite's
+ * CommonJS wrapper runs that bundle in strict ESM where top-level `this` is
+ * undefined, so the browser build needs a tiny, deterministic ESM shim. The
+ * source still comes from the pinned npm package; no CDN or runtime download
+ * is introduced. Keeping the shim here also makes the same artifact work in
+ * a module Worker, where `importScripts` is unavailable.
+ */
+const opencvBrowserPlugin = {
+  name: "furima-opencv-browser-module",
+  enforce: "pre" as const,
+  resolveId(source: string): string | undefined {
+    return source === "@techstark/opencv-js" ? OPENCV_BROWSER_MODULE_ID : undefined;
+  },
+  load(id: string): string | undefined {
+    if (id !== OPENCV_BROWSER_MODULE_ID) return undefined;
+    const source = readFileSync(resolve(process.cwd(), "node_modules", "@techstark", "opencv-js", "dist", "opencv.js"), "utf8");
+    const browserSource = source.replace("}(this, function () {", "}(globalThis, function () {");
+    if (browserSource === source) throw new Error("Pinned OpenCV.js UMD entrypoint changed; update the browser shim deliberately.");
+    // Keep the browser/Worker branch deterministic. The upstream bundle also
+    // contains Node/AMD branches; these bindings prevent an ESM bundler from
+    // treating their CommonJS globals as runtime dependencies.
+    return `const module = undefined;\nconst exports = undefined;\n${browserSource}\nconst opencv = globalThis.cv;\nexport { opencv as cv };\nexport default opencv;`;
+  },
+};
+
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
@@ -110,6 +138,7 @@ export default defineConfig(async ({ command }) => {
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
     plugins: [
+      opencvBrowserPlugin,
       vinext(),
       sites(),
       cloudflarePlugin,

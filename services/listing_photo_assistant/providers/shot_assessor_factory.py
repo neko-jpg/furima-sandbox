@@ -12,6 +12,7 @@ from .shot_assessor import (
     ShotAssessor,
     ShotAssessorInput,
 )
+from .proxy_responses import ProxyResponsesClient
 
 
 class LiveShotAssessorUnavailable(RuntimeError):
@@ -57,10 +58,18 @@ def _create_responses_client(settings: BackendSettings) -> ResponsesClient:
         raise LiveShotAssessorUnavailable(
             "openai package is required for PROVIDER_MODE=live"
         ) from error
-    kwargs: dict[str, str] = {"api_key": settings.openai_api_key}
+    kwargs: dict[str, object] = {
+        "api_key": settings.openai_api_key,
+        "max_retries": settings.openai_max_retries,
+    }
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
-    return AsyncOpenAI(**kwargs).responses  # type: ignore[no-any-return]
+    responses = AsyncOpenAI(**kwargs).responses
+    return (
+        ProxyResponsesClient(responses)
+        if settings.openai_base_url
+        else responses
+    )  # type: ignore[return-value]
 
 
 def create_shot_assessor(
@@ -80,7 +89,12 @@ def create_shot_assessor(
     try:
         client = live_client or _create_responses_client(resolved)
         model = live_model or resolved.shot_assessor_model
-        return ResponsesShotAssessor(client, model)
+        return ResponsesShotAssessor(
+            client,
+            model,
+            reasoning_effort=resolved.llm_reasoning_effort,
+            max_output_tokens=resolved.llm_max_output_tokens,
+        )
     except LiveShotAssessorUnavailable:
         return _UnavailableLiveShotAssessor()
 

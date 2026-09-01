@@ -54,6 +54,7 @@ stateDiagram-v2
 - `front`、`back`、`tag`の画像と承認済み`garmentMeasurements`が揃った後、利用者が出品へ進む操作をした場合だけ既存下書きへ引き渡す。measurement画像、端点、scale、イベント、AI途中結果は保存しない。
 - 背景編集は正面原本だけをmask providerへ渡し、背景生成には`styleId`だけを渡す。検証済みmaskと正面原本をCanvas合成し、元画像と生成画像を比較して明示承認した後だけ通常の正面画像を置き換える。
 - 閉じる、終了、unmountではBlob、object URL、LiveKit、Workerを解放する。通常の既存写真がある場合、アシスタントの結果を自動マージ・自動上書きしない。
+- Requirement／Scenarioと8.1〜8.8の実装・検証境界は、[OpenSpec verification map](https://github.com/neko-jpg/furima-sandbox/blob/main/openspec/changes/build-listing-photo-assistant-mvp/verification.md)で追跡する。fixtureの合格を実機・外部providerの合格へ読み替えない。
 
 HTTP契約の正本は[`docs/api/openapi.yaml`](./openapi.yaml)です。FastAPIは`services/listing_photo_assistant/`、ブラウザの任意機能は`app/features/guided-capture/`と`app/features/background-edit/`に分離します。
 

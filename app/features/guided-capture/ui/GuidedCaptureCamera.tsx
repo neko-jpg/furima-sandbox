@@ -22,11 +22,23 @@ import {
 import { useDialogFocusTrap } from '../../../components/ui/useDialogFocusTrap';
 import type { ConnectionState, SessionSlot, SlotProgress, TransportKind } from './contracts';
 import {
+  assessGrayscaleImageQuality,
+  createFrameDifferenceTracker,
+  createFrameScheduler,
+  rgbaToGrayscale,
+  toPixelRoi,
+  type GrayFrame,
+  type LocalGuidanceCode,
+  type NormalizedRect,
+  type VideoFrameSource,
+} from '../core';
+import {
   CAPTURE_CONNECTION_LABELS,
   CAPTURE_SLOT_DETAILS,
   CAPTURE_SLOT_LABELS,
   CAPTURE_SLOT_ORDER,
   getSlotStatusLabel,
+  isCaptureSlotSelectable,
 } from './captureUiConstants';
 
 export interface GuidedCaptureCameraProps {
@@ -37,6 +49,7 @@ export interface GuidedCaptureCameraProps {
   transport: TransportKind | null;
   guidanceMessage: string;
   browserOffline: boolean;
+  onLocalGuidance?: (candidate: { shot: SessionSlot; code: LocalGuidanceCode; expiresAt: number } | null) => void;
   onCapture: (file: File) => Promise<boolean> | boolean;
   onStreamReady?: (stream: MediaStream) => void | Promise<void>;
   onStreamStopped?: () => void | Promise<void>;
@@ -101,6 +114,45 @@ const captureVideoFrame = async (video: HTMLVideoElement, slot: SessionSlot): Pr
   return new File([blob], `guided-${slot}-${Date.now()}.jpg`, { type: 'image/jpeg' });
 };
 
+const LOCAL_GUIDES: Readonly<Record<SessionSlot, NormalizedRect>> = {
+  front: { x: 0.1, y: 0.08, width: 0.8, height: 0.84 },
+  back: { x: 0.1, y: 0.08, width: 0.8, height: 0.84 },
+  tag: { x: 0.2, y: 0.2, width: 0.6, height: 0.6 },
+  measurement: { x: 0.06, y: 0.06, width: 0.88, height: 0.88 },
+};
+
+const LOCAL_ANALYSIS_MAX_EDGE = 320;
+
+const readLocalQualityFrame = (
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  slot: SessionSlot,
+): GrayFrame | undefined => {
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
+  if (!videoWidth || !videoHeight) return undefined;
+  const displayWidth = video.clientWidth || video.offsetWidth || videoWidth;
+  const displayHeight = video.clientHeight || video.offsetHeight || videoHeight;
+  const roi = toPixelRoi({
+    guide: LOCAL_GUIDES[slot],
+    display: { width: displayWidth, height: displayHeight },
+    video: { width: videoWidth, height: videoHeight },
+    objectFit: 'cover',
+  });
+  if (!roi) return undefined;
+  const scale = Math.min(1, LOCAL_ANALYSIS_MAX_EDGE / Math.max(roi.width, roi.height));
+  const width = Math.max(2, Math.round(roi.width * scale));
+  const height = Math.max(2, Math.round(roi.height * scale));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  context.drawImage(video, roi.x, roi.y, roi.width, roi.height, 0, 0, width, height);
+  const rgba = context.getImageData(0, 0, width, height).data;
+  return { width, height, pixels: rgbaToGrayscale(rgba, width, height) };
+};
+
 const ConnectionBadge: React.FC<{ connectionState: ConnectionState; transport: TransportKind | null; browserOffline: boolean }> = ({ connectionState, transport, browserOffline }) => {
   const disconnected = browserOffline || connectionState === 'disconnected';
   const connecting = connectionState === 'connecting' || connectionState === 'reconnecting';
@@ -120,7 +172,7 @@ const CameraProgress: React.FC<Pick<GuidedCaptureCameraProps, 'slot' | 'progress
     {CAPTURE_SLOT_ORDER.map((candidate, index) => {
       const candidateProgress = progress[candidate];
       const isActive = slot === candidate;
-      const isSelectable = candidateProgress.status !== 'approved';
+      const isSelectable = isCaptureSlotSelectable(progress, candidate, true);
       return (
         <li key={candidate} className={`guided-capture-camera__progress-item ${isActive ? 'is-current' : ''}`}>
           <button
@@ -164,6 +216,7 @@ export const GuidedCaptureCamera: React.FC<GuidedCaptureCameraProps> = ({
   transport,
   guidanceMessage,
   browserOffline,
+  onLocalGuidance,
   onCapture,
   onStreamReady,
   onStreamStopped,
@@ -176,6 +229,7 @@ export const GuidedCaptureCamera: React.FC<GuidedCaptureCameraProps> = ({
   const dialogRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const localSchedulerRef = useRef<ReturnType<typeof createFrameScheduler<GrayFrame>> | null>(null);
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const [cameraState, setCameraState] = useState<CameraState>('requesting');
@@ -186,7 +240,14 @@ export const GuidedCaptureCamera: React.FC<GuidedCaptureCameraProps> = ({
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraMessage, setCameraMessage] = useState<string | null>(null);
 
+  const stopLocalAnalysis = useCallback(() => {
+    localSchedulerRef.current?.stop();
+    localSchedulerRef.current = null;
+    onLocalGuidance?.(null);
+  }, [onLocalGuidance]);
+
   const stopStream = useCallback(() => {
+    stopLocalAnalysis();
     const stream = streamRef.current;
     stream?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -194,7 +255,7 @@ export const GuidedCaptureCamera: React.FC<GuidedCaptureCameraProps> = ({
     setTorchSupported(false);
     setTorchOn(false);
     if (stream && onStreamStopped) void Promise.resolve(onStreamStopped()).catch(() => undefined);
-  }, [onStreamStopped]);
+  }, [onStreamStopped, stopLocalAnalysis]);
 
   const requestCamera = useCallback(async () => {
     const requestId = ++requestIdRef.current;
@@ -226,7 +287,17 @@ export const GuidedCaptureCamera: React.FC<GuidedCaptureCameraProps> = ({
       setTorchSupported(capabilities?.torch === true);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
+        try {
+          await videoRef.current.play();
+        } catch {
+          stream.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+          if (mountedRef.current && requestId === requestIdRef.current) {
+            setCameraState('error');
+            setCameraMessage('カメラ映像を再生できませんでした。もう一度試すか、アルバムから写真を追加してください。');
+          }
+          return;
+        }
       }
       setCameraState('ready');
       if (onStreamReady) {
@@ -252,6 +323,61 @@ export const GuidedCaptureCamera: React.FC<GuidedCaptureCameraProps> = ({
       stopStream();
     };
   }, [requestCamera, stopStream]);
+
+  useEffect(() => {
+    if (cameraState !== 'ready' || !onLocalGuidance) return undefined;
+    const video = videoRef.current;
+    if (!video) return undefined;
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const notifyUnavailable = () => {
+      queueMicrotask(() => {
+        if (mountedRef.current) setCameraMessage('端末内の品質チェックを利用できません。固定ガイドと手動撮影を続けられます。');
+      });
+    };
+    if (!context) {
+      notifyUnavailable();
+      return undefined;
+    }
+    const tracker = createFrameDifferenceTracker();
+    let scheduler: ReturnType<typeof createFrameScheduler<GrayFrame>> | null = null;
+    let reportedError = false;
+    try {
+      scheduler = createFrameScheduler<GrayFrame>({
+        video: video as unknown as VideoFrameSource,
+        readFrame: () => readLocalQualityFrame(video, canvas, context, slot),
+        onFrame: (frame) => {
+          const quality = assessGrayscaleImageQuality(frame.pixels as Uint8ClampedArray, frame.width, frame.height);
+          const movement = tracker.update(frame);
+          const code: LocalGuidanceCode | null = quality.issue ?? (movement.changed ? 'HOLD_STEADY' : null);
+          const now = Date.now();
+          onLocalGuidance(code ? { shot: slot, code, expiresAt: now + 750 } : null);
+        },
+        onError: () => {
+          if (reportedError) return;
+          reportedError = true;
+          setCameraMessage('端末内の品質チェックを利用できません。固定ガイドと手動撮影を続けられます。');
+          scheduler?.stop();
+          scheduler = null;
+          localSchedulerRef.current = null;
+          onLocalGuidance(null);
+        },
+      });
+      localSchedulerRef.current = scheduler;
+      scheduler.start();
+    } catch {
+      notifyUnavailable();
+      onLocalGuidance(null);
+      scheduler?.stop();
+      localSchedulerRef.current = null;
+      return undefined;
+    }
+    return () => {
+      scheduler?.stop();
+      if (localSchedulerRef.current === scheduler) localSchedulerRef.current = null;
+      onLocalGuidance(null);
+    };
+  }, [cameraState, onLocalGuidance, slot]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;

@@ -9,6 +9,7 @@ that the parent integration may add later.
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import sys
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -173,11 +174,26 @@ def _build_server(
     server_factory: ServerFactory,
     inference: Any,
     transport_factory: TransportFactory | None = None,
+    settings: BackendSettings | None = None,
 ) -> Any:
-    server = server_factory(
-        inference=inference,
-        transport_factory=transport_factory,
-    )
+    kwargs: dict[str, Any] = {
+        "inference": inference,
+        "transport_factory": transport_factory,
+    }
+    if settings is not None:
+        try:
+            parameters = inspect.signature(server_factory).parameters
+            accepts_settings = "settings" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            # C-extension callables may not expose a signature. Passing the
+            # immutable settings snapshot is safer for the real server path.
+            accepts_settings = True
+        if accepts_settings:
+            kwargs["settings"] = settings
+    server = server_factory(**kwargs)
     if server is None:
         raise RuntimeError(
             "unable to create the LiveKit Agent server; install the locked dependencies"
@@ -204,6 +220,7 @@ def check_agent(
         server_factory,
         inference,
         build_transport_factory(provider, settings),
+        settings,
     )
     LOGGER.info(
         "agent_check_ok provider_mode=%s provider=%s livekit_configured=%s",
@@ -243,6 +260,7 @@ def run_agent_worker(
         server_factory,
         inference,
         build_transport_factory(provider, settings),
+        settings,
     )
     LOGGER.info(
         "agent_worker_starting provider_mode=%s provider=%s livekit_configured=%s",

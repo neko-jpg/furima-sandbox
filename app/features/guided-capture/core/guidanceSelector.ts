@@ -11,6 +11,7 @@ export const LOCAL_GUIDANCE_CODES = [
   "TOO_DARK",
   "TOO_BRIGHT",
   "TOO_BLURRY",
+  "HOLD_STEADY",
 ] as const;
 export type LocalGuidanceCode = (typeof LOCAL_GUIDANCE_CODES)[number];
 export type GuidanceCandidateCode = GuidanceCode | LocalGuidanceCode;
@@ -59,6 +60,7 @@ const DEVICE_MESSAGES: Readonly<Record<LocalGuidanceCode, string>> = {
   TOO_DARK: "もう少し明るい場所で撮影してください。",
   TOO_BRIGHT: "反射が少ない場所へ移動してください。",
   TOO_BLURRY: "ピントが合うまで、カメラをゆっくり止めてください。",
+  HOLD_STEADY: "カメラを動かさず、そのまま保ってください。",
 };
 
 const isSessionSlot = (value: unknown): value is SessionSlot => (

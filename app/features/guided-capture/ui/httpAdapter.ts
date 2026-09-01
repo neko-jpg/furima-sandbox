@@ -245,6 +245,7 @@ export class GuidedCaptureHttpAdapter implements GuidedCaptureAdapter {
     const response = await this.fetchImpl(`${this.baseUrl}/api/analyze-shot`, {
       method: 'POST',
       body: form,
+      headers: request.requestId ? { 'X-Request-ID': request.requestId } : undefined,
       credentials: 'omit',
     });
     if (!response.ok) throw await requestError(response, '撮影画像の判定に失敗しました。');
@@ -259,6 +260,7 @@ export class GuidedCaptureHttpAdapter implements GuidedCaptureAdapter {
     const response = await this.fetchImpl(`${this.baseUrl}/api/suggest-measurement-points`, {
       method: 'POST',
       body: form,
+      headers: request.requestId ? { 'X-Request-ID': request.requestId } : undefined,
       credentials: 'omit',
     });
     if (!response.ok) throw await requestError(response, '採寸点の提案に失敗しました。');

@@ -14,6 +14,7 @@ from services.listing_photo_assistant.live_agent import (
     AgentRuntime,
     CameraVideoTrackSubscriber,
     GuidancePacketPublisher,
+    InferenceBudgetExceeded,
     LatestFrameProcessor,
     LatestFrameSlot,
     create_default_guidance_inference,
@@ -299,6 +300,68 @@ async def test_processor_enforces_bounded_inference_cadence() -> None:
     await first_started.wait()
     processor.submit_nowait("second")
     release.set()
+    await processor.wait_idle()
+
+    assert len(started_at) == 2
+    assert started_at[1] - started_at[0] >= 0.02
+    processor.stop()
+
+
+@pytest.mark.asyncio
+async def test_processor_stops_at_session_budget_and_reports_it_once() -> None:
+    calls: list[str] = []
+    errors: list[BaseException] = []
+
+    async def infer(frame: str) -> str:
+        calls.append(frame)
+        return frame
+
+    def on_error(error: BaseException, _frame: str) -> None:
+        errors.append(error)
+
+    processor = LatestFrameProcessor(
+        infer,
+        on_error=on_error,
+        min_interval_seconds=0,
+        max_inference_calls=2,
+    )
+    assert processor.submit_nowait("first") is True
+    await processor.wait_idle()
+    assert processor.submit_nowait("second") is True
+    await processor.wait_idle()
+
+    assert calls == ["first", "second"]
+    assert processor.inference_count == 2
+    assert processor.remaining_calls == 0
+    assert processor.budget_exhausted is True
+    assert processor.submit_nowait("after-budget") is False
+    assert [error for error in errors if isinstance(error, InferenceBudgetExceeded)]
+    assert len([error for error in errors if isinstance(error, InferenceBudgetExceeded)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_processor_applies_failure_cooldown_before_retrying() -> None:
+    started_at: list[float] = []
+    attempts = 0
+
+    async def infer(frame: str) -> str:
+        nonlocal attempts
+        del frame
+        attempts += 1
+        started_at.append(asyncio.get_running_loop().time())
+        if attempts == 1:
+            raise RuntimeError("temporary provider failure")
+        return "ok"
+
+    processor = LatestFrameProcessor(
+        infer,
+        min_interval_seconds=0,
+        max_inference_calls=3,
+        failure_cooldown_seconds=0.03,
+    )
+    assert processor.submit_nowait("first") is True
+    await processor.wait_idle()
+    assert processor.submit_nowait("retry") is True
     await processor.wait_idle()
 
     assert len(started_at) == 2

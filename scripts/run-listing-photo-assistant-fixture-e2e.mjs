@@ -114,7 +114,10 @@ const main = async () => {
   const apiPort = await reservePort('ASSISTANT_FIXTURE_API_PORT');
   const uiPort = await reservePort('ASSISTANT_FIXTURE_UI_PORT');
   const apiUrl = `http://127.0.0.1:${apiPort}`;
-  const uiOrigin = `http://localhost:${uiPort}`;
+  // Vinext binds the local dev server to IPv6 on Windows even when a loopback
+  // host is requested. Keep the fixture runner on an explicit IPv6 URL so
+  // readiness checks and Playwright use the same socket.
+  const uiOrigin = `http://[::1]:${uiPort}`;
   const uiUrl = uiOrigin;
   process.env.ASSISTANT_FIXTURE_UI_PORT = String(uiPort);
   const environment = fixtureEnvironment(apiPort, uiOrigin);
@@ -130,7 +133,7 @@ const main = async () => {
 
   try {
     await waitForHealth(apiUrl, backend);
-    ui = spawn(process.execPath, [vinextCli, 'dev', '--host', 'localhost', '--port', String(uiPort)], {
+    ui = spawn(process.execPath, [vinextCli, 'dev', '--hostname', '::1', '--port', String(uiPort)], {
       cwd: root,
       env: environment,
       stdio: 'ignore',

@@ -9,10 +9,12 @@ an HTTP response.
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any, cast
 
 
 class SettingsError(ValueError):
@@ -39,17 +41,36 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
     "http://localhost:3000",
 )
-DEFAULT_SHOT_ASSESSOR_MODEL = "gpt-4.1-mini-2025-04-14"
-DEFAULT_MEASUREMENT_LINE_MODEL = "gpt-4.1-mini-2025-04-14"
-DEFAULT_VISION_GUIDANCE_MODEL = "gpt-4.1-mini-2025-04-14"
-DEFAULT_BACKGROUND_MODEL = "gpt-image-1"
+DEFAULT_SHOT_ASSESSOR_MODEL = "gpt-5.6-luna"
+DEFAULT_MEASUREMENT_LINE_MODEL = "gpt-5.6-luna"
+DEFAULT_VISION_GUIDANCE_MODEL = "gpt-5.6-luna"
+DEFAULT_BACKGROUND_MODEL = "gpt-image-2"
+DEFAULT_LLM_REASONING_EFFORT = "none"
+DEFAULT_LLM_MAX_OUTPUT_TOKENS = 256
+DEFAULT_OPENAI_MAX_RETRIES = 0
+DEFAULT_GUIDANCE_CADENCE_SECONDS = 2.0
+DEFAULT_GUIDANCE_MAX_CALLS_PER_SESSION = 12
+DEFAULT_GUIDANCE_FAILURE_COOLDOWN_SECONDS = 15.0
+DEFAULT_BACKGROUND_IMAGE_QUALITY = "high"
+DEFAULT_BACKGROUND_IMAGE_SIZE = "1200x1600"
+# The proxy fallback is deliberately explicit and finite.  It is used only
+# when the preferred custom canvas is rejected by the image tool, never as a
+# general retry for timeouts, auth failures, or malformed responses.
+BACKGROUND_IMAGE_FALLBACK_QUALITY = "high"
+BACKGROUND_IMAGE_FALLBACK_SIZE = "1024x1536"
+BACKGROUND_IMAGE_OUTPUT_FORMAT = "png"
+BACKGROUND_IMAGE_BACKGROUND = "opaque"
+
+LLM_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+BACKGROUND_IMAGE_QUALITIES = ("low", "medium", "high")
+BACKGROUND_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536", "1200x1600")
 
 
 def _port(value: object) -> int:
     if isinstance(value, bool):
         raise SettingsError("API_PORT must be an integer between 1 and 65535")
     try:
-        converted = int(value)
+        converted = int(cast(Any, value))
     except (TypeError, ValueError) as error:
         raise SettingsError("API_PORT must be an integer between 1 and 65535") from error
     if not 1 <= converted <= 65_535:
@@ -59,12 +80,41 @@ def _port(value: object) -> int:
 
 def _positive_int(value: object, *, field_name: str) -> int:
     try:
-        converted = int(value)
+        converted = int(cast(Any, value))
     except (TypeError, ValueError) as error:
         raise SettingsError(f"{field_name} must be a positive integer") from error
     if isinstance(value, bool) or converted <= 0:
         raise SettingsError(f"{field_name} must be a positive integer")
     return converted
+
+
+def _non_negative_int(value: object, *, field_name: str) -> int:
+    try:
+        converted = int(cast(Any, value))
+    except (TypeError, ValueError) as error:
+        raise SettingsError(f"{field_name} must be a non-negative integer") from error
+    if isinstance(value, bool) or converted < 0:
+        raise SettingsError(f"{field_name} must be a non-negative integer")
+    return converted
+
+
+def _finite_non_negative_float(value: object, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise SettingsError(f"{field_name} must be a finite non-negative number")
+    try:
+        converted = float(cast(Any, value))
+    except (TypeError, ValueError) as error:
+        raise SettingsError(f"{field_name} must be a finite non-negative number") from error
+    if not math.isfinite(converted) or converted < 0.0:
+        raise SettingsError(f"{field_name} must be a finite non-negative number")
+    return converted
+
+
+def _choice(value: object, *, field_name: str, allowed: tuple[str, ...]) -> str:
+    selected = _text(value, field_name=field_name)
+    if selected not in allowed:
+        raise SettingsError(f"{field_name} must be one of: {', '.join(allowed)}")
+    return selected
 
 
 def _text(value: object, *, field_name: str, default: str = "") -> str:
@@ -88,9 +138,9 @@ def _origins(value: object) -> tuple[str, ...]:
 class BackendSettings:
     """Resolved runtime configuration for all assistant providers."""
 
-    provider_mode: ProviderMode = ProviderMode.FIXTURE
+    provider_mode: ProviderMode | str = ProviderMode.FIXTURE
     api_host: str = "127.0.0.1"
-    api_port: int = 3001
+    api_port: int | str = 3001
     assistant_cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
 
     # Credentials are retained only in the process and hidden from repr.
@@ -104,6 +154,14 @@ class BackendSettings:
     measurement_line_model: str = DEFAULT_MEASUREMENT_LINE_MODEL
     vision_guidance_model: str = DEFAULT_VISION_GUIDANCE_MODEL
     background_model: str = DEFAULT_BACKGROUND_MODEL
+    llm_reasoning_effort: str = DEFAULT_LLM_REASONING_EFFORT
+    llm_max_output_tokens: int = DEFAULT_LLM_MAX_OUTPUT_TOKENS
+    openai_max_retries: int = DEFAULT_OPENAI_MAX_RETRIES
+    guidance_cadence_seconds: float = DEFAULT_GUIDANCE_CADENCE_SECONDS
+    guidance_max_calls_per_session: int = DEFAULT_GUIDANCE_MAX_CALLS_PER_SESSION
+    guidance_failure_cooldown_seconds: float = DEFAULT_GUIDANCE_FAILURE_COOLDOWN_SECONDS
+    background_image_quality: str = DEFAULT_BACKGROUND_IMAGE_QUALITY
+    background_image_size: str = DEFAULT_BACKGROUND_IMAGE_SIZE
     rembg_url: str = ""
     background_generator_url: str = ""
 
@@ -160,6 +218,73 @@ class BackendSettings:
                 field_name="LIVEKIT_TOKEN_MAX_TTL_SECONDS",
             ),
         )
+        object.__setattr__(
+            self,
+            "llm_reasoning_effort",
+            _choice(
+                self.llm_reasoning_effort,
+                field_name="LLM_REASONING_EFFORT",
+                allowed=LLM_REASONING_EFFORTS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "llm_max_output_tokens",
+            _positive_int(
+                self.llm_max_output_tokens,
+                field_name="LLM_MAX_OUTPUT_TOKENS",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "openai_max_retries",
+            _non_negative_int(
+                self.openai_max_retries,
+                field_name="OPENAI_MAX_RETRIES",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "guidance_cadence_seconds",
+            _finite_non_negative_float(
+                self.guidance_cadence_seconds,
+                field_name="GUIDANCE_CADENCE_SECONDS",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "guidance_max_calls_per_session",
+            _positive_int(
+                self.guidance_max_calls_per_session,
+                field_name="GUIDANCE_MAX_CALLS_PER_SESSION",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "guidance_failure_cooldown_seconds",
+            _finite_non_negative_float(
+                self.guidance_failure_cooldown_seconds,
+                field_name="GUIDANCE_FAILURE_COOLDOWN_SECONDS",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "background_image_quality",
+            _choice(
+                self.background_image_quality,
+                field_name="BACKGROUND_IMAGE_QUALITY",
+                allowed=BACKGROUND_IMAGE_QUALITIES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "background_image_size",
+            _choice(
+                self.background_image_size,
+                field_name="BACKGROUND_IMAGE_SIZE",
+                allowed=BACKGROUND_IMAGE_SIZES,
+            ),
+        )
 
     @classmethod
     def from_env(
@@ -191,6 +316,39 @@ class BackendSettings:
             measurement_line_model=source.get("MEASUREMENT_LINE_MODEL", DEFAULT_MEASUREMENT_LINE_MODEL),
             vision_guidance_model=source.get("VISION_GUIDANCE_MODEL", DEFAULT_VISION_GUIDANCE_MODEL),
             background_model=source.get("BACKGROUND_MODEL", DEFAULT_BACKGROUND_MODEL),
+            llm_reasoning_effort=source.get("LLM_REASONING_EFFORT", DEFAULT_LLM_REASONING_EFFORT),
+            llm_max_output_tokens=_positive_int(
+                source.get("LLM_MAX_OUTPUT_TOKENS", str(DEFAULT_LLM_MAX_OUTPUT_TOKENS)),
+                field_name="LLM_MAX_OUTPUT_TOKENS",
+            ),
+            openai_max_retries=_non_negative_int(
+                source.get("OPENAI_MAX_RETRIES", str(DEFAULT_OPENAI_MAX_RETRIES)),
+                field_name="OPENAI_MAX_RETRIES",
+            ),
+            guidance_cadence_seconds=_finite_non_negative_float(
+                source.get("GUIDANCE_CADENCE_SECONDS", str(DEFAULT_GUIDANCE_CADENCE_SECONDS)),
+                field_name="GUIDANCE_CADENCE_SECONDS",
+            ),
+            guidance_max_calls_per_session=_positive_int(
+                source.get(
+                    "GUIDANCE_MAX_CALLS_PER_SESSION",
+                    str(DEFAULT_GUIDANCE_MAX_CALLS_PER_SESSION),
+                ),
+                field_name="GUIDANCE_MAX_CALLS_PER_SESSION",
+            ),
+            guidance_failure_cooldown_seconds=_finite_non_negative_float(
+                source.get(
+                    "GUIDANCE_FAILURE_COOLDOWN_SECONDS",
+                    str(DEFAULT_GUIDANCE_FAILURE_COOLDOWN_SECONDS),
+                ),
+                field_name="GUIDANCE_FAILURE_COOLDOWN_SECONDS",
+            ),
+            background_image_quality=source.get(
+                "BACKGROUND_IMAGE_QUALITY", DEFAULT_BACKGROUND_IMAGE_QUALITY
+            ),
+            background_image_size=source.get(
+                "BACKGROUND_IMAGE_SIZE", DEFAULT_BACKGROUND_IMAGE_SIZE
+            ),
             rembg_url=source.get("REMBG_URL", ""),
             background_generator_url=source.get("BACKGROUND_GENERATOR_URL", ""),
             livekit_token_ttl_seconds=_positive_int(
@@ -232,10 +390,25 @@ class BackendSettings:
 __all__ = [
     "BackendSettings",
     "DEFAULT_BACKGROUND_MODEL",
+    "BACKGROUND_IMAGE_BACKGROUND",
+    "BACKGROUND_IMAGE_FALLBACK_QUALITY",
+    "BACKGROUND_IMAGE_FALLBACK_SIZE",
+    "DEFAULT_BACKGROUND_IMAGE_QUALITY",
+    "DEFAULT_BACKGROUND_IMAGE_SIZE",
+    "BACKGROUND_IMAGE_OUTPUT_FORMAT",
     "DEFAULT_CORS_ORIGINS",
+    "DEFAULT_GUIDANCE_CADENCE_SECONDS",
+    "DEFAULT_GUIDANCE_FAILURE_COOLDOWN_SECONDS",
+    "DEFAULT_GUIDANCE_MAX_CALLS_PER_SESSION",
+    "DEFAULT_LLM_MAX_OUTPUT_TOKENS",
+    "DEFAULT_OPENAI_MAX_RETRIES",
+    "DEFAULT_LLM_REASONING_EFFORT",
     "DEFAULT_MEASUREMENT_LINE_MODEL",
     "DEFAULT_SHOT_ASSESSOR_MODEL",
     "DEFAULT_VISION_GUIDANCE_MODEL",
+    "BACKGROUND_IMAGE_QUALITIES",
+    "BACKGROUND_IMAGE_SIZES",
+    "LLM_REASONING_EFFORTS",
     "ProviderMode",
     "SettingsError",
 ]

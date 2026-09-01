@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { deflateSync } from 'node:zlib';
 import { assertNoPageErrors, installPageGuards, resetSandbox } from './_sandbox.mjs';
+import { makeMeasurementFixturePng } from './_measurement-fixture.mjs';
 
 const UI_ORIGIN = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:3001';
 const ASSISTANT_API_URL = process.env.VITE_LISTING_ASSISTANT_API_URL ?? '';
@@ -64,12 +65,48 @@ const makeFixturePng = () => {
 };
 
 const fixturePng = makeFixturePng();
+const measurementFixturePng = makeMeasurementFixturePng();
 
-const upload = async (input, name) => {
-  await input.setInputFiles({ name, mimeType: 'image/png', buffer: fixturePng });
+const upload = async (input, name, bytes = fixturePng) => {
+  await input.setInputFiles({ name, mimeType: 'image/png', buffer: bytes });
 };
 
-const exerciseHttpFixtureBackend = async (page, runNumber) => page.evaluate(async ({ apiUrl, bytes, sessionId }) => {
+const clickAfterScroll = async (locator) => {
+  await locator.scrollIntoViewIfNeeded();
+  await locator.click();
+};
+
+const exerciseMarkerWorker = async (page) => page.evaluate(async () => {
+  const width = 240;
+  const height = 240;
+  const data = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const inMarker = x >= 80 && x < 160 && y >= 80 && y < 160;
+      const inBorder = inMarker && (x - 80 < 8 || 159 - x < 8 || y - 80 < 8 || 159 - y < 8);
+      data[offset] = inBorder ? 0 : 255;
+      data[offset + 1] = inBorder ? 0 : 255;
+      data[offset + 2] = inBorder ? 0 : 255;
+      data[offset + 3] = 255;
+    }
+  }
+  const worker = new Worker(new URL('/app/features/guided-capture/measurement/markerWorker.ts', window.location.href), { type: 'module' });
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('marker worker smoke timed out')), 15_000);
+      worker.addEventListener('message', (event) => { window.clearTimeout(timer); resolve(event.data); }, { once: true });
+      worker.addEventListener('error', (event) => { window.clearTimeout(timer); reject(new Error(event.message || 'marker worker smoke failed')); }, { once: true });
+      worker.postMessage({ type: 'detect-marker', requestId: 'e2e-marker-smoke', image: { width, height, data: data.buffer } }, [data.buffer]);
+    });
+    if (response?.type !== 'marker-detected' || response.result?.ok !== true) throw new Error('marker worker did not detect the known marker');
+    return response.result.engine ?? 'unknown';
+  } finally {
+    worker.terminate();
+  }
+});
+
+const exerciseHttpFixtureBackend = async (page, runNumber) => page.evaluate(async ({ apiUrl, bytes, measurementBytes, sessionId }) => {
   const health = await fetch(`${apiUrl}/api/health`, { headers: { accept: 'application/json' }, credentials: 'omit' });
   if (!health.ok) throw new Error(`fixture health returned HTTP ${health.status}`);
   const capture = await import('/app/features/guided-capture/ui/httpAdapter.ts');
@@ -77,13 +114,14 @@ const exerciseHttpFixtureBackend = async (page, runNumber) => page.evaluate(asyn
   const browserFetch = (input, init) => globalThis.fetch(input, init);
   const adapter = capture.createHttpGuidedCaptureAdapter({ baseUrl: apiUrl, mode: 'fixture', fetchImpl: browserFetch });
   const image = () => new Blob([Uint8Array.from(bytes)], { type: 'image/png' });
+  const measurementImage = () => new Blob([Uint8Array.from(measurementBytes)], { type: 'image/png' });
   const assess = (slot) => adapter.assessShot({ sessionId, slot, blob: image() });
   const connection = await adapter.connect(sessionId);
   const front = await assess('front');
   const retry = await assess('back');
   const correctedBack = await assess('back');
   const tag = await assess('tag');
-  const measurement = await adapter.suggestMeasurement({ sessionId, blob: image() });
+  const measurement = await adapter.suggestMeasurement({ sessionId, blob: measurementImage() });
   await adapter.disconnect();
 
   const background = await import('/app/features/background-edit/provider.ts');
@@ -100,7 +138,7 @@ const exerciseHttpFixtureBackend = async (page, runNumber) => page.evaluate(asyn
     mask: { type: mask.type, size: mask.size },
     generated: { type: generated.type, size: generated.size },
   };
-}, { apiUrl: ASSISTANT_API_URL, bytes: [...fixturePng], sessionId: `fixture-http-${runNumber}` });
+}, { apiUrl: ASSISTANT_API_URL, bytes: [...fixturePng], measurementBytes: [...measurementFixturePng], sessionId: `fixture-http-${runNumber}` });
 
 const readFinalEvidence = async (page) => {
   const draft = await page.evaluate((draftKey) => {
@@ -206,6 +244,7 @@ const runFlow = async (page, runNumber) => {
   });
 
   await page.goto('/');
+  const markerWorkerEngine = await exerciseMarkerWorker(page);
   const backendEvidence = await exerciseHttpFixtureBackend(page, runNumber);
   await resetSandbox(page, `listing-photo-assistant-fixture-${runNumber}`);
   await page.getByRole('button', { name: '出品', exact: true }).last().click();
@@ -217,10 +256,9 @@ const runFlow = async (page, runNumber) => {
   await expect(page.getByTestId('guided-capture-content')).toBeVisible();
   await page.getByTestId('guided-capture-start').click();
   await expect(page.getByTestId('guided-capture-connection')).toContainText('接続済み');
-  await expect(page.getByTestId('guided-capture-transport')).toContainText('fixture接続');
+  await expect(page.getByTestId('guided-capture-transport')).toContainText('FIXTURE');
 
   const listingImages = page.locator('#listing-images');
-  const mediaList = page.locator('[role="list"][aria-label^="追加した写真"]');
   await upload(listingImages, 'front.png');
   await expect(page.getByTestId('guided-capture-slot-front')).toContainText('撮影済み');
   await expect(page.locator('[aria-label="追加した写真 1枚"]')).toBeVisible();
@@ -233,32 +271,33 @@ const runFlow = async (page, runNumber) => {
 
   const measurementEditor = page.getByTestId('guided-capture-measurement-editor');
   await expect(measurementEditor).toBeVisible();
-  await upload(measurementEditor.locator('input[type="file"]').last(), 'measurement.png');
+  await upload(measurementEditor.locator('input[type="file"]').last(), 'measurement.png', measurementFixturePng);
   await expect(page.getByTestId('guided-capture-measurement-endpoints')).toBeVisible();
   await expect(page.getByTestId('guided-capture-measurement-preview')).toBeVisible();
   await expect(page.locator('[aria-label="追加した写真 3枚"] img[alt="採寸画像"]')).toHaveCount(0);
 
   await page.getByLabel('着丈 始点 X').fill('0.510');
-  await page.getByLabel('5cmマーカーの1辺 (px)').fill('50');
-  const lengthInput = page.getByLabel('着丈 (cm)');
-  const widthInput = page.getByLabel('身幅 (cm)');
-  await expect.poll(async () => Number(await lengthInput.inputValue())).toBeGreaterThan(20);
-  await expect.poll(async () => Number(await widthInput.inputValue())).toBeGreaterThan(20);
-  await expect(page.getByTestId('guided-capture-approve-measurement')).toBeEnabled();
-  await page.getByTestId('guided-capture-approve-measurement').click();
+  await page.getByLabel('5cmマーカーの1辺（px）').fill('50');
+  const measurementValues = await page.locator('[data-testid="guided-capture-measurement-editor"] input[aria-label$="（cm）"]').evaluateAll((inputs) => inputs.map((input) => Number(input.value)));
+  expect(measurementValues[0]).toBeGreaterThan(20);
+  expect(measurementValues[1]).toBeGreaterThan(20);
+  const approveMeasurement = page.getByTestId('guided-capture-approve-measurement');
+  await expect(approveMeasurement).toBeEnabled();
+  await clickAfterScroll(approveMeasurement);
   await expect(page.getByTestId('guided-capture-review')).toBeVisible();
-  await page.getByTestId('guided-capture-approve-review').click();
+  await clickAfterScroll(page.getByTestId('guided-capture-approve-review'));
   await expect(page.getByTestId('guided-capture-ready')).toBeVisible();
 
   const backgroundPanel = page.getByTestId('background-edit-panel');
   await expect(backgroundPanel).toBeVisible();
-  await backgroundPanel.getByRole('button', { name: 'プレビュー生成' }).click();
-  await expect(backgroundPanel.getByRole('button', { name: 'この画像を明示承認して採用' })).toBeVisible();
+  await clickAfterScroll(backgroundPanel.getByRole('button', { name: '背景をプレビュー' }));
+  await expect(backgroundPanel.getByTestId('background-edit-select-composite')).toBeVisible();
   await expect(backgroundPanel).toContainText('元画像');
-  await backgroundPanel.getByRole('button', { name: 'この画像を明示承認して採用' }).click();
-  await expect(backgroundPanel).toContainText('背景編集画像を明示承認しました。');
+  await clickAfterScroll(backgroundPanel.getByTestId('background-edit-select-composite'));
+  await clickAfterScroll(backgroundPanel.getByRole('button', { name: '合成プレビューを明示承認して採用' }));
+  await expect(backgroundPanel).toContainText('合成プレビューを明示承認しました。');
 
-  await page.getByRole('button', { name: '保存', exact: true }).first().click();
+  await clickAfterScroll(page.getByRole('button', { name: '保存', exact: true }).first());
   await expect(page.getByText('下書きを保存しました。複数の下書きからいつでも再開できます。')).toBeVisible();
   await expect(page.locator('[aria-label="追加した写真 3枚"]')).toBeVisible();
 
@@ -267,7 +306,8 @@ const runFlow = async (page, runNumber) => {
   return {
     normalizedState: evidence.normalizedState,
     backendEvidence,
-    measurement: { lengthCm: Number(await lengthInput.inputValue()), widthCm: Number(await widthInput.inputValue()) },
+    markerWorkerEngine,
+    measurement: { lengthCm: measurementValues[0], widthCm: measurementValues[1] },
     outputHash: evidence.output.sha256,
     outputMimeType: evidence.output.mimeType,
     outputByteSize: evidence.output.byteSize,
@@ -298,6 +338,7 @@ test('fixture backend adapter and photo assistant handoff are deterministic', as
   for (const result of results) {
     expect(result.retryInjected).toBe(true);
     expect(result.backendEvidence.connection).toMatchObject({ connectionState: 'connected', transport: 'fixture' });
+    expect(result.markerWorkerEngine).toBe('opencv');
     expect(result.backendEvidence.front).toMatchObject({ shotType: 'front', quality: 'ok' });
     expect(result.backendEvidence.retry).toMatchObject({ shotType: 'back', quality: 'retry', issues: ['GARMENT_CROPPED'], nextAction: 'RETAKE' });
     expect(result.backendEvidence.correctedBack).toMatchObject({ shotType: 'back', quality: 'ok' });

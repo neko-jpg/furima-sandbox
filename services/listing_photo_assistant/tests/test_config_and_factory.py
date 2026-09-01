@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from services.listing_photo_assistant.config import BackendSettings, ConfigurationError
 from services.listing_photo_assistant.app import create_app
 from services.listing_photo_assistant.providers.image_utils import encode_grayscale_png
+from services.listing_photo_assistant.providers import background
 from services.listing_photo_assistant.providers.shot_assessor import (
     RequestedShot,
     ShotAssessorInput,
@@ -25,6 +26,21 @@ def test_fixture_mode_is_the_safe_default(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert settings.provider_mode == "fixture"
     assert settings.api_port == 3001
+    assert settings.shot_assessor_model == "gpt-5.6-luna"
+    assert settings.background_model == "gpt-image-2"
+    assert settings.llm_reasoning_effort == "none"
+    assert settings.openai_max_retries == 0
+    assert settings.guidance_cadence_seconds == 2.0
+    assert settings.guidance_max_calls_per_session == 12
+    assert settings.background_image_quality == "high"
+    assert settings.background_image_size == "1200x1600"
+
+
+@pytest.mark.parametrize("size", ["1024x1024", "1536x1024", "1024x1536", "1200x1600"])
+def test_background_image_size_accepts_preferred_and_legacy_canvases(size: str) -> None:
+    settings = BackendSettings(background_image_size=size)
+
+    assert settings.background_image_size == size
 
 
 def test_provider_mode_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,6 +57,14 @@ def test_provider_mode_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     [
         ("LIVEKIT_TOKEN_TTL_SECONDS", "not-a-number"),
         ("LIVEKIT_TOKEN_MAX_TTL_SECONDS", "0"),
+        ("LLM_REASONING_EFFORT", "ultra-cheap"),
+        ("LLM_MAX_OUTPUT_TOKENS", "0"),
+        ("OPENAI_MAX_RETRIES", "-1"),
+        ("GUIDANCE_CADENCE_SECONDS", "-1"),
+        ("GUIDANCE_MAX_CALLS_PER_SESSION", "0"),
+        ("GUIDANCE_FAILURE_COOLDOWN_SECONDS", "nan"),
+        ("BACKGROUND_IMAGE_QUALITY", "draft"),
+        ("BACKGROUND_IMAGE_SIZE", "512x512"),
     ],
 )
 def test_invalid_numeric_environment_values_fail_closed(
@@ -115,3 +139,38 @@ def test_live_mode_does_not_silently_fallback_to_fixture(
     monkeypatch.setenv("OPENAI_API_KEY", "")
     assessor = create_shot_assessor(BackendSettings("live", "127.0.0.1", 3001))
     assert not isinstance(assessor, FixtureShotAssessor)
+
+
+def test_proxy_background_factory_preserves_top_level_model_and_passes_quality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import openai
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.responses = object()
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeClient)
+    settings = BackendSettings(
+        provider_mode="live",
+        openai_api_key="test-key",
+        openai_base_url="http://proxy.invalid/v1",
+        vision_guidance_model="gpt-5.6-luna",
+        background_image_size="1200x1600",
+        background_image_quality="high",
+    )
+
+    provider = background.create_background_generator(settings)
+
+    assert isinstance(provider, background.CodexProxyBackgroundGenerator)
+    assert provider._model == "gpt-5.6-luna"  # type: ignore[attr-defined]
+    assert provider._size == "1200x1600"  # type: ignore[attr-defined]
+    assert provider._quality == "high"  # type: ignore[attr-defined]
+    assert captured == {
+        "api_key": "test-key",
+        "max_retries": 0,
+        "base_url": "http://proxy.invalid/v1",
+    }

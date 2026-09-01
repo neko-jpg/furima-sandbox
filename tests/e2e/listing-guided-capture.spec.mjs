@@ -5,9 +5,8 @@ const onePixelPng = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
-
-const upload = async (input, name) => {
-  await input.setInputFiles({ name, mimeType: 'image/png', buffer: onePixelPng });
+const upload = async (input, name, bytes = onePixelPng) => {
+  await input.setInputFiles({ name, mimeType: 'image/png', buffer: bytes });
 };
 
 test('fixture guided capture reaches ready without persisting the measurement image', async ({ page }) => {
@@ -32,7 +31,12 @@ test('fixture guided capture reaches ready without persisting the measurement im
 
   await expect(page.getByTestId('guided-capture-measurement-editor')).toBeVisible();
   const measurementInput = page.getByTestId('guided-capture-measurement-editor').locator('input[type="file"]').last();
+  // This intentionally exercises the manual fallback: a one-pixel image has
+  // no usable marker, so the UI must keep the image in-session and ask the
+  // seller to enter the two explicitly approved values.
   await upload(measurementInput, 'measurement.png');
+  await page.getByLabel('着丈（cm）').fill('68');
+  await page.getByLabel('身幅（cm）').fill('52');
   await expect(page.getByTestId('guided-capture-approve-measurement')).toBeEnabled();
   await page.getByTestId('guided-capture-approve-measurement').click();
   await expect(page.getByTestId('guided-capture-review')).toBeVisible();

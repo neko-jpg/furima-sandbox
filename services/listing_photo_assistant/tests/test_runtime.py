@@ -66,6 +66,8 @@ def test_live_provider_uses_strict_schema_and_store_false() -> None:
     request = client.calls[0]
     assert request["store"] is False
     assert request["model"] == "vision-model"
+    assert request["reasoning"] == {"effort": "none"}
+    assert request["max_output_tokens"] == 256
     assert request["text"] == {
         "format": {
             "type": "json_schema",
@@ -127,3 +129,4 @@ def test_runtime_factory_and_inference_are_explicitly_fixture_or_live() -> None:
     result = asyncio.run(inference(b"frame"))
     assert result.code is GuidanceCode.READY
     assert client.calls[0]["store"] is False
+    assert client.calls[0]["reasoning"] == {"effort": "none"}

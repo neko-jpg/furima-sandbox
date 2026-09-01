@@ -225,6 +225,8 @@ def test_transport_request_id_is_strict_and_never_sent_as_model_data() -> None:
     assert input_value.request_id == "measurement-retry-1"
     request = ResponsesMeasurementLineProvider.request_for(input_value, "test-model")
     assert "requestId" not in request
+    assert request["reasoning"] == {"effort": "none"}
+    assert request["max_output_tokens"] == 256
     assert MEASUREMENT_PUBLIC_ERROR_CODES == {
         ProviderErrorCode.TIMEOUT,
         ProviderErrorCode.UNAVAILABLE,

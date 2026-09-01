@@ -286,6 +286,9 @@ export const ListingView: React.FC = () => {
     document.body.style.overflow = 'hidden';
     const focusFirstControl = () => { scrollRef.current?.scrollTo({ top: 0, behavior: 'auto' }); flowRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus({ preventScroll: true }); };
     const handleKeyDown = (event: KeyboardEvent) => {
+      // The guided camera owns a nested dialog while it is open. Do not let
+      // the listing-flow trap close the parent or steal Tab focus from it.
+      if (isCameraOpen) return;
       if (event.key === 'Escape') { event.preventDefault(); closeFlowRef.current(); return; }
       if (event.key !== 'Tab' || !flowRef.current) return;
       const focusable = Array.from(flowRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
@@ -298,7 +301,7 @@ export const ListingView: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => { window.cancelAnimationFrame(frame); window.removeEventListener('keydown', handleKeyDown); document.body.style.overflow = previousOverflow; window.scrollTo({ top: previousScrollYRef.current, behavior: 'auto' }); previousActiveElementRef.current?.focus({ preventScroll: true }); };
     // The flow owns focus while open. Step focus is handled by the separate effect.
-  }, [isListingModalOpen]);
+  }, [isCameraOpen, isListingModalOpen]);
 
   useEffect(() => {
     if (!isListingModalOpen) return;
@@ -321,7 +324,14 @@ export const ListingView: React.FC = () => {
         void publishGuidedCameraStream(stream).catch(() => undefined);
         if (cameraVideoRef.current) {
           cameraVideoRef.current.srcObject = stream;
-          await cameraVideoRef.current.play().catch(() => undefined);
+          try {
+            await cameraVideoRef.current.play();
+          } catch {
+            stream.getTracks().forEach((track) => track.stop());
+            cameraStreamRef.current = null;
+            if (!cancelled) setCameraError('カメラ映像を再生できませんでした。もう一度試すか、端末のカメラ入力へ切り替えてください。');
+            return;
+          }
         }
         setCameraError(null);
       } catch {

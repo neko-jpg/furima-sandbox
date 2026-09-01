@@ -302,7 +302,12 @@ try {
 
   const command = await schemathesisCommand();
   const plannedPaths = '^/api/(listings|wallet|profile|follows)';
-  const pythonServicePaths = '^/api/(livekit-token|analyze-shot|suggest-measurement-points|remove-background|generate-background)$';
+  // The assistant API is a separate FastAPI process in Compose. This
+  // Vinext-only target intentionally excludes every Python-service route,
+  // including /api/health; the Python contract is exercised by the fixture
+  // pytest suite and its own health smoke instead of being mistaken for a
+  // missing UI route.
+  const pythonServicePaths = '^/api/(health|livekit-token|analyze-shot|suggest-measurement-points|remove-background|generate-background)$';
   await runSuite(command.command, [...command.prefix, ...schemathesisArguments({
     token: apiToken,
     exclude: `^/api/sandbox/(state|reset|seed|replay|preview|commit)$|${plannedPaths}|${pythonServicePaths}`,

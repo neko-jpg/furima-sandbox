@@ -26,6 +26,18 @@ export interface MeasurementCalculationResult {
   readonly widthCm: number | null;
 }
 
+export interface ImageRaster {
+  /** Native decoded dimensions, retained for normalized-to-pixel conversion. */
+  readonly dimensions: ImageDimensions;
+  /** Bounded raster dimensions. These are the dimensions represented by data. */
+  readonly width: number;
+  readonly height: number;
+  /** A bounded, disposable RGBA analysis copy. */
+  readonly data: Uint8ClampedArray;
+  /** Raster width / native width, used to restore pixel measurements. */
+  readonly scale: number;
+}
+
 const roundCm = (value: number): number => Math.round(value * 10) / 10;
 
 const validDimensions = (dimensions: ImageDimensions | null | undefined): dimensions is ImageDimensions => {
@@ -110,6 +122,117 @@ export async function readImageDimensions(blob: Blob): Promise<ImageDimensions |
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+const rasterDimensions = (width: number, height: number, maxEdge: number): { width: number; height: number; scale: number } | null => {
+  if (!validImageDimensions(width, height) || !Number.isFinite(maxEdge) || maxEdge < 2) return null;
+  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  return {
+    width: Math.max(2, Math.round(width * scale)),
+    height: Math.max(2, Math.round(height * scale)),
+    scale,
+  };
+};
+
+const rasterizeImageSource = (
+  source: CanvasImageSource,
+  nativeWidth: number,
+  nativeHeight: number,
+  maxEdge: number,
+): ImageRaster | null => {
+  const target = rasterDimensions(nativeWidth, nativeHeight, maxEdge);
+  if (!target) return null;
+  let canvas: OffscreenCanvas | HTMLCanvasElement;
+  if (typeof OffscreenCanvas === 'function') {
+    canvas = new OffscreenCanvas(target.width, target.height);
+  } else if (typeof document !== 'undefined') {
+    canvas = document.createElement('canvas');
+    canvas.width = target.width;
+    canvas.height = target.height;
+  } else {
+    return null;
+  }
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context || !('getImageData' in context)) return null;
+  context.drawImage(source, 0, 0, target.width, target.height);
+  const imageData = context.getImageData(0, 0, target.width, target.height);
+  return {
+    dimensions: { width: nativeWidth, height: nativeHeight },
+    width: target.width,
+    height: target.height,
+    data: new Uint8ClampedArray(imageData.data),
+    scale: target.scale,
+  };
+};
+
+/**
+ * Decode one bounded, disposable raster for local marker validation. The
+ * original Blob is never uploaded by this helper and the returned pixels are
+ * intended to be released with the surrounding request scope.
+ */
+export async function readImageRaster(blob: Blob, maxEdge = 1280): Promise<ImageRaster | null> {
+  if (typeof globalThis.createImageBitmap === 'function') {
+    try {
+      const bitmap = await globalThis.createImageBitmap(blob);
+      try {
+        return rasterizeImageSource(bitmap, bitmap.width, bitmap.height, maxEdge);
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      // Fall through to the HTML image decoder where available.
+    }
+  }
+  if (typeof URL === 'undefined' || typeof Image === 'undefined') return null;
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('image decode failed'));
+      element.src = url;
+    });
+    return rasterizeImageSource(image, image.naturalWidth, image.naturalHeight, maxEdge);
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Encodes a session-only projected raster without creating a data URL. The
+ * caller owns the returned Blob and must not persist it with listing media.
+ */
+export async function rasterToBlob(
+  raster: { readonly width: number; readonly height: number; readonly data: ArrayLike<number> },
+  type = 'image/png',
+): Promise<Blob> {
+  if (!validImageDimensions(raster.width, raster.height) || raster.data.length < raster.width * raster.height * 4) {
+    throw new RangeError('Raster dimensions or data are invalid.');
+  }
+  let canvas: OffscreenCanvas | HTMLCanvasElement;
+  if (typeof OffscreenCanvas === 'function') {
+    canvas = new OffscreenCanvas(raster.width, raster.height);
+  } else if (typeof document !== 'undefined') {
+    canvas = document.createElement('canvas');
+    canvas.width = raster.width;
+    canvas.height = raster.height;
+  } else {
+    throw new Error('Canvas encoding is unavailable.');
+  }
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context || !('putImageData' in context) || !('createImageData' in context)) throw new Error('Canvas encoding is unavailable.');
+  const imageData = context.createImageData(raster.width, raster.height);
+  imageData.data.set(Uint8ClampedArray.from(raster.data));
+  context.putImageData(imageData, 0, 0);
+  if ('convertToBlob' in canvas && typeof canvas.convertToBlob === 'function') return canvas.convertToBlob({ type });
+  if ('toBlob' in canvas && typeof canvas.toBlob === 'function') {
+    return new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Canvas encoding failed.')), type);
+    });
+  }
+  throw new Error('Canvas encoding is unavailable.');
 }
 
 export type { Homography, ImageDimensions, NormalizedPoint };

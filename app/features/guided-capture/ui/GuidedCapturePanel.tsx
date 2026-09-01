@@ -24,6 +24,7 @@ import {
 import { BackgroundEditPanel } from '../../background-edit/BackgroundEditPanel';
 import { GuidedCaptureCamera } from './GuidedCaptureCamera';
 import { dispatchFileToListingInput } from './captureFileBridge';
+import { markerDetectionFailureMessage } from '../measurement/markerDetector';
 import {
   CAPTURE_CONNECTION_LABELS,
   CAPTURE_PHASE_LABELS,
@@ -32,6 +33,7 @@ import {
   CAPTURE_SLOT_ORDER,
   IMAGE_CAPTURE_SLOT_ORDER,
   getSlotStatusLabel,
+  isCaptureSlotSelectable,
 } from './captureUiConstants';
 import type {
   ConnectionState,
@@ -73,6 +75,12 @@ const MEASUREMENT_ENDPOINTS = [
 ] as const satisfies ReadonlyArray<{ key: keyof MeasurementEndpoints; label: string; tone: 'length' | 'width' }>;
 
 const PROJECTION_CORNER_LABELS = ['左上', '右上', '右下', '左下'] as const;
+const MEASUREMENT_POINT_LABELS: Readonly<Record<keyof MeasurementEndpoints, string>> = {
+  lengthStart: '着丈始',
+  lengthEnd: '着丈終',
+  widthStart: '身幅始',
+  widthEnd: '身幅終',
+};
 
 const isSupportedClothing = (category: string, subcategory: string): boolean => {
   if (!category) return true;
@@ -80,8 +88,12 @@ const isSupportedClothing = (category: string, subcategory: string): boolean => 
   return !subcategory || subcategory === 'トップス';
 };
 
-const isValidMeasurementValue = (value: number | null | undefined, min: number, max: number): value is number => (
-  value !== null && value !== undefined && Number.isFinite(value) && value >= min && value <= max
+const isValidMeasurementValue = (value: number | null | undefined): value is number => (
+  value !== null && value !== undefined && Number.isFinite(value) && value > 0
+);
+
+const isRecommendedMeasurementValue = (value: number | null | undefined, min: number, max: number): value is number => (
+  isValidMeasurementValue(value) && value >= min && value <= max
 );
 
 const countCompletedSlots = (slots: Record<SessionSlot, SlotProgress>): number => (
@@ -178,7 +190,7 @@ const CaptureProgress: React.FC<CaptureProgressProps> = ({ slots, activeSlot, is
         {CAPTURE_SLOT_ORDER.map((slot, index) => {
           const progress = slots[slot];
           const isCurrent = activeSlot === slot;
-          const isSelectable = isActive && progress.status !== 'approved';
+          const isSelectable = isCaptureSlotSelectable(slots, slot, isActive);
           return (
             <li key={slot} className={`guided-capture-progress__item ${isCurrent ? 'is-current' : ''}`}>
               <button type="button" className={`guided-capture-progress__button ${slotStatusClass(progress, isCurrent)}`} aria-current={isCurrent ? 'step' : undefined} aria-label={`${index + 1} ${CAPTURE_SLOT_LABELS[slot]}、${getSlotStatusLabel(progress)}`} data-testid={`guided-capture-slot-${slot}`} disabled={!isSelectable} onClick={() => onSelectSlot(slot)}>
@@ -236,6 +248,8 @@ interface MeasurementEditorProps {
   previewUrl: string | null;
   isBusy: boolean;
   measurementReady: boolean;
+  measurementOutOfRange: boolean;
+  rangeConfirmed: boolean;
   cameraInputRef: React.RefObject<HTMLInputElement | null>;
   albumInputRef: React.RefObject<HTMLInputElement | null>;
   onCamera: () => void;
@@ -248,23 +262,54 @@ interface MeasurementEditorProps {
   onApprove: () => void;
 }
 
-const MeasurementEditor: React.FC<MeasurementEditorProps> = ({ draft, previewUrl, isBusy, measurementReady, cameraInputRef, albumInputRef, onCamera, onAlbum, onFile, onEndpointCommit, onProjectionCommit, onClearProjection, onMeasurementChange, onApprove }) => {
+const MeasurementEditor: React.FC<MeasurementEditorProps> = ({ draft, previewUrl, isBusy, measurementReady, measurementOutOfRange, rangeConfirmed, cameraInputRef, albumInputRef, onCamera, onAlbum, onFile, onEndpointCommit, onProjectionCommit, onClearProjection, onMeasurementChange, onApprove }) => {
   const endpoints = draft?.endpoints;
   const projectionCorners = draft?.projectionCorners ?? DEFAULT_PROJECTION_CORNERS;
+  const [draggingEndpoint, setDraggingEndpoint] = useState<keyof MeasurementEndpoints | null>(null);
+  const measurementSvgRef = useRef<SVGSVGElement>(null);
+
+  const pointFromPointer = useCallback((event: React.PointerEvent<SVGSVGElement>): { x: number; y: number } | null => {
+    const rect = measurementSvgRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+    };
+  }, []);
+
+  const handlePointMove = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
+    if (!draggingEndpoint || isBusy) return;
+    const point = pointFromPointer(event);
+    if (!point) return;
+    onEndpointCommit(draggingEndpoint, 'x', point.x);
+    onEndpointCommit(draggingEndpoint, 'y', point.y);
+  }, [draggingEndpoint, isBusy, onEndpointCommit, pointFromPointer]);
+
+  const stopPointDrag = useCallback(() => setDraggingEndpoint(null), []);
+
   return (
     <section className="guided-capture-measurement" data-testid="guided-capture-measurement-editor" aria-labelledby="guided-capture-measurement-title">
       <div className="guided-capture-section-heading"><div className="guided-capture-section-icon is-measurement"><Ruler aria-hidden="true" /></div><div><p className="guided-capture-eyebrow">STEP 4 / REVIEW</p><h3 id="guided-capture-measurement-title">採寸を確認して承認</h3><p>AIの4端点を確認し、必要なら画像上の位置を調整します。ここで承認した数値だけが出品情報に渡ります。</p></div></div>
       <div className="guided-capture-measurement__privacy"><ShieldCheck aria-hidden="true" /><span>採寸画像・端点・補正値はこのセッション内だけで扱います。出品画像には追加されません。</span></div>
       <div className="guided-capture-measurement__inputs"><button type="button" className="guided-capture-button is-secondary" onClick={onCamera} disabled={isBusy} data-testid="guided-capture-measurement-camera"><Camera aria-hidden="true" />採寸画像を撮影</button><button type="button" className="guided-capture-button is-secondary" onClick={onAlbum} disabled={isBusy} data-testid="guided-capture-measurement-album"><ImagePlus aria-hidden="true" />画像を選択</button></div>
 
-      {previewUrl && endpoints ? <figure className="guided-capture-measurement__preview" data-testid="guided-capture-measurement-preview"><div className="guided-capture-measurement__stage"><img src={previewUrl} alt="採寸画像" /><svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"><line x1={endpoints.lengthStart.x} y1={endpoints.lengthStart.y} x2={endpoints.lengthEnd.x} y2={endpoints.lengthEnd.y} className="length-line" /><line x1={endpoints.widthStart.x} y1={endpoints.widthStart.y} x2={endpoints.widthEnd.x} y2={endpoints.widthEnd.y} className="width-line" />{[['lengthStart', endpoints.lengthStart], ['lengthEnd', endpoints.lengthEnd], ['widthStart', endpoints.widthStart], ['widthEnd', endpoints.widthEnd]].map(([key, point]) => { const pointValue = point as { x: number; y: number }; return <g key={key as string}><circle cx={pointValue.x} cy={pointValue.y} r="0.022" className={(key as string).startsWith('length') ? 'length-point' : 'width-point'} /><text x={pointValue.x} y={pointValue.y - 0.035} className="point-label">{key === 'lengthStart' ? '着丈始' : key === 'lengthEnd' ? '着丈終' : key === 'widthStart' ? '身幅始' : '身幅終'}</text></g>; })}</svg></div><figcaption><span className="guided-capture-legend length" />着丈 <span className="guided-capture-legend width" />身幅 ・ 点を座標で微調整できます</figcaption></figure> : <div className="guided-capture-measurement__empty" role="status"><Ruler aria-hidden="true" /><span>採寸画像を撮影すると、AIの4端点と換算値がここに表示されます。</span></div>}
+      {previewUrl && endpoints ? <figure className="guided-capture-measurement__preview" data-testid="guided-capture-measurement-preview"><div className="guided-capture-measurement__stage"><img src={previewUrl} alt="採寸画像" /><svg ref={measurementSvgRef} viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true" onPointerMove={handlePointMove} onPointerUp={stopPointDrag} onPointerCancel={stopPointDrag}><line x1={endpoints.lengthStart.x} y1={endpoints.lengthStart.y} x2={endpoints.lengthEnd.x} y2={endpoints.lengthEnd.y} className="length-line" /><line x1={endpoints.widthStart.x} y1={endpoints.widthStart.y} x2={endpoints.widthEnd.x} y2={endpoints.widthEnd.y} className="width-line" />{(Object.keys(MEASUREMENT_POINT_LABELS) as Array<keyof MeasurementEndpoints>).map((key) => { const point = endpoints[key]; const tone = key.startsWith('length') ? 'length' : 'width'; return <g key={key}><circle data-testid={`guided-capture-point-${key}`} cx={point.x} cy={point.y} r="0.08" className="point-hit-target" onPointerDown={(event) => { if (isBusy) return; event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); setDraggingEndpoint(key); }} /><circle cx={point.x} cy={point.y} r="0.022" className={`${tone}-point`} /><text x={point.x} y={point.y - 0.035} className="point-label">{MEASUREMENT_POINT_LABELS[key]}</text></g>; })}</svg></div><figcaption><span className="guided-capture-legend length" />着丈 <span className="guided-capture-legend width" />身幅 ・ 点をドラッグして微調整できます。キーボードは下の座標入力を利用できます。</figcaption></figure> : <div className="guided-capture-measurement__empty" role="status"><Ruler aria-hidden="true" /><span>採寸画像を撮影すると、AIの4端点と換算値がここに表示されます。</span></div>}
 
-      {endpoints && <><div className="guided-capture-inline-status" role="status" aria-live="polite"><Sparkles aria-hidden="true" />AIが4端点を提案しました。数値や位置を確認してから承認してください。</div><fieldset className="guided-capture-coordinate-editor" data-testid="guided-capture-measurement-endpoints"><legend>4端点を編集 <span>正規化座標 0〜1</span></legend><div className="guided-capture-coordinate-grid">{MEASUREMENT_ENDPOINTS.map(({ key, label, tone }) => <div key={key} className={`guided-capture-coordinate-card ${tone}`}><div className="guided-capture-coordinate-title"><span className="guided-capture-coordinate-dot" />{label}</div><div className="guided-capture-coordinate-fields"><CoordinateInput label="X" value={endpoints[key].x} tone={tone} ariaLabel={`${label} X`} onCommit={(value) => onEndpointCommit(key, 'x', value)} /><CoordinateInput label="Y" value={endpoints[key].y} tone={tone} ariaLabel={`${label} Y`} onCommit={(value) => onEndpointCommit(key, 'y', value)} /></div></div>)}</div></fieldset><details className="guided-capture-projection" data-testid="guided-capture-projection-editor"><summary><span><Info aria-hidden="true" />射影補正を調整</span><ChevronRight aria-hidden="true" /></summary><div className="guided-capture-projection__body"><p>採寸平面の四隅を、左上→右上→右下→左下の順で入力します。斜めから撮った画像の補正に使います。</p><div className="guided-capture-projection__grid">{PROJECTION_CORNER_LABELS.map((label, index) => { const point = projectionCorners[index] ?? DEFAULT_PROJECTION_CORNERS[index]; return <div key={label} className="guided-capture-projection__card"><strong>{label}</strong><div><CoordinateInput label="X" value={point.x} ariaLabel={`射影補正 ${label} X`} onCommit={(value) => onProjectionCommit(index, 'x', value)} /><CoordinateInput label="Y" value={point.y} ariaLabel={`射影補正 ${label} Y`} onCommit={(value) => onProjectionCommit(index, 'y', value)} /></div></div>; })}</div><button type="button" className="guided-capture-link-button is-muted" onClick={onClearProjection}>補正を初期化</button></div></details></>}
+      {endpoints && <>
+        <div className={`guided-capture-inline-status ${draft?.endpointSource === 'ai' ? '' : 'is-warning'}`} role="status" aria-live="polite">
+          {draft?.endpointSource === 'ai' ? <><Sparkles aria-hidden="true" />AIが4端点を提案しました。数値や位置を確認してから承認してください。</> : <><Info aria-hidden="true" />自動提案を利用できないため、4端点と採寸値を手動で確認してください。</>}
+        </div>
+        {draft?.projectionCorrected && <div className="guided-capture-inline-status is-success" role="status" aria-live="polite"><Check aria-hidden="true" />画像を5cmマーカーの平面へ正面補正しました。表示中の端点と換算値は補正後の座標です。</div>}
+        {draft?.marker && <div className="guided-capture-inline-status is-success" role="status" aria-live="polite"><Check aria-hidden="true" />5cmマーカーを端末内で確認しました。マーカーの縮尺から換算した値を表示しています。</div>}
+        {draft?.markerDetectionFailure && <div className="guided-capture-inline-status is-warning" role="status" aria-live="polite"><Info aria-hidden="true" />{markerDetectionFailureMessage(draft.markerDetectionFailure)} 端点と採寸値は手動で確認できます。</div>}
+        <fieldset className="guided-capture-coordinate-editor" data-testid="guided-capture-measurement-endpoints"><legend>4端点を編集 <span>正規化座標 0〜1</span></legend><div className="guided-capture-coordinate-grid">{MEASUREMENT_ENDPOINTS.map(({ key, label, tone }) => <div key={key} className={`guided-capture-coordinate-card ${tone}`}><div className="guided-capture-coordinate-title"><span className="guided-capture-coordinate-dot" />{label}</div><div className="guided-capture-coordinate-fields"><CoordinateInput label="X" value={endpoints[key].x} tone={tone} ariaLabel={`${label} X`} onCommit={(value) => onEndpointCommit(key, 'x', value)} /><CoordinateInput label="Y" value={endpoints[key].y} tone={tone} ariaLabel={`${label} Y`} onCommit={(value) => onEndpointCommit(key, 'y', value)} /></div></div>)}</div></fieldset>
+        {!draft?.projectionCorrected && <details className="guided-capture-projection" data-testid="guided-capture-projection-editor"><summary><span><Info aria-hidden="true" />射影補正を調整</span><ChevronRight aria-hidden="true" /></summary><div className="guided-capture-projection__body"><p>採寸平面の四隅を、左上→右上→右下→左下の順で入力します。斜めから撮った画像の補正に使います。</p><div className="guided-capture-projection__grid">{PROJECTION_CORNER_LABELS.map((label, index) => { const point = projectionCorners[index] ?? DEFAULT_PROJECTION_CORNERS[index]; return <div key={label} className="guided-capture-projection__card"><strong>{label}</strong><div><CoordinateInput label="X" value={point.x} ariaLabel={`射影補正 ${label} X`} onCommit={(value) => onProjectionCommit(index, 'x', value)} /><CoordinateInput label="Y" value={point.y} ariaLabel={`射影補正 ${label} Y`} onCommit={(value) => onProjectionCommit(index, 'y', value)} /></div></div>; })}</div><button type="button" className="guided-capture-link-button is-muted" onClick={onClearProjection}>補正を初期化</button></div></details>}
+      </>}
 
       <div className="guided-capture-measurement__values"><label><span>着丈</span><div><input type="number" min="20" max="100" step="0.1" inputMode="decimal" value={draft?.lengthCm ?? ''} onChange={(event) => onMeasurementChange({ lengthCm: event.target.value === '' ? null : Number(event.target.value) })} aria-label="着丈（cm）" /><small>cm</small></div></label><label><span>身幅</span><div><input type="number" min="20" max="80" step="0.1" inputMode="decimal" value={draft?.widthCm ?? ''} onChange={(event) => onMeasurementChange({ widthCm: event.target.value === '' ? null : Number(event.target.value) })} aria-label="身幅（cm）" /><small>cm</small></div></label></div>
       <label className="guided-capture-marker-input"><span>5cmマーカーの1辺 <small>任意</small></span><div><input type="number" min="1" max="100000" step="0.1" inputMode="decimal" value={draft?.markerSidePx ?? ''} onChange={(event) => onMeasurementChange({ markerSidePx: event.target.value === '' ? null : Number(event.target.value) })} aria-describedby="guided-capture-marker-help" aria-label="5cmマーカーの1辺（px）" /><small>px</small></div></label><p id="guided-capture-marker-help" className="guided-capture-form-help">既知マーカーの一辺を入力すると、端点間の距離を端末内でcm換算します。換算値がない場合は着丈・身幅を手入力できます。</p>
-      <div className={`guided-capture-approval-hint ${measurementReady ? 'is-ready' : ''}`} role="status" aria-live="polite">{measurementReady ? <><Check aria-hidden="true" />承認できる数値です。内容を確認して次へ進めます。</> : <><Info aria-hidden="true" />着丈20〜100cm、身幅20〜80cmの数値を入力してください。</>}</div>
-      <button type="button" className="guided-capture-button is-primary is-wide" onClick={onApprove} disabled={!measurementReady || isBusy} data-testid="guided-capture-approve-measurement"><ShieldCheck aria-hidden="true" />採寸値を明示承認</button>
+      <div className={`guided-capture-approval-hint ${measurementReady && !measurementOutOfRange ? 'is-ready' : ''}`} role="status" aria-live="polite">{!measurementReady ? <><Info aria-hidden="true" />着丈・身幅に正の数値を入力してください。</> : measurementOutOfRange && !rangeConfirmed ? <><AlertTriangle aria-hidden="true" />推奨範囲（着丈20〜100cm・身幅20〜80cm）の外です。実測値を確認してから、もう一度押して承認してください。</> : measurementOutOfRange ? <><Check aria-hidden="true" />範囲外の値を確認済みです。明示承認すると出品情報へ渡ります。</> : <><Check aria-hidden="true" />承認できる数値です。内容を確認して次へ進めます。</>}</div>
+      <button type="button" className="guided-capture-button is-primary is-wide" onClick={onApprove} disabled={!measurementReady || isBusy} data-testid="guided-capture-approve-measurement"><ShieldCheck aria-hidden="true" />{measurementOutOfRange && !rangeConfirmed ? '範囲外を確認して承認' : '採寸値を明示承認'}</button>
       <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="sr-only" data-testid="guided-capture-measurement-camera-input" onChange={onFile} /><input ref={albumInputRef} type="file" accept="image/*" className="sr-only" data-testid="guided-capture-measurement-album-input" onChange={onFile} />
     </section>
   );
@@ -304,7 +349,9 @@ const GuidedCapturePanel: React.FC<GuidedCapturePanelProps> = ({ controller, cat
   const isPendingCategory = !hasSelectedCategory || (Boolean(category) && !subcategory);
   const captureSlot = getCaptureSlot(state.slots, state.activeSlot);
   const completedSlots = countCompletedSlots(state.slots);
-  const measurementReady = isValidMeasurementValue(state.measurementDraft?.lengthCm, 20, 100) && isValidMeasurementValue(state.measurementDraft?.widthCm, 20, 80);
+  const measurementReady = isValidMeasurementValue(state.measurementDraft?.lengthCm) && isValidMeasurementValue(state.measurementDraft?.widthCm);
+  const measurementOutOfRange = measurementReady && (!isRecommendedMeasurementValue(state.measurementDraft?.lengthCm, 20, 100) || !isRecommendedMeasurementValue(state.measurementDraft?.widthCm, 20, 80));
+  const [measurementRangeConfirmed, setMeasurementRangeConfirmed] = useState(false);
   const effectiveConnectionState: ConnectionState = browserOffline ? 'disconnected' : state.connectionState;
 
   useEffect(() => { sessionIdRef.current = state.sessionId; }, [state.sessionId]);
@@ -313,7 +360,7 @@ const GuidedCapturePanel: React.FC<GuidedCapturePanelProps> = ({ controller, cat
     if (typeof navigator === 'undefined') return undefined;
     const updateOffline = () => setBrowserOffline(!navigator.onLine);
     const handleOffline = () => { setBrowserOffline(true); if (sessionIdRef.current) controller.reportConnectionState('disconnected', '端末がオフラインです。固定ガイドと手動撮影を利用できます。'); };
-    const handleOnline = () => { setBrowserOffline(false); if (sessionIdRef.current) controller.reportConnectionState('reconnecting', '接続が戻りました。再接続を確認してください。'); };
+    const handleOnline = () => { setBrowserOffline(false); if (sessionIdRef.current) controller.retryConnection(); };
     updateOffline();
     window.addEventListener('offline', handleOffline);
     window.addEventListener('online', handleOnline);
@@ -343,17 +390,20 @@ const GuidedCapturePanel: React.FC<GuidedCapturePanelProps> = ({ controller, cat
   }, [clearMeasurementPreview]);
 
   const onMeasurementFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setMeasurementRangeConfirmed(false);
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
     setMeasurementPreview(file);
-    void controller.recordMeasurement(file);
+    void controller.recordMeasurement(file).then((corrected) => {
+      if (corrected) setMeasurementPreview(corrected);
+    });
   };
 
-  const onMeasurementCamera = () => measurementCameraInputRef.current?.click();
-  const onMeasurementAlbum = () => measurementAlbumInputRef.current?.click();
+  const onMeasurementCamera = useCallback(() => measurementCameraInputRef.current?.click(), []);
+  const onMeasurementAlbum = useCallback(() => measurementAlbumInputRef.current?.click(), []);
 
-  const guidanceMessage = state.latestGuidance?.message ?? (browserOffline || state.connectionState === 'disconnected' || state.phase === 'fallback'
+  const guidanceMessage = state.primaryGuidance?.message ?? state.guidanceAcknowledgement ?? (browserOffline || state.connectionState === 'disconnected' || state.phase === 'fallback'
     ? 'オフラインでも撮影を続けられます。固定ガイドに沿って撮影し、接続後にAI検証を再試行できます。'
     : state.phase === 'ready'
       ? '必要な写真と採寸の承認が揃いました。背景編集も確認してから出品へ進めます。'
@@ -387,13 +437,14 @@ const GuidedCapturePanel: React.FC<GuidedCapturePanelProps> = ({ controller, cat
   const handleCameraCapture = useCallback(async (file: File): Promise<boolean> => {
     if (captureSlot === 'measurement') {
       setMeasurementPreview(file);
-      await controller.recordMeasurement(file);
+      const corrected = await controller.recordMeasurement(file);
+      if (corrected) setMeasurementPreview(corrected);
       return true;
     }
     return dispatchFileToListingInput(file, 'listing-camera');
   }, [captureSlot, controller, setMeasurementPreview]);
 
-  const handleCameraAlbum = useCallback(() => { setIsCameraOpen(false); if (captureSlot === 'measurement') onMeasurementAlbum(); else onManualAlbum(); }, [captureSlot, onManualAlbum]);
+  const handleCameraAlbum = useCallback(() => { setIsCameraOpen(false); if (captureSlot === 'measurement') onMeasurementAlbum(); else onManualAlbum(); }, [captureSlot, onMeasurementAlbum, onManualAlbum]);
 
   const handleRetakeSlot = useCallback((slot: SessionSlot) => {
     if (slot !== 'measurement') {
@@ -422,19 +473,24 @@ const GuidedCapturePanel: React.FC<GuidedCapturePanelProps> = ({ controller, cat
     onManualAlbum();
   };
 
+  const commitMeasurementPatch = useCallback((patch: Parameters<GuidedCaptureController['updateMeasurement']>[0]) => {
+    setMeasurementRangeConfirmed(false);
+    controller.updateMeasurement(patch);
+  }, [controller]);
+
   const updateEndpoint = (key: keyof MeasurementEndpoints, axis: 'x' | 'y', value: number) => {
     const endpoints = state.measurementDraft?.endpoints;
     if (!endpoints) return;
-    controller.updateMeasurement({ endpoints: { ...endpoints, [key]: { ...endpoints[key], [axis]: value } } });
+    commitMeasurementPatch({ endpoints: { ...endpoints, [key]: { ...endpoints[key], [axis]: value } } });
   };
 
   const updateProjectionCorner = (index: number, axis: 'x' | 'y', value: number) => {
     const corners = [...(state.measurementDraft?.projectionCorners ?? DEFAULT_PROJECTION_CORNERS)] as Array<{ x: number; y: number }>;
     corners[index] = { ...corners[index], [axis]: value };
-    controller.updateMeasurement({ projectionCorners: [corners[0], corners[1], corners[2], corners[3]] });
+    commitMeasurementPatch({ projectionCorners: [corners[0], corners[1], corners[2], corners[3]] });
   };
 
-  const handleRetakeMeasurement = () => { clearMeasurementPreview(); controller.retakeMeasurement(); };
+  const handleRetakeMeasurement = () => { clearMeasurementPreview(); setMeasurementRangeConfirmed(false); controller.retakeMeasurement(); };
   const openCamera = () => { if (!isActive || isReady || isBusy) return; setIsCameraOpen(true); };
   const primaryActionLabel = state.phase === 'measurement' ? '採寸画像を撮る' : state.phase === 'review' ? '撮影を見直す' : 'カメラを開いて撮る';
   const manualActionsEnabled = canAddMedia && !isBusy && !isReady;
@@ -451,21 +507,21 @@ const GuidedCapturePanel: React.FC<GuidedCapturePanelProps> = ({ controller, cat
         {isPendingCategory && isSupported && <div className="guided-capture-notice" role="status"><Info aria-hidden="true" /><span>カテゴリー未確定でも撮影を始められます。レディース／メンズ・トップスを選ぶと案内がより正確になります。</span></div>}
         <CaptureProgress slots={state.slots} activeSlot={state.activeSlot} isActive={isActive} onSelectSlot={controller.selectSlot} />
         <div className="guided-capture-live-status" role="status" aria-live="polite" aria-atomic="true" data-testid="guided-capture-status"><span className={`guided-capture-live-status__dot ${state.phase === 'ready' ? 'is-ready' : state.phase === 'connecting' || verifyingSlot ? 'is-working' : ''}`} /><span>{statusMessage}</span><span className="guided-capture-live-status__count">{completedSlots}/4</span></div>
-        <div className="guided-capture-guidance" role="status" aria-live="polite" aria-atomic="true" data-testid="guided-capture-guidance"><div className="guided-capture-guidance__icon"><Sparkles aria-hidden="true" /></div><div><p className="guided-capture-eyebrow">{state.latestGuidance ? 'AI ADVICE' : 'NEXT ACTION'}</p><p className="guided-capture-guidance__message">{guidanceMessage}</p><p className="guided-capture-guidance__detail">対象: {CAPTURE_SLOT_LABELS[captureSlot]} ・ {CAPTURE_SLOT_DETAILS[captureSlot]}</p></div></div>
+        <div className="guided-capture-guidance" role="status" aria-live="polite" aria-atomic="true" data-testid="guided-capture-guidance"><div className="guided-capture-guidance__icon"><Sparkles aria-hidden="true" /></div><div><p className="guided-capture-eyebrow">{state.primaryGuidance?.source === 'agent' ? 'AI ADVICE' : state.primaryGuidance ? 'LIVE CHECK' : 'NEXT ACTION'}</p><p className="guided-capture-guidance__message">{guidanceMessage}</p><p className="guided-capture-guidance__detail">対象: {CAPTURE_SLOT_LABELS[captureSlot]} ・ {CAPTURE_SLOT_DETAILS[captureSlot]}</p></div></div>
         {state.error && <div className="guided-capture-error" role="alert"><AlertTriangle aria-hidden="true" /><span>{state.error}</span></div>}
 
         {state.phase === 'idle' ? <button type="button" onClick={handleStart} disabled={!isSupported} className="guided-capture-button is-primary is-wide is-start" data-testid="guided-capture-start"><Sparkles aria-hidden="true" />AI撮影アシスタントを開始<ChevronRight aria-hidden="true" /></button> : <div className="guided-capture-primary-actions"><button type="button" onClick={openCamera} disabled={isReady || isBusy} className="guided-capture-button is-primary" data-testid="guided-capture-open-camera"><Camera aria-hidden="true" />{primaryActionLabel}<span className="guided-capture-button__sub">全画面カメラ</span></button>{(effectiveConnectionState === 'disconnected' || state.phase === 'fallback') && <button type="button" onClick={controller.retryConnection} className="guided-capture-button is-secondary" data-testid="guided-capture-reconnect"><RefreshCw aria-hidden="true" />再接続</button>}<button type="button" onClick={handleStop} className="guided-capture-button is-quiet" data-testid="guided-capture-stop">終了</button></div>}
 
         <div className="guided-capture-manual"><div className="guided-capture-subheading"><div><p className="guided-capture-eyebrow">MANUAL FALLBACK</p><h3>自分で撮影・追加する</h3></div>{isReady ? <span className="guided-capture-lock"><ShieldCheck aria-hidden="true" />承認済み</span> : <span className="guided-capture-availability"><span />READY前は利用できます</span>}</div><div className="guided-capture-manual__actions"><button type="button" onClick={handleManualCamera} disabled={!manualActionsEnabled} className="guided-capture-button is-secondary" data-testid="guided-capture-manual-camera"><Camera aria-hidden="true" />手動で撮影</button><button type="button" onClick={handleManualAlbum} disabled={!manualActionsEnabled} className="guided-capture-button is-secondary" data-testid="guided-capture-manual-album"><ImagePlus aria-hidden="true" />アルバムから追加</button></div>{isReady && <p className="guided-capture-form-help">撮影・採寸の承認後は内容を変更できません。見直す場合は「採寸を見直す」から戻れます。</p>}{canAddMedia && !isReady && isBusy && <p className="guided-capture-form-help" role="status"><LoaderCircle className="guided-capture-spin" aria-hidden="true" />画像を処理中のため、少しお待ちください。</p>}</div>
 
-        {hasAllImageSlotsCaptured(state.slots) && state.slots.measurement.status !== 'approved' && <MeasurementEditor draft={state.measurementDraft} previewUrl={measurementPreviewUrl} isBusy={isBusy} measurementReady={measurementReady} cameraInputRef={measurementCameraInputRef} albumInputRef={measurementAlbumInputRef} onCamera={onMeasurementCamera} onAlbum={onMeasurementAlbum} onFile={onMeasurementFile} onEndpointCommit={updateEndpoint} onProjectionCommit={updateProjectionCorner} onClearProjection={() => controller.updateMeasurement({ projectionCorners: null })} onMeasurementChange={(patch) => controller.updateMeasurement(patch)} onApprove={() => controller.approveMeasurement()} />}
+        {hasAllImageSlotsCaptured(state.slots) && state.slots.measurement.status !== 'approved' && <MeasurementEditor draft={state.measurementDraft} previewUrl={measurementPreviewUrl} isBusy={isBusy} measurementReady={measurementReady} measurementOutOfRange={measurementOutOfRange} rangeConfirmed={measurementRangeConfirmed} cameraInputRef={measurementCameraInputRef} albumInputRef={measurementAlbumInputRef} onCamera={onMeasurementCamera} onAlbum={onMeasurementAlbum} onFile={onMeasurementFile} onEndpointCommit={updateEndpoint} onProjectionCommit={updateProjectionCorner} onClearProjection={() => commitMeasurementPatch({ projectionCorners: null })} onMeasurementChange={commitMeasurementPatch} onApprove={() => { if (measurementOutOfRange && !measurementRangeConfirmed) { setMeasurementRangeConfirmed(true); return; } controller.approveMeasurement(undefined, measurementOutOfRange && measurementRangeConfirmed); }} />}
         {state.phase === 'review' && state.measurement && <GuidedReview slots={state.slots} measurement={state.measurement} onRetakeMeasurement={handleRetakeMeasurement} onApprove={controller.approveCapture} />}
         {state.phase === 'ready' && <section className="guided-capture-ready" role="status" data-testid="guided-capture-ready"><div className="guided-capture-ready__title"><span><ShieldCheck aria-hidden="true" />写真・採寸の承認が完了しました</span><span>4/4</span></div><p>承認済みの写真と採寸だけが出品へ引き渡されます。背景編集画像は下で確認・採用できます。</p><button type="button" onClick={handleRetakeMeasurement} className="guided-capture-link-button" data-testid="guided-capture-edit-measurement"><Ruler aria-hidden="true" />採寸を見直す</button></section>}
         {state.phase === 'ready' && <BackgroundEditPanel original={frontOriginal} originalPreviewUrl={frontPreviewUrl} onApproved={onBackgroundApproved} />}
         <p className="guided-capture-footnote"><ShieldCheck aria-hidden="true" />撮影途中のsessionデータはこの画面内だけで扱います。measurement画像・AI途中結果・未承認背景は出品画像に含めません。</p>
       </div>}
 
-      {isCameraOpen && <GuidedCaptureCamera slot={captureSlot} phaseLabel={CAPTURE_PHASE_LABELS[state.phase]} progress={state.slots} connectionState={effectiveConnectionState} transport={state.transport} guidanceMessage={guidanceMessage} browserOffline={browserOffline} onCapture={handleCameraCapture} onStreamReady={onStreamReady ?? controller.publishCameraStream} onStreamStopped={onStreamStopped} onChooseAlbum={handleCameraAlbum} onClose={handleCloseCamera} onSelectSlot={controller.selectSlot} onRetakeSlot={handleRetakeSlot} onRetryConnection={controller.retryConnection} />}
+      {isCameraOpen && <GuidedCaptureCamera slot={captureSlot} phaseLabel={CAPTURE_PHASE_LABELS[state.phase]} progress={state.slots} connectionState={effectiveConnectionState} transport={state.transport} guidanceMessage={guidanceMessage} browserOffline={browserOffline} onLocalGuidance={controller.reportLocalGuidance} onCapture={handleCameraCapture} onStreamReady={onStreamReady ?? controller.publishCameraStream} onStreamStopped={onStreamStopped} onChooseAlbum={handleCameraAlbum} onClose={handleCloseCamera} onSelectSlot={controller.selectSlot} onRetakeSlot={handleRetakeSlot} onRetryConnection={controller.retryConnection} />}
     </section>
   );
 };

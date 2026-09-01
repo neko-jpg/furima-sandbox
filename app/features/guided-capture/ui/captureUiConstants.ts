@@ -42,3 +42,28 @@ export const getSlotStatusLabel = (progress: SlotProgress): string => {
     default: return '未撮影';
   }
 };
+
+/**
+ * Keep the progress rail honest: a future step is not selectable until the
+ * preceding image slots have been accepted. Captured image slots remain
+ * reachable for a deliberate retake; approved slots are intentionally locked.
+ */
+export const isCaptureSlotSelectable = (
+  slots: Record<SessionSlot, SlotProgress>,
+  slot: SessionSlot,
+  isActive: boolean,
+): boolean => {
+  if (!isActive || slots[slot].status === 'approved') return false;
+  if (slots[slot].status === 'captured') return true;
+  if (slot === 'measurement') {
+    return IMAGE_CAPTURE_SLOT_ORDER.every((candidate) => {
+      const status = slots[candidate].status;
+      return status === 'captured' || status === 'approved';
+    });
+  }
+  const nextImageSlot = IMAGE_CAPTURE_SLOT_ORDER.find((candidate) => {
+    const status = slots[candidate].status;
+    return status === 'pending' || status === 'active';
+  });
+  return slot === nextImageSlot;
+};

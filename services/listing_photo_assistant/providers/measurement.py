@@ -17,6 +17,7 @@ from typing import Protocol, TypeAlias, runtime_checkable
 
 from ..config import BackendSettings
 from .errors import ProviderError, ProviderErrorCode
+from .proxy_responses import ProxyResponsesClient
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -418,14 +419,33 @@ class ResponsesClient(Protocol):
 class ResponsesMeasurementLineProvider:
     """OpenAI Responses adapter with a strict four-endpoint JSON schema."""
 
-    def __init__(self, client: ResponsesClient, model: str) -> None:
+    def __init__(
+        self,
+        client: ResponsesClient,
+        model: str,
+        *,
+        reasoning_effort: str = "none",
+        max_output_tokens: int = 256,
+    ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise MeasurementLineContractError("model must be a non-empty string")
+        if reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+            raise MeasurementLineContractError("reasoning_effort is invalid")
+        if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or max_output_tokens <= 0:
+            raise MeasurementLineContractError("max_output_tokens must be positive")
         self._client = client
         self._model = model
+        self._reasoning_effort = reasoning_effort
+        self._max_output_tokens = max_output_tokens
 
     @staticmethod
-    def request_for(input: MeasurementLineInput, model: str) -> dict[str, object]:
+    def request_for(
+        input: MeasurementLineInput,
+        model: str,
+        *,
+        reasoning_effort: str = "none",
+        max_output_tokens: int = 256,
+    ) -> dict[str, object]:
         if not isinstance(input, MeasurementLineInput):
             raise MeasurementLineContractError("input must be a MeasurementLineInput")
         if not isinstance(model, str) or not model.strip():
@@ -434,6 +454,8 @@ class ResponsesMeasurementLineProvider:
         return {
             "model": model,
             "store": False,
+            "reasoning": {"effort": reasoning_effort},
+            "max_output_tokens": max_output_tokens,
             "instructions": (
                 "Inspect exactly one perspective-corrected garment measurement image. "
                 "Return only the four schema endpoints: lengthStart is the centre base "
@@ -466,7 +488,14 @@ class ResponsesMeasurementLineProvider:
         }
 
     async def suggest(self, input: MeasurementLineInput) -> MeasurementEndpoints:
-        response = await self._client.create(**self.request_for(input, self._model))
+        response = await self._client.create(
+            **self.request_for(
+                input,
+                self._model,
+                reasoning_effort=self._reasoning_effort,
+                max_output_tokens=self._max_output_tokens,
+            )
+        )
         return validate_measurement_endpoints(_response_payload(response))
 
 
@@ -602,11 +631,19 @@ def _create_responses_client(settings: BackendSettings) -> ResponsesClient:
             retryable=True,
             provider="measurement-line",
         ) from error
-    kwargs: dict[str, str] = {"api_key": settings.openai_api_key}
+    kwargs: dict[str, object] = {
+        "api_key": settings.openai_api_key,
+        "max_retries": settings.openai_max_retries,
+    }
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
     try:
-        return AsyncOpenAI(**kwargs).responses  # type: ignore[no-any-return]
+        responses = AsyncOpenAI(**kwargs).responses
+        return (
+            ProxyResponsesClient(responses)
+            if settings.openai_base_url
+            else responses
+        )  # type: ignore[return-value]
     except Exception as error:
         raise ProviderError(
             ProviderErrorCode.UNAVAILABLE,
@@ -642,7 +679,12 @@ def create_measurement_line_provider(
     try:
         client = live_client or _create_responses_client(resolved)
         return LiveMeasurementLineProvider(
-            ResponsesMeasurementLineProvider(client, live_model or resolved.measurement_line_model)
+            ResponsesMeasurementLineProvider(
+                client,
+                live_model or resolved.measurement_line_model,
+                reasoning_effort=resolved.llm_reasoning_effort,
+                max_output_tokens=resolved.llm_max_output_tokens,
+            )
         )
     except ProviderError:
         return UnavailableLiveMeasurementLineProvider()

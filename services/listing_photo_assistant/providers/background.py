@@ -24,8 +24,19 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from ..config import BackendSettings
+from ..settings import (
+    BACKGROUND_IMAGE_BACKGROUND,
+    BACKGROUND_IMAGE_FALLBACK_QUALITY,
+    BACKGROUND_IMAGE_FALLBACK_SIZE,
+    BACKGROUND_IMAGE_OUTPUT_FORMAT,
+    BACKGROUND_IMAGE_QUALITIES,
+    BACKGROUND_IMAGE_SIZES,
+    DEFAULT_BACKGROUND_IMAGE_QUALITY,
+    DEFAULT_BACKGROUND_IMAGE_SIZE,
+)
 from .errors import ProviderError as CommonProviderError
 from .image_utils import fixture_background_png
+from .proxy_responses import AsyncResponsesResource
 
 BackgroundStyleId = Literal["studio_white", "warm_neutral", "light_wood"]
 BACKGROUND_STYLE_IDS = ("studio_white", "warm_neutral", "light_wood")
@@ -37,9 +48,24 @@ BACKGROUND_GENERATION_TIMEOUT_SECONDS = 60.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 BACKGROUND_PROMPTS: Mapping[BackgroundStyleId, str] = {
-    "studio_white": "Generate an empty soft-white shooting background, top-down view, uniform lighting; no product, garment, clothing, hanger, person, text, logo, or other object.",
-    "warm_neutral": "Generate an empty warm-neutral beige shooting background, top-down view, uniform lighting; no product, garment, clothing, hanger, person, text, logo, or other object.",
-    "light_wood": "Generate an empty pale light-wood shooting background, top-down view, uniform lighting; no product, garment, clothing, hanger, person, text, logo, or other object.",
+    "studio_white": (
+        "Create an empty matte soft-white product photography surface in a top-down 3:4 composition. "
+        "Leave a generous, clean center for compositing a photographed product and add only a subtle, "
+        "controlled light gradient with no hard cast shadow. Do not draw or imply any product, garment, "
+        "clothing, hanger, person, text, logo, furniture, prop, or other object."
+    ),
+    "warm_neutral": (
+        "Create an empty matte warm-neutral beige product photography surface in a top-down 3:4 composition. "
+        "Leave a generous, clean center for compositing a photographed product and add only a subtle, "
+        "controlled light gradient with no hard cast shadow. Do not draw or imply any product, garment, "
+        "clothing, hanger, person, text, logo, furniture, prop, or other object."
+    ),
+    "light_wood": (
+        "Create an empty matte pale light-wood product photography surface in a top-down 3:4 composition. "
+        "Leave a generous, clean center for compositing a photographed product and add only a subtle, "
+        "controlled light gradient with no hard cast shadow. Do not draw or imply any product, garment, "
+        "clothing, hanger, person, text, logo, furniture, prop, or other object."
+    ),
 }
 STYLE_PROMPTS = BACKGROUND_PROMPTS
 FIXED_PROMPTS = BACKGROUND_PROMPTS
@@ -165,7 +191,11 @@ def validate_background_png(data: bytes) -> BackgroundPngInfo:
     channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
     if channels is None or bit_depth != 8 or compression != 0 or filtering != 0 or interlace != 0:
         raise ProviderError("INVALID_RESPONSE", "Background PNG uses unsupported image settings", retryable=True)
-    if any(kind not in {b"IHDR", b"IDAT", b"IEND", b"PLTE", b"tRNS"} for kind, _ in chunks):
+    # PNG allows ancillary metadata chunks that are not known to the
+    # consumer.  Codex Proxy's image tool currently includes a valid private
+    # ancillary ``caBX`` chunk, so reject unknown *critical* chunks while
+    # retaining the normal PNG CRC/size checks for ancillary data.
+    if any(kind not in {b"IHDR", b"IDAT", b"IEND", b"PLTE", b"tRNS"} and not (kind[0] & 0x20) for kind, _ in chunks):
         raise ProviderError("INVALID_RESPONSE", "Background PNG contains unsupported chunks", retryable=True)
     if color_type == 3 and not any(kind == b"PLTE" for kind, _ in chunks):
         raise ProviderError("INVALID_RESPONSE", "Indexed background PNG is missing its palette", retryable=True)
@@ -249,7 +279,23 @@ class OpenAIImageClient(Protocol):
         """Async subset of ``AsyncOpenAI.images`` used by the adapter."""
 
 
+class CodexProxyImageClient(AsyncResponsesResource, Protocol):
+    """Async subset of ``AsyncOpenAI.responses`` used by Codex Proxy."""
+
+
 PromptGeneratorCallable: TypeAlias = Callable[[str], bytes | BackgroundResult | Awaitable[bytes | BackgroundResult]]
+
+
+def _image_generation_tool(*, size: str, quality: str) -> dict[str, str]:
+    """Build the closed image-tool payload shared by direct and proxy paths."""
+
+    return {
+        "type": "image_generation",
+        "size": size,
+        "quality": quality,
+        "output_format": BACKGROUND_IMAGE_OUTPUT_FORMAT,
+        "background": BACKGROUND_IMAGE_BACKGROUND,
+    }
 
 
 def _input(value: str | BackgroundGenerationInput) -> BackgroundGenerationInput:
@@ -350,30 +396,199 @@ class OpenAIBackgroundGenerator(LiveBackgroundGenerator):
     def __init__(
         self,
         client: OpenAIImageClient,
-        model: str = "gpt-image-1",
+        model: str = "gpt-image-2",
         *,
-        size: str = "1024x1024",
+        size: str = DEFAULT_BACKGROUND_IMAGE_SIZE,
+        quality: str = DEFAULT_BACKGROUND_IMAGE_QUALITY,
         timeout_seconds: float = BACKGROUND_GENERATION_TIMEOUT_SECONDS,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ProviderError("INVALID_INPUT", "Background model must be non-empty", retryable=False)
-        if size not in {"1024x1024", "1536x1024", "1024x1536"}:
+        if size not in BACKGROUND_IMAGE_SIZES:
             raise ProviderError("INVALID_INPUT", "Background image size is not allowed", retryable=False)
-        self._client = client
+        if quality not in BACKGROUND_IMAGE_QUALITIES:
+            raise ProviderError("INVALID_INPUT", "Background image quality is not allowed", retryable=False)
+        # ``LiveBackgroundGenerator`` stores its prompt callback in
+        # ``_client``. Keep the SDK image client separate so ``super()`` does
+        # not overwrite it before the first real generation request.
+        self._image_client = client
         self._model = model
         self._size = size
+        self._quality = quality
         super().__init__(self._generate_prompt, timeout_seconds=timeout_seconds)
 
     async def _generate_prompt(self, prompt: str) -> bytes:
-        raw = self._client.generate(
+        raw = self._image_client.generate(
             model=self._model,
             prompt=prompt,
             size=self._size,
-            output_format="png",
+            quality=self._quality,
+            output_format=BACKGROUND_IMAGE_OUTPUT_FORMAT,
+            background=BACKGROUND_IMAGE_BACKGROUND,
             response_format="b64_json",
         )
         response = await raw if inspect.isawaitable(raw) else raw
         return _base64_image(response)
+
+
+def _field(value: object, name: str) -> object | None:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _proxy_error_text(error: object) -> str:
+    parts = [str(error)]
+    for name in ("type", "code", "message", "param", "detail"):
+        value = _field(error, name)
+        if isinstance(value, str) and value:
+            parts.append(value)
+    return " ".join(parts).casefold()
+
+
+def _proxy_status_code(error: object) -> int | None:
+    for candidate in (error, _field(error, "response")):
+        value = _field(candidate, "status_code")
+        if value is None:
+            value = _field(candidate, "status")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _is_custom_size_rejection(error: object, *, size: str) -> bool:
+    """Recognize only a proxy rejection of the preferred custom canvas.
+
+    The fallback is intentionally not a generic retry policy.  Missing auth,
+    timeouts, provider errors, and malformed image data must surface as their
+    original failure after one request.  A status-bearing 4xx error or an
+    explicitly invalid/unsupported stream error mentioning image dimensions
+    is narrow enough to authorize the one configured compatibility fallback.
+    """
+
+    if size != DEFAULT_BACKGROUND_IMAGE_SIZE:
+        return False
+    text = _proxy_error_text(error)
+    mentions_size = any(token in text for token in ("size", "resolution", "dimension"))
+    rejects_value = any(
+        token in text
+        for token in ("invalid", "unsupported", "not allowed", "unrecognized", "unknown", "custom")
+    )
+    if not mentions_size or not rejects_value:
+        return False
+    status_code = _proxy_status_code(error)
+    return status_code in {400, 422} or rejects_value
+
+
+class _CustomSizeRejected(Exception):
+    """Internal signal for the one explicit preferred-size compatibility fallback."""
+
+
+def _decode_image_result(encoded: object) -> bytes:
+    if not isinstance(encoded, str) or not encoded:
+        raise ProviderError(
+            "INVALID_RESPONSE",
+            "Background provider returned no image",
+            retryable=True,
+        )
+    if "," in encoded and encoded.startswith("data:"):
+        encoded = encoded.split(",", 1)[1]
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError, TypeError) as error:
+        raise ProviderError(
+            "INVALID_RESPONSE",
+            "Background provider returned invalid image data",
+            retryable=True,
+        ) from error
+
+
+class CodexProxyBackgroundGenerator(LiveBackgroundGenerator):
+    """Generate a PNG through Codex Proxy's Responses image tool.
+
+    Codex Proxy's ChatGPT-account route does not expose the regular Images
+    API.  It emits an ``image_generation_call`` item from a Responses SSE
+    stream instead, so this adapter extracts only that item's base64 result.
+    """
+
+    def __init__(
+        self,
+        client: CodexProxyImageClient,
+        model: str = "gpt-5.6-luna",
+        *,
+        size: str = DEFAULT_BACKGROUND_IMAGE_SIZE,
+        quality: str = DEFAULT_BACKGROUND_IMAGE_QUALITY,
+        timeout_seconds: float = BACKGROUND_GENERATION_TIMEOUT_SECONDS,
+    ) -> None:
+        if not isinstance(model, str) or not model.strip():
+            raise ProviderError("INVALID_INPUT", "Background model must be non-empty", retryable=False)
+        if size not in BACKGROUND_IMAGE_SIZES:
+            raise ProviderError("INVALID_INPUT", "Background image size is not allowed", retryable=False)
+        if quality not in BACKGROUND_IMAGE_QUALITIES:
+            raise ProviderError("INVALID_INPUT", "Background image quality is not allowed", retryable=False)
+        self._responses_client = client
+        self._model = model.strip()
+        self._size = size
+        self._quality = quality
+        super().__init__(self._generate_prompt, timeout_seconds=timeout_seconds)
+
+    async def _generate_prompt(self, prompt: str) -> bytes:
+        try:
+            return await self._generate_prompt_once(prompt, size=self._size, quality=self._quality)
+        except _CustomSizeRejected:
+            # This is the sole compatibility fallback: one preferred custom
+            # canvas rejection becomes one explicit 1024x1536/high request.
+            # It is not a retry loop and is never used for other failures.
+            return await self._generate_prompt_once(
+                prompt,
+                size=BACKGROUND_IMAGE_FALLBACK_SIZE,
+                quality=BACKGROUND_IMAGE_FALLBACK_QUALITY,
+            )
+
+    async def _generate_prompt_once(self, prompt: str, *, size: str, quality: str) -> bytes:
+        try:
+            stream = await self._responses_client.create(
+                model=self._model,
+                store=False,
+                stream=True,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}],
+                    }
+                ],
+                tools=[_image_generation_tool(size=size, quality=quality)],
+            )
+        except Exception as error:
+            if _is_custom_size_rejection(error, size=size):
+                raise _CustomSizeRejected from error
+            raise
+        encoded: object | None = None
+        try:
+            async for event in stream:  # type: ignore[union-attr]
+                event_type = getattr(event, "type", "")
+                if event_type == "error":
+                    if _is_custom_size_rejection(_field(event, "error") or event, size=size):
+                        raise _CustomSizeRejected
+                    raise ProviderError(
+                        "UNAVAILABLE",
+                        "Codex Proxy image generation failed",
+                        retryable=True,
+                    )
+                if event_type != "response.output_item.done":
+                    continue
+                item = _field(event, "item")
+                if _field(item, "type") == "image_generation_call":
+                    encoded = _field(item, "result")
+                    if encoded is not None:
+                        break
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+        return _decode_image_result(encoded)
 
 
 # Descriptive alias for callers that name the underlying OpenAI API.
@@ -476,11 +691,26 @@ def create_background_generator(
         try:
             from openai import AsyncOpenAI  # type: ignore[import-not-found]
 
-            kwargs: dict[str, str] = {"api_key": settings.openai_api_key}
+            kwargs: dict[str, object] = {
+                "api_key": settings.openai_api_key,
+                "max_retries": settings.openai_max_retries,
+            }
             if settings.openai_base_url:
                 kwargs["base_url"] = settings.openai_base_url
-            client = AsyncOpenAI(**kwargs).images
-            return OpenAIBackgroundGenerator(client, settings.background_model)
+            sdk_client = AsyncOpenAI(**kwargs)
+            if settings.openai_base_url:
+                return CodexProxyBackgroundGenerator(
+                    sdk_client.responses,
+                    settings.vision_guidance_model,
+                    size=settings.background_image_size,
+                    quality=settings.background_image_quality,
+                )
+            return OpenAIBackgroundGenerator(
+                sdk_client.images,
+                settings.background_model,
+                size=settings.background_image_size,
+                quality=settings.background_image_quality,
+            )
         except (ImportError, TypeError, ValueError):
             return UnavailableBackgroundGenerator()
         except Exception:
@@ -496,6 +726,7 @@ __all__ = [
     "BackgroundStyleId", "FixtureBackgroundGenerator", "HttpBackgroundGenerator",
     "BACKGROUND_GENERATION_TIMEOUT_SECONDS",
     "LiveBackgroundGenerator", "MAX_BACKGROUND_DIMENSION", "MAX_BACKGROUND_PNG_BYTES",
+    "CodexProxyBackgroundGenerator", "CodexProxyImageClient",
     "OpenAIBackgroundGenerator", "OpenAIImageClient", "OpenAIImagesBackgroundGenerator",
     "PNG_SIGNATURE", "ProviderError", "TextPromptGenerator", "UnavailableBackgroundGenerator",
     "background_prompt", "create_background_generator", "validate_background_png", "validate_style_id",

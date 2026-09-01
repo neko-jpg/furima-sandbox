@@ -18,7 +18,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic, Literal, Optional, TypeVar
 
-from .config import BackendSettings
+from .settings import (
+    BackendSettings,
+    DEFAULT_GUIDANCE_CADENCE_SECONDS,
+    DEFAULT_GUIDANCE_FAILURE_COOLDOWN_SECONDS,
+    DEFAULT_GUIDANCE_MAX_CALLS_PER_SESSION,
+)
 from .guidance_transport import GuidanceTransportAdapter, encode_guidance_event
 from .guidance_state_machine import (
     GuidanceEvent,
@@ -53,6 +58,14 @@ class _QueueSize(int):
 
 class FrameSlotClosed(RuntimeError):
     """Optional strict error for callers that reject closed submissions."""
+
+
+class InferenceBudgetExceeded(RuntimeError):
+    """Raised through the error sink when a session reaches its call budget."""
+
+    def __init__(self, max_calls: int) -> None:
+        self.max_calls = max_calls
+        super().__init__(f"guidance inference budget exhausted after {max_calls} calls")
 
 
 class LatestFrameSlot(Generic[FrameT]):
@@ -171,6 +184,8 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
         cadence_seconds: float | None = None,
         max_fps: float | None = None,
         clock: MonotonicClock | None = None,
+        max_inference_calls: int | None = None,
+        failure_cooldown_seconds: float = 0.0,
     ) -> None:
         selected = inference if inference is not None else infer
         if selected is None:
@@ -201,7 +216,22 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
             or not float(selected_interval) < float("inf")
         ):
             raise ValueError("min_interval_seconds must be a finite non-negative number")
+        if max_inference_calls is not None and (
+            isinstance(max_inference_calls, bool)
+            or not isinstance(max_inference_calls, int)
+            or max_inference_calls <= 0
+        ):
+            raise ValueError("max_inference_calls must be a positive integer or None")
+        if (
+            isinstance(failure_cooldown_seconds, bool)
+            or not isinstance(failure_cooldown_seconds, (int, float))
+            or float(failure_cooldown_seconds) < 0.0
+            or float(failure_cooldown_seconds) >= float("inf")
+        ):
+            raise ValueError("failure_cooldown_seconds must be a finite non-negative number")
         self._min_interval_seconds = float(selected_interval)
+        self._max_inference_calls = max_inference_calls
+        self._failure_cooldown_seconds = float(failure_cooldown_seconds)
         self._clock = clock or time.monotonic
         self._next_inference_at = 0.0
         self._worker_task: Optional[asyncio.Task[None]] = None
@@ -209,11 +239,14 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
         self._in_flight = 0
         self._max_in_flight = 0
         self._processed_count = 0
+        self._inference_count = 0
         self._error_count = 0
         self._max_pending = 0
         self._last_frame: Optional[FrameT] = None
         self._last_result: Optional[ResultT] = None
         self._last_error: Optional[BaseException] = None
+        self._budget_exhausted = False
+        self._budget_error_reported = False
 
     @property
     def queue(self) -> LatestFrameSlot[FrameT]:
@@ -246,6 +279,30 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
     @property
     def min_interval_seconds(self) -> float:
         return self._min_interval_seconds
+
+    @property
+    def max_inference_calls(self) -> int | None:
+        return self._max_inference_calls
+
+    @property
+    def failure_cooldown_seconds(self) -> float:
+        return self._failure_cooldown_seconds
+
+    @property
+    def inference_count(self) -> int:
+        """Number of provider attempts started, including failed attempts."""
+
+        return self._inference_count
+
+    @property
+    def remaining_calls(self) -> int | None:
+        if self._max_inference_calls is None:
+            return None
+        return max(0, self._max_inference_calls - self._inference_count)
+
+    @property
+    def budget_exhausted(self) -> bool:
+        return self._budget_exhausted
 
     @property
     def max_fps(self) -> float | None:
@@ -308,7 +365,13 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
         return await self.submit(frame)
 
     def submit_nowait(self, frame: FrameT) -> bool:
-        if self._closed:
+        if self._closed or self._budget_exhausted:
+            return False
+        if (
+            self._max_inference_calls is not None
+            and self._inference_count >= self._max_inference_calls
+        ):
+            self._budget_exhausted = True
             return False
         self.slot.put(frame)
         self._max_pending = max(self._max_pending, int(self.slot.qsize))
@@ -342,11 +405,20 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
                     self._worker_task = None
                     return
 
+                if (
+                    self._max_inference_calls is not None
+                    and self._inference_count >= self._max_inference_calls
+                ):
+                    self._budget_exhausted = True
+                    self.slot.clear()
+                    await self._notify_budget_exhausted(frame)
+                    return
+
+                now = self._clock()
+                wait_seconds = self._next_inference_at - now
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
                 if self._min_interval_seconds:
-                    now = self._clock()
-                    wait_seconds = self._next_inference_at - now
-                    if wait_seconds > 0:
-                        await asyncio.sleep(wait_seconds)
                     # Rate-limit inference starts. A slow provider naturally
                     # consumes the interval; a fast provider cannot exceed
                     # the configured cadence.
@@ -356,6 +428,14 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
 
                 self._in_flight = 1
                 self._max_in_flight = max(self._max_in_flight, self._in_flight)
+                self._inference_count += 1
+                if (
+                    self._max_inference_calls is not None
+                    and self._inference_count >= self._max_inference_calls
+                ):
+                    # Reject newly arriving camera frames while the final
+                    # provider request is still in flight.
+                    self._budget_exhausted = True
                 self._last_error = None
                 try:
                     result = self._inference(frame)
@@ -373,15 +453,36 @@ class LatestFrameProcessor(Generic[FrameT, ResultT]):
                 except Exception as error:
                     self._last_error = error
                     self._error_count += 1
+                    if self._failure_cooldown_seconds:
+                        self._next_inference_at = max(
+                            self._next_inference_at,
+                            self._clock() + self._failure_cooldown_seconds,
+                        )
                     if self._on_error is not None:
                         sink_error = self._on_error(error, frame)
                         if inspect.isawaitable(sink_error):
                             await sink_error
                 finally:
                     self._in_flight = 0
+                if self._budget_exhausted:
+                    self.slot.clear()
+                    await self._notify_budget_exhausted(frame)
+                    return
         finally:
             if self._worker_task is asyncio.current_task():
                 self._worker_task = None
+
+    async def _notify_budget_exhausted(self, frame: FrameT) -> None:
+        if self._budget_error_reported or self._max_inference_calls is None:
+            return
+        self._budget_error_reported = True
+        error = InferenceBudgetExceeded(self._max_inference_calls)
+        self._last_error = error
+        self._error_count += 1
+        if self._on_error is not None:
+            sink_error = self._on_error(error, frame)
+            if inspect.isawaitable(sink_error):
+                await sink_error
 
     async def wait_idle(self) -> None:
         while True:
@@ -1168,10 +1269,36 @@ async def start_agent_runtime(
     provider: VisionGuidanceProvider | None = None,
     live_analyzer: LiveVisionAnalyzer | None = None,
     requested_shot: GuidanceShot | str = GuidanceShot.FRONT,
-    cadence_seconds: float = 0.5,
+    cadence_seconds: float | None = None,
     guidance_ttl_ms: int = 2_000,
     transport_factory: GuidanceTransportFactory | None = None,
+    max_inference_calls: int | None = None,
+    failure_cooldown_seconds: float | None = None,
 ) -> AgentRuntime:
+    resolved_settings = settings or BackendSettings.from_env()
+    selected_cadence = (
+        getattr(resolved_settings, "guidance_cadence_seconds", DEFAULT_GUIDANCE_CADENCE_SECONDS)
+        if cadence_seconds is None
+        else cadence_seconds
+    )
+    selected_max_calls = (
+        getattr(
+            resolved_settings,
+            "guidance_max_calls_per_session",
+            DEFAULT_GUIDANCE_MAX_CALLS_PER_SESSION,
+        )
+        if max_inference_calls is None
+        else max_inference_calls
+    )
+    selected_failure_cooldown = (
+        getattr(
+            resolved_settings,
+            "guidance_failure_cooldown_seconds",
+            DEFAULT_GUIDANCE_FAILURE_COOLDOWN_SECONDS,
+        )
+        if failure_cooldown_seconds is None
+        else failure_cooldown_seconds
+    )
     room = await connect_agent_context(ctx)
 
     # The current Team-D transport is intentionally selected by the worker
@@ -1182,7 +1309,7 @@ async def start_agent_runtime(
         selected_inference = inference
         if selected_inference is None:
             selected_inference = create_default_guidance_inference(
-                settings,
+                resolved_settings,
                 requested_shot=lambda: active_shot,
                 provider=provider,
                 live_analyzer=live_analyzer,
@@ -1204,7 +1331,9 @@ async def start_agent_runtime(
             process_frame,
             on_result=on_result,
             on_error=on_error,
-            min_interval_seconds=cadence_seconds,
+            min_interval_seconds=selected_cadence,
+            max_inference_calls=selected_max_calls,
+            failure_cooldown_seconds=selected_failure_cooldown,
         )
         subscriber = CameraVideoTrackSubscriber(processor, stream_factory=stream_factory)
         subscriber.attach_room(room)
@@ -1248,7 +1377,7 @@ async def start_agent_runtime(
     selected_inference = inference
     if selected_inference is None:
         selected_inference = create_default_guidance_inference(
-            settings,
+            resolved_settings,
             requested_shot=lambda: active_shot,
             provider=provider,
             live_analyzer=live_analyzer,
@@ -1326,7 +1455,9 @@ async def start_agent_runtime(
         run_selected_inference,
         on_result=publish_result,
         on_error=publish_error,
-        min_interval_seconds=cadence_seconds,
+        min_interval_seconds=selected_cadence,
+        max_inference_calls=selected_max_calls,
+        failure_cooldown_seconds=selected_failure_cooldown,
     )
     subscriber = CameraVideoTrackSubscriber(processor, stream_factory=stream_factory)
     subscriber.attach_room(room)
@@ -1380,9 +1511,11 @@ async def entrypoint(
     provider: VisionGuidanceProvider | None = None,
     live_analyzer: LiveVisionAnalyzer | None = None,
     requested_shot: GuidanceShot | str = GuidanceShot.FRONT,
-    cadence_seconds: float = 0.5,
+    cadence_seconds: float | None = None,
     guidance_ttl_ms: int = 2_000,
     transport_factory: GuidanceTransportFactory | None = None,
+    max_inference_calls: int | None = None,
+    failure_cooldown_seconds: float | None = None,
 ) -> AgentRuntime:
     runtime = await start_agent_runtime(
         ctx,
@@ -1397,6 +1530,8 @@ async def entrypoint(
         cadence_seconds=cadence_seconds,
         guidance_ttl_ms=guidance_ttl_ms,
         transport_factory=transport_factory,
+        max_inference_calls=max_inference_calls,
+        failure_cooldown_seconds=failure_cooldown_seconds,
     )
     wait_for_shutdown = getattr(ctx, "wait_for_shutdown", None)
     if callable(wait_for_shutdown):
@@ -1413,6 +1548,7 @@ def create_agent_server(
     on_result: Optional[ResultSink[Any, Any]] = None,
     on_error: Optional[ErrorSink] = None,
     transport_factory: GuidanceTransportFactory | None = None,
+    settings: BackendSettings | None = None,
 ) -> Any:
     try:
         from livekit.agents import AgentServer  # type: ignore[import-not-found]
@@ -1422,6 +1558,7 @@ def create_agent_server(
     register = getattr(server, "rtc_session", None)
     if not callable(register):
         raise RuntimeError("the installed livekit-agents SDK does not provide rtc_session")
+    resolved_settings = settings or BackendSettings.from_env()
 
     @register()
     async def live_session(ctx: Any) -> AgentRuntime:
@@ -1431,6 +1568,7 @@ def create_agent_server(
             on_result=on_result,
             on_error=on_error,
             transport_factory=transport_factory,
+            settings=resolved_settings,
         )
 
     return server
@@ -1449,7 +1587,7 @@ def main() -> None:
         raise RuntimeError(
             "livekit-agents is required to run the Agent; install the locked Python dependencies"
         ) from error
-    server = create_agent_server()
+    server = create_agent_server(settings=settings)
     if server is None:
         raise RuntimeError("unable to create the LiveKit Agent server")
     cli.run_app(server)
@@ -1467,6 +1605,7 @@ __all__ = [
     "CameraVideoTrackSubscriber",
     "FrameProcessor",
     "FrameSlotClosed",
+    "InferenceBudgetExceeded",
     "GuidancePacketPublisher",
     "GuidanceTransportFactory",
     "LatestFrameProcessor",

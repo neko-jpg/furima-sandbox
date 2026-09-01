@@ -58,3 +58,29 @@ test('degenerate projection corners are rejected', () => {
     { x: 0.5, y: 0.5 },
   ]), RangeError);
 });
+
+test('calculation keeps raw endpoints and applies the detected projection before measuring', () => {
+  const homography = homographyFromCorners([
+    { x: 0.2, y: 0.1 },
+    { x: 0.8, y: 0.2 },
+    { x: 0.9, y: 0.9 },
+    { x: 0.1, y: 0.8 },
+  ]);
+  const rawEndpoints = {
+    lengthStart: { x: 0.2, y: 0.1 },
+    lengthEnd: { x: 0.9, y: 0.9 },
+    widthStart: { x: 0.8, y: 0.2 },
+    widthEnd: { x: 0.1, y: 0.8 },
+  } as const;
+  const result = calculateMeasurement({
+    endpoints: rawEndpoints,
+    rawEndpoints,
+    imageDimensions: { width: 1001, height: 1001 },
+    markerSidePx: 250,
+    homography,
+  });
+  const projected = projectMeasurementEndpoints(rawEndpoints, homography);
+  assert.deepEqual(result.endpoints, projected);
+  assert.ok(result.lengthCm !== null && result.lengthCm > 0);
+  assert.ok(result.widthCm !== null && result.widthCm > 0);
+});

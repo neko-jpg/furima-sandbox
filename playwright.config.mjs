@@ -1,6 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3001';
+// Keep the default URL aligned with the explicit 127.0.0.1 webServer bind.
+// On Windows, localhost may resolve to ::1 while the spawned Vinext process
+// listens only on IPv4, which makes Playwright wait until webServer timeout.
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:3001';
 
 export default defineConfig({
   testDir: 'tests/e2e',

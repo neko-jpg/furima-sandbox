@@ -17,6 +17,7 @@ from typing import Protocol
 
 from ..config import BackendSettings
 from .errors import ProviderError, ProviderErrorCode
+from .proxy_responses import ProxyResponsesClient
 from .vision_guidance import (
     EncodedImage,
     FixtureVisionGuidanceProvider,
@@ -61,7 +62,14 @@ class ResponsesClient(Protocol):
 class ResponsesVisionGuidanceProvider:
     """OpenAI Responses adapter with a closed guidance output schema."""
 
-    def __init__(self, client: ResponsesClient, model: str) -> None:
+    def __init__(
+        self,
+        client: ResponsesClient,
+        model: str,
+        *,
+        reasoning_effort: str = "none",
+        max_output_tokens: int = 256,
+    ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ProviderError(
                 ProviderErrorCode.INVALID_INPUT,
@@ -69,11 +77,33 @@ class ResponsesVisionGuidanceProvider:
                 retryable=False,
                 provider="vision-guidance",
             )
+        if reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+            raise ProviderError(
+                ProviderErrorCode.INVALID_INPUT,
+                "Vision guidance reasoning effort is invalid",
+                retryable=False,
+                provider="vision-guidance",
+            )
+        if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or max_output_tokens <= 0:
+            raise ProviderError(
+                ProviderErrorCode.INVALID_INPUT,
+                "Vision guidance max output tokens must be positive",
+                retryable=False,
+                provider="vision-guidance",
+            )
         self._client = client
         self._model = model.strip()
+        self._reasoning_effort = reasoning_effort
+        self._max_output_tokens = max_output_tokens
 
     @staticmethod
-    def request_for(input: GuidanceInput, model: str) -> dict[str, object]:
+    def request_for(
+        input: GuidanceInput,
+        model: str,
+        *,
+        reasoning_effort: str = "none",
+        max_output_tokens: int = 256,
+    ) -> dict[str, object]:
         validated = validate_guidance_input(input)
         if not isinstance(model, str) or not model.strip():
             raise ProviderError(
@@ -91,6 +121,8 @@ class ResponsesVisionGuidanceProvider:
         return {
             "model": model.strip(),
             "store": False,
+            "reasoning": {"effort": reasoning_effort},
+            "max_output_tokens": max_output_tokens,
             "instructions": (
                 "Analyze one downscaled camera frame for a garment listing photo guide. "
                 "Return only the finite code and confidence in the strict schema. "
@@ -133,7 +165,12 @@ class ResponsesVisionGuidanceProvider:
         validated = validate_guidance_input(input)
         try:
             response = await self._client.create(
-                **self.request_for(validated, self._model)
+                **self.request_for(
+                    validated,
+                    self._model,
+                    reasoning_effort=self._reasoning_effort,
+                    max_output_tokens=self._max_output_tokens,
+                )
             )
             decision = validate_vision_decision(_response_payload(response))
             if decision.code is GuidanceCode.AGENT_UNAVAILABLE:
@@ -210,11 +247,19 @@ def _create_responses_client(settings: BackendSettings) -> ResponsesClient:
             retryable=True,
             provider="vision-guidance",
         ) from error
-    kwargs: dict[str, str] = {"api_key": settings.openai_api_key}
+    kwargs: dict[str, object] = {
+        "api_key": settings.openai_api_key,
+        "max_retries": settings.openai_max_retries,
+    }
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
     try:
-        return AsyncOpenAI(**kwargs).responses  # type: ignore[no-any-return]
+        responses = AsyncOpenAI(**kwargs).responses
+        return (
+            ProxyResponsesClient(responses)
+            if settings.openai_base_url
+            else responses
+        )  # type: ignore[return-value]
     except Exception as error:
         raise ProviderError(
             ProviderErrorCode.UNAVAILABLE,
@@ -251,6 +296,8 @@ def create_vision_guidance_provider(
         analyzer=ResponsesVisionGuidanceProvider(
             live_client or _create_responses_client(resolved),
             live_model or resolved.vision_guidance_model,
+            reasoning_effort=resolved.llm_reasoning_effort,
+            max_output_tokens=resolved.llm_max_output_tokens,
         )
     )
 

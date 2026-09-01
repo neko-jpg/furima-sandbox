@@ -59,6 +59,8 @@ async def test_responses_adapter_disables_storage_and_uses_strict_schema() -> No
     assert result.to_payload()["nextAction"] == "COMPLETE"
     assert client.request is not None
     assert client.request["store"] is False
+    assert client.request["reasoning"] == {"effort": "none"}
+    assert client.request["max_output_tokens"] == 256
     text = client.request["text"]
     assert isinstance(text, dict)
     assert text["format"]["strict"] is True  # type: ignore[index]

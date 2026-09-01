@@ -7,6 +7,7 @@
  */
 
 import type { Homography, ImageDimensions, QuadrilateralCorners } from '../measurement/geometry';
+import type { MeasurementDetectionFailureCode } from '../measurement/markerDetector';
 import type { GuidanceCandidate } from '../core/guidanceSelector';
 
 export const GUIDED_CAPTURE_SLOTS = ['front', 'back', 'tag', 'measurement'] as const;
@@ -88,6 +89,18 @@ export interface MeasurementDraft {
   rawEndpoints?: MeasurementEndpoints;
   projectionCorners?: MeasurementProjectionCorners | null;
   homography?: Homography | null;
+  /** The disposable preview has already been warped into the marker plane. */
+  projectionCorrected?: boolean;
+  /** Local provenance for the four points, used to explain offline fallback. */
+  endpointSource?: 'ai' | 'fallback';
+  /** Local marker result; kept in the session and never sent to the listing handoff. */
+  marker?: {
+    knownSideCm: 5;
+    corners: QuadrilateralCorners;
+    pxPerCm: number;
+  } | null;
+  /** Finite local fallback reason, shown without provider diagnostics. */
+  markerDetectionFailure?: MeasurementDetectionFailureCode;
 }
 
 export interface MeasurementPatch {

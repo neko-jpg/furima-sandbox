@@ -61,14 +61,14 @@ node scripts/run-listing-photo-assistant-fixture-e2e.mjs
 
 | Task | QA証跡 | 判定 | 未実施・境界 |
 | --- | --- | --- | --- |
-| 8.1 | `node scripts/run-listing-photo-assistant-fixture-e2e.mjs` / `tests/e2e/listing-photo-assistant-fixture.spec.mjs` | fixture-not-run | HTTP adapter/provider契約とUI保存境界を2回比較するfixture E2Eを実装。今回の専用Playwrightは長時間化のため中断し完走未実施。UIはlocal fixture transport、LiveKit Roomとライブ助言も未実施。 |
+| 8.1 | `node scripts/run-listing-photo-assistant-fixture-e2e.mjs` / `tests/e2e/listing-photo-assistant-fixture.spec.mjs` | fixture-verified | HTTP adapter/provider契約、OpenCV Worker、理由付きretry、採寸補正、背景比較・承認・保存境界を2回連続で完走。UIはlocal fixture transportで、LiveKit Roomとライブ助言は別ゲート。 |
 | 8.2 | 下記「実LLM／LiveKit手動チェックリスト」 | manual-not-run | 実画像、基準iPhone、外部LiveKit、実LLMの操作・性能計測は未実施。 |
-| 8.3 | failure matrix（FM-01〜FM-09）とfixtureのFM-04/FM-09 | fixture-not-run | HTTP adapterの理由付きretryと保存境界をfixture E2Eへ実装したが完走未実施。UI内LiveKit retry、切断、権限、mask、背景失敗は手動または別fixture注入が必要。 |
+| 8.3 | failure matrix（FM-01〜FM-09）とfixtureのFM-04/FM-09 | fixture-partial | marker、provider、reducer、背景、OpenCV Workerの境界テストとretry／保存境界fixtureは実施済み。UI内LiveKit retry、切断、権限、mask、背景失敗の操作注入は手動ゲート。 |
 | 8.4 | 既存Playwrightのdesktop/mobile/WebKit設定 + 手動チェック | manual-not-run | Chromiumのviewport emulationはiPhone実機Safariの代替ではない。実機visual/accessibility QAは未実施。 |
-| 8.5 | 専用E2Eのmeasurement非保存・Blob hash比較 | fixture-not-run | measurement非保存とBlob hash比較を実装したが専用E2E完走未実施。実Room、Worker、camera track、Worker終了を含む実機lifecycleも未実施。 |
-| 8.6 | 専用runnerのfixture起動・health・cleanup | fixture-verified | OpenCV.js/WASM事前load、50mm印刷・実測、rembg prewarm、LiveKit起動は未実施。 |
-| 8.7 | 本変更で実行した利用可能な検証コマンド | selected-checks | clean install一式、実機console 0件、外部接続の性能計測はこのQA実行の対象外。 |
-| 8.8 | この表、`docs/qa/test-matrix.yaml`、`docs/wiki/Listing-Flow.md` | docs-verified | `openspec validate ...`はfurima-sandboxにCLI/configがないため未実行。 |
+| 8.5 | 専用E2Eのmeasurement非保存・Blob hash比較 | fixture-partial | measurement非保存、保存front hash、state再現性、OpenCV Workerのcleanup境界をfixtureで確認。実Room、camera track、全object URLを実機で観測するlifecycleは未実施。 |
+| 8.6 | 専用runnerのfixture起動・health・cleanup | fixture-partial | runner、health、外部provider無効化、OpenCV.js/WASM Worker load、終了cleanupをfixtureで確認。50mm印刷・実測、rembg prewarm、LiveKit Agentのlive起動は未実施。 |
+| 8.7 | 本変更で実行した利用可能な検証コマンド | automated-partial | clean install、unit/backend/security、Chromium desktop/mobile/WebKit、fixture E2Eは通過。iPhone/Safariの実機console 0件と外部接続の性能計測は別のリリースゲート。 |
+| 8.8 | この表、`openspec/.../verification.md`、`docs/qa/test-matrix.yaml`、`docs/wiki/Listing-Flow.md` | docs-verified | 全Requirement／Scenarioをverification mapへ対応付け、OpenSpec strict validationを実行する。 |
 
 詳細な機械可読版は`docs/qa/test-matrix.yaml`の`openspec`と`failureMatrix`です。ステータスはfixtureの成功をlive成功へ読み替えないために分離しています。
 
@@ -79,12 +79,12 @@ node scripts/run-listing-photo-assistant-fixture-e2e.mjs
 | FM-01 | LiveKit Room／Agent切断 | 現在step、受理済みslot、固定ガイド、手動撮影を維持し、再接続後に同期済みの新sequenceだけを採用する。 | not-run（manual-live） |
 | FM-02 | 順序逆転、別session、期限切れGuidanceEvent | イベントを破棄し、助言とstepを巻き戻さない。 | not-run（manual-live-or-contract） |
 | FM-03 | Canvas／Worker解析不可、カメラ権限拒否 | 固定ガイドと手動撮影を残し、端末の画像入力へ移る。 | not-run（manual-device） |
-| FM-04 | 撮影後AIが`GARMENT_CROPPED`／retryまたはtimeout | HTTP adapter契約では対象slotだけを理由付きでretryし、UI fixtureでは他slotと画像の保存境界を確認する。timeout時は画像を保持し再試行を提示する。 | implemented-not-run（専用Playwright完走・UI LiveKit retry・timeoutは未実施） |
-| FM-05 | marker missing／multiple／too small／occluded、segmentation／端点提案失敗 | 有限の理由、撮り直し、端点配置または手入力を提示し、未承認のままeditへ進めない。 | not-run（manual-fixture-or-live） |
-| FM-06 | rembg timeout、空・全面・寸法不一致mask | previewを承認不可にし、再試行または正面原本採用を提示する。 | not-run（manual-live-or-injection） |
-| FM-07 | 背景生成timeout、エラー、利用不能画像 | 4slotと承認済み採寸を保持し、再試行または固定背景・正面原本採用へ進む。 | not-run（manual-live-or-injection） |
-| FM-08 | 終了、unmount、pagehide、再取得 | camera track、Room、Worker、object URLを解放し、画像・判定・助言・採寸値を永続出品データへ残さない。 | not-run（manual-device-or-live） |
-| FM-09 | 同じfixture縦スライスを2回実行 | 正規化最終state、採寸値、保存frontのhashが一致し、measurement一時データが下書きへ入らない。 | implemented-not-run（専用Playwright完走未実施） |
+| FM-04 | 撮影後AIが`GARMENT_CROPPED`／retryまたはtimeout | HTTP adapter契約では対象slotだけを理由付きでretryし、UI fixtureでは他slotと画像の保存境界を確認する。timeout時は画像を保持し再試行を提示する。 | fixture-verified（専用Playwrightでretryとslot保持を完走、timeout注入は別ゲート） |
+| FM-05 | marker missing／multiple／too small／occluded、segmentation／端点提案失敗 | 有限の理由、撮り直し、端点配置または手入力を提示し、未承認のままeditへ進めない。 | contract-verified（marker／provider／manual fallbackの自動境界、UI失敗注入は別ゲート） |
+| FM-06 | rembg timeout、空・全面・寸法不一致mask | previewを承認不可にし、再試行または正面原本採用を提示する。 | contract-verified（mask/provider/reducer tests、live sidecar注入は別ゲート） |
+| FM-07 | 背景生成timeout、エラー、利用不能画像 | 4slotと承認済み採寸を保持し、再試行または固定背景・正面原本採用へ進む。 | contract-verified（background provider/reducer tests、UI failure injectionは別ゲート） |
+| FM-08 | 終了、unmount、pagehide、再取得 | camera track、Room、Worker、object URLを解放し、画像・判定・助言・採寸値を永続出品データへ残さない。 | contract-verified（camera／LiveKit cleanupとfixture persistence、実機観測は別ゲート） |
+| FM-09 | 同じfixture縦スライスを2回実行 | 正規化最終state、採寸値、保存frontのhashが一致し、measurement一時データが下書きへ入らない。 | fixture-verified（専用Playwrightを2回連続完走） |
 
 障害確認時は、ログへリクエストbodyや画像をコピーせず、ID、status、有限error code、再現手順だけを記録します。
 
@@ -104,11 +104,57 @@ docker compose --profile live up --build
 
 `--profile live`を付けないfixture起動では`assistant-agent`とrembgは起動しません。live profileではAgentが常に`PROVIDER_MODE=live`で動くため、FastAPI側にも必ず`PROVIDER_MODE=live`を設定してから起動します。資格情報不足やprovider障害をfixture成功へ置き換えないでください。
 
+### Local codex-proxy
+
+OpenAI互換のローカル`codex-proxy`を使う場合は、キーをサーバー側だけへ読み込み、`OPENAI_BASE_URL=http://127.0.0.1:8080/v1`を設定します。`PROVIDER_MODE=live`と`VITE_LISTING_ASSISTANT_MODE=live`も明示してください。`OPENAI_BASE_URL`が空でない場合、assistant-apiは通常のOpenAI Responses呼び出しをプロキシのSSEへ集約し、背景画像は`/v1/images/generations`ではなくResponsesの`image_generation`ツールからPNGを取り出します。背景ツール側の生成モデルはプロキシが選択するため、`BACKGROUND_MODEL`は公式OpenAI Images API経路でのみ使われます。
+
+```powershell
+$env:PROVIDER_MODE = "live"
+$env:VITE_LISTING_ASSISTANT_MODE = "live"
+$env:OPENAI_BASE_URL = "http://127.0.0.1:8080/v1"
+$env:OPENAI_API_KEY = "<codex-proxy-dashboard-key>"
+docker compose --profile live up --build
+```
+
+この経路はローカル開発・検証用です。プロキシのライセンス、接続先アカウントの利用規約、レート制限を確認し、商用本番では公式のOpenAI APIまたは許諾済みのゲートウェイを使います。プロキシが停止・未認証・画像ツール非対応の場合、APIはfixtureへ自動フォールバックせず、有限の`UNAVAILABLE`／`INVALID_RESPONSE`として返します。
+
 ログ、スクリーンショット、テスト結果へtoken、API key、API secret、画像Blob、Data URLを含めません。APIの`/api/livekit-token`レスポンスにsecretが含まれず、tokenの権限がcamera publish／data publishに限定されることを確認します。
+
+## LLM／画像生成の既定値とコストガード
+
+live providerの既定モデルは、画像入力と構造化出力を使う撮影判定・採寸点提案・LiveKitガイダンスのすべてで`gpt-5.6-luna`です。`LLM_REASONING_EFFORT=none`、`LLM_MAX_OUTPUT_TOKENS=256`に固定し、有限スキーマに不要な推論・出力を要求しません。OpenAI SDKの自動再試行も`OPENAI_MAX_RETRIES=0`で無効にし、再試行はアプリ側の明示操作またはクールダウンだけにします。背景生成は最新の`gpt-image-2`を`BACKGROUND_IMAGE_QUALITY=high`、`BACKGROUND_IMAGE_SIZE=1200x1600`、PNG、opaqueで使います。`1200x1600`は3:4の合成用キャンバスで、元の商品写真の縦構図を保ったまま背景を差し替えるための既定値です。旧来の`1024x1024`、`1536x1024`、`1024x1536`も明示設定時は利用できます。Codex Proxyが`1200x1600`だけをサイズ不許可として返した場合に限り、Proxy adapterは`1024x1536`・highへ1回だけ明示的に縮退します。timeout、認証失敗、その他のprovider障害では追加リトライせず、fixtureへ自動fallbackもしません。背景生成は正面画像のmask合成を承認する明示操作からだけ呼び出されます。
+
+LiveKitの連続フレームは、次の4層で無制限呼び出しを防ぎます。
+
+- 最新フレームだけを容量1で保持し、推論同時実行は1件。
+- `GUIDANCE_CADENCE_SECONDS=2.0`で推論開始間隔を制限。
+- 1セッションあたり`GUIDANCE_MAX_CALLS_PER_SESSION=12`で上限に達したら受付を停止。
+- provider失敗後は`GUIDANCE_FAILURE_COOLDOWN_SECONDS=15.0`待機し、失敗時の再試行嵐を抑制。
+
+上限はプロセス全体ではなくLiveKit Roomセッション単位です。セッションを終了して新しいRoomを作成した場合だけ予算が新しくなります。値を変更する場合は`.env`またはsecret managerだけで行い、`VITE_*`へ出さないでください。
+
+## LIVEデモ動画の収録
+
+`npm run demo:record`は、購入者視点のおすすめ画面から商品詳細、出品開始、AI撮影アシスタント、意図的な撮り直し、採寸、背景比較、完成画像までをPlaywrightの390x844モバイルコンテキストで収録します。最終MP4はFFmpegで1080x1920の縦キャンバスへ変換し、UIの背後には同じ映像を暗くぼかして配置します。APIはLIVE専用で、fixtureへの自動fallbackはありません。
+
+採寸写真は、次の手順で人間が用意したものだけを渡します。
+
+1. `50mm_black_square_frame_marker(1).png`を印刷倍率100%で印刷する。白い余白ではなく、外側の黒枠の一辺が50.0mmになることを定規で確認する。
+2. 背面Tシャツを平らに置き、同じ平面上でマーカーを服の横に30mm以上離して置く。服全体とマーカー4辺が入り、真上に近い角度になるよう撮影する。
+3. 写真を作業用の非公開パスへ保存し、収録コマンドの`--measurement`へ渡す。マーカー画像そのものやAIで合成した写真は採寸入力に使わない。
+
+必要な環境を読み込んだあと、assistant API、LIVE Proxy、LiveKit Agent、実rembg／BiRefNet sidecarを起動してから実行します。
+
+```powershell
+npm run demo:record -- --measurement "C:\private\shirt-measurement.jpg"
+npm run demo:review
+```
+
+`--background-style studio_white|warm_neutral|light_wood`で最終スタイルを固定できます。既定では、ネイビー系の衣類を最も読みやすく見せる`studio_white`を選びます。候補比較を省略する場合だけ`--no-sweep`を付けます。収録後は`output/playwright/demo/review/contact-sheet.png`を確認し、文字の可読性、失敗理由、採寸承認、背景前後、完成画像が一目で伝わることを確認します。動画・レビュー成果物へ元画像のバイト列、リクエストbody、API key、LiveKit secret、tokenを保存しません。
 
 ## 実LLM／LiveKit手動チェックリスト（未実施）
 
-このチェックリストは、fixture E2Eの合格を実LLM／LiveKitの合格とみなさないための実行手順です。今回のQAでは、実機iPhone、Safari実機、外部LiveKit、実LLM、実rembg、OpenCV.js/WASMの実ロード、50mmマーカーの印刷・定規実測を実施していません。
+このチェックリストは、fixture E2Eの合格を実LLM／LiveKitの合格とみなさないための実行手順です。今回のfixture QAでは、OpenCV.js/WASMのWorkerロードと射影補正は確認済みですが、実機iPhone、Safari実機、外部LiveKit、実LLM、実rembg、50mmマーカーの印刷・定規実測は実施していません。
 
 - [ ] 新しいterminal sessionで、秘密管理から`PROVIDER_MODE=live`、`VITE_LISTING_ASSISTANT_MODE=live`、LiveKitの接続設定、LLM設定を読み込む。値はshell history、ログ、Issue、スクリーンショットへ残さない。
 - [ ] `uv sync --frozen`と`docker compose --profile live up --build`を実行し、FastAPI、`assistant-agent`、private rembgのhealth／起動状態を確認する。fixtureへ自動fallbackしていないことを確認する。
@@ -122,7 +168,7 @@ docker compose --profile live up --build
 - [ ] rembg maskが元画像と同寸法で、空・全面でなく、背景生成へ商品画像／mask／tag／measurementが渡らないことをrequest metadataで確認する。元RGBが保持されることを比較する。
 - [ ] 背景生成失敗、mask無効、Agent切断、LLM timeout、カメラ権限拒否を一つずつ再現し、FM-01〜FM-08の期待復帰を確認する。失敗時は画像bodyを保存しない。
 - [ ] 390x844、375x812、430x932、200%文字拡大、safe area、screen reader、reduced motion、44px操作領域、visible focus、長い日本語、背景復帰を確認する。
-- [ ] fixture／live各1回の計測で、端末内品質解析4Hz・同時1、Agent同時1、観測から助言表示までのp95、console未処理error 0件を秘密・画像なしの集計値だけで記録する。
+- [ ] fixture／live各1回の計測で、端末内品質解析4Hz・同時1、Agent同時1、2秒間隔・1セッション12回上限・失敗後15秒クールダウン、観測から助言表示までのp95、console未処理error 0件を秘密・画像なしの集計値だけで記録する。
 - [ ] 終了後にcamera track=`ended`、Room切断、Agent／Worker終了、全object URL revoke、DB／localStorage／IndexedDBに画像・判定・助言・測定点・採寸値なしを確認し、`docker compose --profile live down`を実行する。
 
 未実施項目を実施済みとして報告しないこと。実LLMまたはLiveKitの接続が不安定な場合に、成功fixtureへ差し替えず、原因・再試行可否・保持されたslotだけを報告します。
@@ -130,6 +176,7 @@ docker compose --profile live up --build
 ## Failure recovery
 
 - Agent切断: 固定ガイド、手動撮影、受理済みslotを維持して再接続を表示する。
+- Agentの推論予算到達: 新しいフレームを送らず、現在の撮影内容を保持してセッションを終了する。自動的に同じRoomで再試行しない。
 - API timeout／provider failure: 取得済みの写真は破棄せず、手動入力または再試行へ戻す。
 - 権限拒否／secure context以外: 端末の`accept=image/* capture=environment`入力へフォールバックする。
 - 画面終了: `docker compose down`後、ブラウザ側の一時sessionは再利用しない。既存メディアへ自動マージしない。
@@ -149,7 +196,10 @@ npm run qa:assistant-compose
 docker compose config --quiet
 npm run docs:wiki:check
 npm run assets:audit
+npm run audit:opencv
 npm audit --omit=dev
+npm run qa:listing-photo-assistant
+openspec validate "build-listing-photo-assistant-mvp" --type change --strict --no-interactive
 ```
 
 起動済みComposeのhealth/smokeは`npm run smoke:assistant-compose`で再実行できます。fixture backend単体は`npm run test:backend:fixture`で実行し、環境に残ったOpenAI／LiveKit／provider URLを空にしてからテストします。

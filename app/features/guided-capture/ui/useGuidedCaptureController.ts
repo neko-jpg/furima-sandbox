@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createConfiguredGuidedCaptureAdapter } from './httpAdapter';
 import { createFixtureGuidedCaptureAdapter } from './fixtureAdapter';
 import { MeasurementEndpointsSchema } from '../../../types/measurement';
-import { calculateMeasurement, homographyFromCorners, readImageDimensions } from '../measurement';
+import { calculateMeasurement, detectMeasurementMarker, homographyFromCorners, projectRgbaImage, rasterToBlob, readImageDimensions, readImageRaster, type ProjectedRgbaImage } from '../measurement';
+import { MarkerWorkerError, MeasurementMarkerWorkerClient } from '../measurement/markerWorker';
 import {
   GuidanceHysteresis,
   candidateFromGuidanceEvent,
@@ -11,7 +12,8 @@ import {
   type LocalGuidanceCode,
 } from '../core/guidanceSelector';
 import { createCaptureRequestId } from '../core/captureReducer';
-import { createListingHandoff, type AcceptedGuidedMedia, type ApprovedMeasurement, type CaptureImageSlot, type ConnectionState, type GuidedCaptureAdapter, type GuidedCaptureHandoff, type GuidedCaptureState, type GuidanceEvent, type GuidanceStateEvent, type MeasurementDraft, type MeasurementPatch, type MeasurementRequest, type SessionSlot, type SlotProgress, type CaptureRequest, type GuidedCaptureStep, type ShotAssessment } from './contracts';
+import { isCaptureSlotSelectable } from './captureUiConstants';
+import { createListingHandoff, type AcceptedGuidedMedia, type ApprovedMeasurement, type CaptureImageSlot, type ConnectionState, type GuidedCaptureAdapter, type GuidedCaptureHandoff, type GuidedCaptureState, type GuidanceEvent, type GuidanceStateEvent, type MeasurementDraft, type MeasurementEndpoints, type MeasurementPatch, type MeasurementRequest, type SessionSlot, type SlotProgress, type CaptureRequest, type GuidedCaptureStep, type ShotAssessment } from './contracts';
 
 export interface GuidedCaptureController {
   state: GuidedCaptureState;
@@ -20,12 +22,12 @@ export interface GuidedCaptureController {
   stop: () => void;
   selectSlot: (slot: SessionSlot) => void;
   recordMedia: (media: AcceptedGuidedMedia) => Promise<void>;
-  recordMeasurement: (blob: Blob) => Promise<void>;
+  recordMeasurement: (blob: Blob) => Promise<Blob | null>;
   replaceMedia: (slot: CaptureImageSlot, media: AcceptedGuidedMedia) => void;
   removeMedia: (mediaId: string) => void;
   retakeMeasurement: () => void;
   updateMeasurement: (patch: MeasurementPatch) => void;
-  approveMeasurement: (measurement?: ApprovedMeasurement) => void;
+  approveMeasurement: (measurement?: ApprovedMeasurement, confirmRange?: boolean) => void;
   approveCapture: () => void;
   approveBackground: (previewUrl?: string) => void;
   reportConnectionState: (connectionState: ConnectionState, error?: string) => void;
@@ -118,6 +120,13 @@ const defaultAcceptedAssessment = (slot: CaptureImageSlot): ShotAssessment => ({
   nextAction: 'REQUEST_NEXT',
 });
 
+const DEFAULT_MEASUREMENT_ENDPOINTS: MeasurementEndpoints = {
+  lengthStart: { x: 0.5, y: 0.12 },
+  lengthEnd: { x: 0.5, y: 0.88 },
+  widthStart: { x: 0.2, y: 0.5 },
+  widthEnd: { x: 0.8, y: 0.5 },
+};
+
 interface CaptureRequestFence {
   readonly sessionId: string;
   readonly slot: CaptureImageSlot;
@@ -140,12 +149,14 @@ const finiteMeasurement = (value: number | null | undefined): value is number =>
 const isApprovedMeasurement = (value: ApprovedMeasurement | null): value is ApprovedMeasurement => Boolean(
   value
   && finiteMeasurement(value.lengthCm)
-  && value.lengthCm >= 20
-  && value.lengthCm <= 100
   && finiteMeasurement(value.widthCm)
+  && (value.source === 'approved_cv' || value.source === 'approved_manual'),
+);
+const isRecommendedMeasurement = (value: ApprovedMeasurement): boolean => (
+  value.lengthCm >= 20
+  && value.lengthCm <= 100
   && value.widthCm >= 20
   && value.widthCm <= 80
-  && (value.source === 'approved_cv' || value.source === 'approved_manual'),
 );
 
 type StateUpdater = (current: GuidedCaptureState) => GuidedCaptureState;
@@ -173,6 +184,8 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
   const awaitingResyncRef = useRef(false);
   const manuallyStoppedRef = useRef(false);
   const suppressConnectionEventsRef = useRef(false);
+  const markerWorkerRef = useRef<MeasurementMarkerWorkerClient | null>(null);
+  const markerRequestAbortRef = useRef<AbortController | null>(null);
   const connectSessionRef = useRef<(sessionId: string) => void>(() => undefined);
   const guidanceFlushRef = useRef<(now: number) => void>(() => undefined);
   const mountedRef = useRef(true);
@@ -222,6 +235,10 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     guidanceTimerRef.current = null;
     guidanceCandidatesRef.current.clear();
     guidanceSelectorRef.current?.reset();
+    markerRequestAbortRef.current?.abort();
+    markerRequestAbortRef.current = null;
+    markerWorkerRef.current?.terminate();
+    markerWorkerRef.current = null;
     void adapterRef.current?.disconnect();
   }, []);
 
@@ -408,6 +425,8 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     awaitingResyncRef.current = false;
     captureRequestsRef.current.clear();
     measurementRequestRef.current = null;
+    markerRequestAbortRef.current?.abort();
+    markerRequestAbortRef.current = null;
     clearReconnectTimer();
     resetGuidance(false);
     void adapterRef.current?.disconnect();
@@ -420,13 +439,14 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     const snapshot = stateRef.current;
     const sessionId = snapshot.sessionId;
     if (!sessionId) return;
+    if (!isCaptureSlotSelectable(snapshot.slots, slot, snapshot.phase !== 'idle')) return;
     resetGuidance(false);
     if (snapshot.transport === 'live') awaitingResyncRef.current = true;
     updateState((current) => {
       if (!current.sessionId) return current;
       const currentSlot = current.slots[slot];
       const isApproved = currentSlot.status === 'approved';
-      const nextSlots = { ...current.slots, [slot]: { ...currentSlot, status: isApproved ? 'approved' as const : currentSlot.status === 'pending' ? 'active' as const : currentSlot.status } };
+      const nextSlots = { ...current.slots, [slot]: { ...currentSlot, status: isApproved ? 'approved' as const : slot === 'measurement' ? currentSlot.status : 'active' as const } };
       return {
         ...current,
         activeSlot: slot,
@@ -493,19 +513,25 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
         && currentFence?.requestId === fence.requestId
         && currentFence.generation === fence.generation
         && captureGenerationRef.current === fence.generation
-        && current.slots[target].mediaId === fence.mediaId;
+        // A synchronous fixture/cache response can resolve before React has
+        // committed the optimistic slot update. The request map is the
+        // authoritative identity fence in that narrow window; removals and
+        // retakes still invalidate it before a stale result can be applied.
+        && (current.slots[target].mediaId === fence.mediaId || current.slots[target].mediaId === undefined);
     };
     try {
       const assessment = await adapterRef.current?.assessShot?.(requested) ?? defaultAcceptedAssessment(target);
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest()) {
+        return;
+      }
       captureRequestsRef.current.delete(target);
       updateState((current) => {
         const slot = requested.slot;
-        if (current.sessionId !== requested.sessionId || current.slots[slot].mediaId !== media.mediaId) return current;
+        if (current.sessionId !== requested.sessionId || (current.slots[slot].mediaId !== undefined && current.slots[slot].mediaId !== media.mediaId)) return current;
         if (assessment && (assessment.quality !== 'ok' || assessment.shotType !== slot)) {
-          return { ...current, activeSlot: slot, currentStep: slot, phase: 'capturing', slots: { ...current.slots, [slot]: { ...current.slots[slot], status: 'active' } }, lastAssessment: assessment, primaryGuidance: null, guidanceAcknowledgement: null, error: issueMessage(assessment.issues) };
+          return { ...current, activeSlot: slot, currentStep: slot, phase: 'capturing', slots: { ...current.slots, [slot]: { ...current.slots[slot], mediaId: media.mediaId, previewUrl: media.previewUrl, source: media.source, status: 'active' } }, lastAssessment: assessment, primaryGuidance: null, guidanceAcknowledgement: null, error: issueMessage(assessment.issues) };
         }
-        const nextSlots = { ...current.slots, [slot]: { ...current.slots[slot], status: 'captured' as const } };
+        const nextSlots = { ...current.slots, [slot]: { ...current.slots[slot], mediaId: media.mediaId, previewUrl: media.previewUrl, source: media.source, status: 'captured' as const } };
         const nextSlot = nextPendingCaptureSlot(nextSlots);
         return { ...current, slots: nextSlots, activeSlot: nextSlot ?? 'measurement', currentStep: nextSlot ?? 'measurement-preparation', phase: nextSlot ? 'capturing' : 'measurement', lastAssessment: assessment, latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, error: null };
       });
@@ -533,19 +559,84 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     return task;
   }, [processMedia]);
 
-  const recordMeasurement = useCallback(async (blob: Blob): Promise<void> => {
+  const getMarkerWorker = useCallback((): MeasurementMarkerWorkerClient | null => {
+    if (markerWorkerRef.current) return markerWorkerRef.current;
+    if (typeof Worker === 'undefined') return null;
+    try {
+      const worker = new Worker(new URL('../measurement/markerWorker.ts', import.meta.url), { type: 'module' });
+      const client = new MeasurementMarkerWorkerClient(worker);
+      markerWorkerRef.current = client;
+      return client;
+    } catch {
+      // Older embedded browsers may not support module Workers. The bounded
+      // deterministic detector remains a safe, offline fallback.
+      return null;
+    }
+  }, []);
+
+  const detectMarker = useCallback(async (raster: NonNullable<Awaited<ReturnType<typeof readImageRaster>>>, signal: AbortSignal) => {
+    const image = {
+      width: raster.width,
+      height: raster.height,
+      data: raster.data,
+    };
+    const options = {
+      minSidePx: 80 * raster.scale,
+      edgeMarginPx: 16 * raster.scale,
+      minGarmentGapPx: 24 * raster.scale,
+    };
+    const fallback = () => detectMeasurementMarker(image, options);
+    const worker = getMarkerWorker();
+    if (!worker) return fallback();
+    try {
+      return await worker.detect(image, options, undefined, signal);
+    } catch (error) {
+      if (error instanceof MarkerWorkerError && error.code === 'CANCELLED') throw error;
+      return fallback();
+    }
+  }, [getMarkerWorker]);
+
+  const projectMeasurementImage = useCallback(async (
+    raster: NonNullable<Awaited<ReturnType<typeof readImageRaster>>>,
+    homography: ReturnType<typeof homographyFromCorners>,
+    markerSidePx: number,
+    signal: AbortSignal,
+  ): Promise<ProjectedRgbaImage> => {
+    const image = { width: raster.width, height: raster.height, data: raster.data };
+    const fallback = () => projectRgbaImage(image, homography, markerSidePx);
+    const worker = getMarkerWorker();
+    if (!worker) return fallback();
+    try {
+      const projected = await worker.project(image, homography, markerSidePx, signal);
+      return {
+        width: projected.width,
+        height: projected.height,
+        data: new Uint8ClampedArray(projected.data),
+        markerSidePx: projected.markerSidePx,
+        scale: projected.scale,
+      };
+    } catch (error) {
+      if (error instanceof MarkerWorkerError && error.code === 'CANCELLED') throw error;
+      return fallback();
+    }
+  }, [getMarkerWorker]);
+
+  const recordMeasurement = useCallback(async (blob: Blob): Promise<Blob | null> => {
     const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
+    if (!sessionId) return null;
     const snapshot = stateRef.current;
     if (!allImageSlotsCaptured(snapshot.slots)) {
       updateState((current) => current.sessionId === sessionId ? { ...current, error: 'front・back・tagの撮影が揃ってから採寸を開始してください。' } : current);
-      return;
+      return null;
     }
     const generation = ++measurementGenerationRef.current;
     const requestId = createCaptureRequestId(`${sessionId}:measurement`);
     const sequence = ++sequenceRef.current;
     const fence: MeasurementRequestFence = { sessionId, requestId, sequence, generation };
     measurementRequestRef.current = fence;
+    markerRequestAbortRef.current?.abort();
+    const markerAbortController = new AbortController();
+    markerRequestAbortRef.current = markerAbortController;
     resetGuidance(false);
     updateState((current) => current.sessionId === sessionId ? {
       ...current,
@@ -558,36 +649,130 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       error: null,
     } : current);
     try {
-      const request: MeasurementRequest = { sessionId, blob, requestId, sequence };
-      const [suggestion, imageDimensions] = await Promise.all([
-        adapterRef.current?.suggestMeasurement?.(request),
+      const [imageDimensions, raster] = await Promise.all([
         readImageDimensions(blob).catch(() => null),
+        readImageRaster(blob).catch(() => null),
       ]);
-      const currentFence = measurementRequestRef.current;
-      if (sessionIdRef.current !== sessionId || currentFence?.requestId !== requestId || currentFence.generation !== generation || measurementGenerationRef.current !== generation) return;
+      const isCurrentMeasurement = (): boolean => {
+        const currentFence = measurementRequestRef.current;
+        return sessionIdRef.current === sessionId
+          && currentFence?.requestId === requestId
+          && currentFence.generation === generation
+          && measurementGenerationRef.current === generation;
+      };
+      if (!isCurrentMeasurement()) return null;
+
+      const markerDetection = raster
+        ? await detectMarker(raster, markerAbortController.signal)
+        : { ok: false as const, code: 'SEGMENTATION_FAILED' as const, message: '採寸画像を端末内で読み取れません。' };
+      const markerFence = measurementRequestRef.current;
+      if (!isCurrentMeasurement() || markerFence?.requestId !== requestId || markerFence.generation !== generation) return null;
+
+      let analysisBlob: Blob | null = null;
+      let analysisDimensions = imageDimensions;
+      let markerSidePx: number | undefined;
+      let marker: MeasurementDraft['marker'] = null;
+      let projectionCorrected = false;
+      let markerDetectionFailure = markerDetection.ok ? undefined : markerDetection.code;
+      let correctionError: string | null = null;
+
+      if (markerDetection.ok && raster) {
+        const rawMarkerSidePx = markerDetection.marker.sidePx / Math.max(Number.EPSILON, raster.scale);
+        marker = {
+          knownSideCm: 5 as const,
+          corners: markerDetection.marker.corners,
+          pxPerCm: rawMarkerSidePx / 5,
+        };
+        try {
+          const projected = await projectMeasurementImage(raster, markerDetection.projection, markerDetection.marker.sidePx, markerAbortController.signal);
+          if (!isCurrentMeasurement()) return null;
+          analysisBlob = await rasterToBlob(projected);
+          if (!isCurrentMeasurement()) return null;
+          analysisDimensions = { width: projected.width, height: projected.height };
+          markerSidePx = projected.markerSidePx;
+          marker = {
+            knownSideCm: 5 as const,
+            corners: markerDetection.marker.corners,
+            pxPerCm: projected.markerSidePx / 5,
+          };
+          projectionCorrected = true;
+        } catch (error) {
+          if (error instanceof MarkerWorkerError && error.code === 'CANCELLED') throw error;
+          markerSidePx = rawMarkerSidePx;
+          markerDetectionFailure = 'SEGMENTATION_FAILED';
+          correctionError = '画像の射影補正を完了できません。';
+        }
+      }
+
+      let suggestion: MeasurementDraft | undefined;
+      let providerError: string | null = null;
+      if (analysisBlob && adapterRef.current?.suggestMeasurement) {
+        try {
+          const request: MeasurementRequest = { sessionId, blob: analysisBlob, requestId, sequence };
+          suggestion = await adapterRef.current.suggestMeasurement(request);
+        } catch (error) {
+          if (error instanceof MarkerWorkerError && error.code === 'CANCELLED') throw error;
+          providerError = providerMessage(error, '採寸点の提案を利用できません。');
+        }
+      }
+      if (!isCurrentMeasurement()) return null;
       measurementRequestRef.current = null;
-      const enrichedSuggestion = suggestion && imageDimensions
-        ? { ...suggestion, imageDimensions, rawEndpoints: suggestion.endpoints }
-        : suggestion && suggestion.endpoints
-          ? { ...suggestion, rawEndpoints: suggestion.endpoints }
-          : suggestion;
+
+      const endpoints = suggestion?.endpoints ?? { ...DEFAULT_MEASUREMENT_ENDPOINTS };
+      const baseSuggestion: MeasurementDraft = suggestion ?? {
+        lengthCm: null,
+        widthCm: null,
+        source: 'approved_manual',
+      };
+      const calculated = suggestion?.endpoints && analysisDimensions && markerSidePx
+        ? calculateMeasurement({
+            endpoints: suggestion.endpoints,
+            rawEndpoints: suggestion.endpoints,
+            imageDimensions: analysisDimensions,
+            markerSidePx,
+          })
+        : null;
+      const enrichedSuggestion: MeasurementDraft = {
+        ...baseSuggestion,
+        endpoints,
+        rawEndpoints: endpoints,
+        ...(analysisDimensions ? { imageDimensions: analysisDimensions } : {}),
+        ...(marker ? { marker } : {}),
+        ...(markerSidePx ? { markerSidePx } : {}),
+        projectionCorners: null,
+        homography: null,
+        projectionCorrected,
+        endpointSource: suggestion ? 'ai' : 'fallback',
+        ...(calculated ? { endpoints: calculated.endpoints, lengthCm: calculated.lengthCm, widthCm: calculated.widthCm } : {}),
+        ...(markerDetectionFailure ? { markerDetectionFailure } : {}),
+      };
+      const reviewError = providerError
+        ? `${providerError} 4端点と採寸値は手動で確認できます。`
+        : correctionError
+          ? `${correctionError} 端点と採寸値を手動で確認できます。`
+          : null;
       updateState((current) => current.sessionId === sessionId && generation === measurementGenerationRef.current ? {
         ...current,
         activeSlot: 'measurement',
         currentStep: 'measurement-review',
         phase: 'measurement',
-        measurementDraft: enrichedSuggestion ?? { lengthCm: null, widthCm: null, source: 'ai' },
+        measurementDraft: enrichedSuggestion,
         slots: { ...current.slots, measurement: { slot: 'measurement', status: 'captured' } },
-        error: null,
+        error: reviewError,
       } : current);
+      return analysisBlob;
     } catch (error) {
       const currentFence = measurementRequestRef.current;
-      if (sessionIdRef.current !== sessionId || currentFence?.requestId !== requestId || currentFence.generation !== generation || measurementGenerationRef.current !== generation) return;
+      if (error instanceof MarkerWorkerError && error.code === 'CANCELLED') return null;
+      if (sessionIdRef.current !== sessionId || currentFence?.requestId !== requestId || currentFence.generation !== generation || measurementGenerationRef.current !== generation) return null;
       measurementRequestRef.current = null;
-      const message = providerMessage(error, '採寸点を提案できません。');
+      const message = providerMessage(error, '採寸画像を処理できません。');
       updateState((current) => current.sessionId === sessionId && generation === measurementGenerationRef.current ? { ...current, activeSlot: 'measurement', currentStep: 'measurement-capture', phase: 'measurement', slots: { ...current.slots, measurement: { slot: 'measurement', status: 'active' } }, error: `${message} 着丈・身幅を手入力できます。` } : current);
+      return null;
+    } finally {
+      if (markerRequestAbortRef.current === markerAbortController) markerRequestAbortRef.current = null;
     }
-  }, [resetGuidance, updateState]);
+  }, [detectMarker, projectMeasurementImage, resetGuidance, updateState]);
 
   const removeMedia = useCallback((mediaId: string) => {
     const snapshot = stateRef.current;
@@ -618,6 +803,8 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
   const retakeMeasurement = useCallback(() => {
     measurementGenerationRef.current += 1;
     measurementRequestRef.current = null;
+    markerRequestAbortRef.current?.abort();
+    markerRequestAbortRef.current = null;
     resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId || !allImageSlotsCaptured(current.slots)) return current;
@@ -649,6 +836,9 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       }
       if (patch.markerSidePx !== undefined && patch.markerSidePx !== null && (!Number.isFinite(patch.markerSidePx) || patch.markerSidePx <= 0 || patch.markerSidePx > 100_000)) {
         return { ...current, error: 'マーカーの1辺は正のpx値で入力してください。' };
+      }
+      if ([['着丈', patch.lengthCm], ['身幅', patch.widthCm]].some(([, value]) => value !== undefined && value !== null && !finiteMeasurement(value as number))) {
+        return { ...current, error: '着丈・身幅は正の数値で入力してください。' };
       }
 
       let endpoints = patch.endpoints ?? currentDraft.endpoints;
@@ -709,7 +899,7 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
     });
   }, [updateState]);
 
-  const approveMeasurement = useCallback((measurement?: ApprovedMeasurement) => {
+  const approveMeasurement = useCallback((measurement?: ApprovedMeasurement, confirmRange = false) => {
     resetGuidance(false);
     updateState((current) => {
       if (!current.sessionId) return current;
@@ -720,7 +910,10 @@ export const useGuidedCaptureController = (adapter?: GuidedCaptureAdapter): Guid
       const candidate: ApprovedMeasurement | null = measurement ?? (finiteMeasurement(draftLength) && finiteMeasurement(draftWidth)
         ? { lengthCm: draftLength, widthCm: draftWidth, source: current.measurementDraft?.source === 'ai' ? 'approved_cv' : 'approved_manual' }
         : null);
-      if (!isApprovedMeasurement(candidate)) return { ...current, error: '着丈は20〜100cm、身幅は20〜80cmの範囲で入力してから承認してください。' };
+      if (!isApprovedMeasurement(candidate)) return { ...current, error: '着丈・身幅に正の数値を入力してから承認してください。' };
+      if (!isRecommendedMeasurement(candidate) && !confirmRange) {
+        return { ...current, error: '推奨範囲外の採寸値です。実測値を再確認してから、もう一度承認してください。' };
+      }
       return { ...current, slots: { ...current.slots, measurement: { slot: 'measurement', status: 'approved' } }, measurement: candidate, currentStep: 'measurement-review', phase: 'review', activeSlot: 'measurement', latestGuidance: null, primaryGuidance: null, guidanceAcknowledgement: null, error: null };
     });
   }, [resetGuidance, updateState]);
