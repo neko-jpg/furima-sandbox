@@ -35,7 +35,6 @@ services:
         - action: sync
           path: .
           target: /workspace
-          initial_sync: true
           ignore:
             - .git/
             - .next/
